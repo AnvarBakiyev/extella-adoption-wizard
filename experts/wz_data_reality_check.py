@@ -1,7 +1,3 @@
-# expert: wz_data_reality_check
-# description: Data reality check (OpenAI or platform Qwen when no api_key)
-# params: session_id, api_key, api_token
-
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
@@ -12,7 +8,7 @@ def wz_data_reality_check(
     base_url: str = "https://api.openai.com/v1",
     model: str = "gpt-4o",
     api_token: str = "",
-    agent_id: str = "agent_extella_default",
+    agent_id: str = "",
     api_base: str = "https://api.extella.ai"
 ) -> dict:
     """Проверка реальности данных: сверяет ФАКТИЧЕСКИЕ колонки загруженного файла
@@ -128,10 +124,10 @@ def wz_data_reality_check(
         else:
             rr = requests.post(api_base.rstrip("/") + "/api/agent/run",
                 headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
-                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
-                json={"agent_id": "agent_extella_default",
+                         "X-Profile-Id": "default", "X-Agent-Id": agent_id or "agent_extella_default"},
+                json={"agent_id": agent_id,
                       "input": SYSTEM + "\n\n" + user + "\n\nВерни СТРОГО валидный JSON без markdown.",
-                      "run_timeout": 180, "store": True}, timeout=240).json()
+                      "run_timeout": 180, "store": False}, timeout=240).json()
             content = "".join(c.get("text", "") for it in (rr.get("output") or [])
                               if it.get("type") == "message"
                               for c in (it.get("content") or []) if c.get("type") == "output_text")

@@ -1,7 +1,3 @@
-# expert: wz_generate_blueprint
-# description: Blueprint generator (OpenAI or platform Qwen)
-# params: session_id, api_key, api_token, agent_id, language
-
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 
@@ -16,7 +12,7 @@ def wz_generate_blueprint(
     language: str = "ru",
     output_path: str = "",
     api_token: str = "",
-    agent_id: str = "agent_extella_default",
+    agent_id: str = "",
     api_base: str = "https://api.extella.ai"
 ) -> dict:
     import json
@@ -30,6 +26,8 @@ def wz_generate_blueprint(
     # -- Resolve inputs ------------------------------------------------
     if not api_key and not api_token:
         return {"status": "error", "message": "нужен api_key (OpenAI) ИЛИ api_token (платформенная модель Qwen)"}
+    if not api_key and not agent_id:
+        return {"status": "error", "message": "для платформенной модели нужен agent_id Qwen-агента (config.agent_id); Claude-дефолт запрещён клиентам"}
     if not session_path:
         if not session_id:
             return {"status": "error", "message": "session_path or session_id is required"}
@@ -147,11 +145,11 @@ def wz_generate_blueprint(
             rr = requests.post(
                 api_base.rstrip("/") + "/api/agent/run",
                 headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
-                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
-                json={"agent_id": agent_id or "agent_extella_default",
+                         "X-Profile-Id": "default", "X-Agent-Id": agent_id},
+                json={"agent_id": agent_id,
                       "input": SYSTEM + "\n\n" + user_msg +
                                "\n\nВерни СТРОГО валидный JSON-объект (Process Blueprint) без markdown и пояснений.",
-                      "run_timeout": 240, "store": True},
+                      "run_timeout": 240, "store": False},
                 timeout=300).json()
         except Exception as e:
             return {"status": "error", "message": "platform LLM request failed: " + str(e)[:200]}

@@ -1,7 +1,3 @@
-# expert: wz_build_plan
-# description: Build Plan generator (OpenAI or platform Qwen when no api_key)
-# params: session_id, namespace, api_token, api_key, language
-
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 
@@ -16,6 +12,7 @@ def wz_build_plan(
     model: str = "gpt-4o",
     language: str = "ru",
     output_path: str = "",
+    agent_id: str = "",
     api_base: str = "https://api.extella.ai"
 ) -> dict:
     import json, re
@@ -31,6 +28,8 @@ def wz_build_plan(
         return {"status": "error", "message": "namespace is required: short snake prefix for process experts, e.g. 'dz' (lowercase, 2-12 chars)"}
     if not api_token:
         return {"status": "error", "message": "api_token is required"}
+    if not api_key and not agent_id:
+        return {"status": "error", "message": "для платформенной модели нужен agent_id Qwen-агента (config.agent_id); Claude-дефолт запрещён клиентам"}
     if not session_path:
         if not session_id:
             return {"status": "error", "message": "session_id or session_path is required"}
@@ -140,10 +139,10 @@ def wz_build_plan(
         try:
             rr = requests.post(api_base.rstrip("/") + "/api/agent/run",
                 headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
-                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
-                json={"agent_id": "agent_extella_default",
+                         "X-Profile-Id": "default", "X-Agent-Id": agent_id},
+                json={"agent_id": agent_id,
                       "input": SYSTEM + "\n\n" + user_msg + "\n\nВерни СТРОГО валидный JSON (Build Plan) без markdown и пояснений.",
-                      "run_timeout": 600, "store": True},
+                      "run_timeout": 600, "store": False},
                 timeout=660).json()
         except Exception as e:
             return {"status": "error", "message": "platform LLM request failed: " + str(e)[:200]}
