@@ -40,8 +40,8 @@ for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
     try:
         r = api("/api/expert/save", {"name": name, "description": desc or name, "code": src,
                                      "kwargs": kwargs, "cspl": "fython", "global": True})
-        good = (r.get("status") == "success") or r.get("expert_name") or r.get("id")
-        print(("  ✅ " if good else "  ❌ ") + name)
+        good = (r.get("status") == "success")   # СТРОГО: только явный success (иначе ошибка маскировалась под ✅)
+        print(("  ✅ " if good else "  ❌ ") + name + ("" if good else "  " + str(r)[:80]))
         ok += 1 if good else 0; fail += 0 if good else 1
     except Exception as e:
         print("  ❌ " + name + " — " + str(e)[:80]); fail += 1
