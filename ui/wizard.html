@@ -576,6 +576,12 @@ async function saveAnswers(){
 }
 async function finishInterview(){
   await saveAnswers();
+  await reloadSession();
+  const nAns = Object.keys((S.session&&S.session.answers)||{}).length;
+  if(nAns === 0){   // guard: без ответов blueprint собрать не из чего («no answers»)
+    toast("Конспект пуст. Пройдите интервью с Помощником справа ИЛИ заполните пункты конспекта вручную и нажмите «Сохранить» — иначе план собрать не из чего.", "err");
+    return;
+  }
   await jpost("/x/expert",{expert_name:"wz_session",params:{action:"set_stage",session_id:S.sessionId,stage:"blueprint"}});
   await reloadSession(); S.view="blueprint"; render();
 }

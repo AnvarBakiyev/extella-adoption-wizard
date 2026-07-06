@@ -1,6 +1,6 @@
 # expert: wz_build_plan
-# description: Эксперт wz_build_plan (Adoption Wizard).
-# params: session_id, session_path, blueprint_path, namespace, api_token, api_key, base_url, model, language, output_path, api_base
+# description: Build Plan generator (OpenAI or platform Qwen when no api_key)
+# params: session_id, namespace, api_token, api_key, language
 
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
@@ -30,9 +30,7 @@ def wz_build_plan(
     if not namespace or not re.match(r"^[a-z][a-z0-9]{1,11}$", namespace):
         return {"status": "error", "message": "namespace is required: short snake prefix for process experts, e.g. 'dz' (lowercase, 2-12 chars)"}
     if not api_token:
-        return {"status": "error", "message": "api_token is required (for library reuse search)"}
-    if not api_key:
-        return {"status": "error", "message": "api_key is required (LLM)"}
+        return {"status": "error", "message": "api_token is required"}
     if not session_path:
         if not session_id:
             return {"status": "error", "message": "session_id or session_path is required"}
@@ -119,23 +117,44 @@ def wz_build_plan(
 
 Составь Build Plan по правилам."""
 
+    # LLM: OpenAI если есть api_key, иначе платформенная Qwen через агента (клиенту ключ не нужен)
+    content = ""
+    if api_key:
+        try:
+            resp = requests.post(base_url.rstrip("/") + "/chat/completions",
+                                 headers={"Authorization": "Bearer " + api_key,
+                                          "Content-Type": "application/json"},
+                                 json={"model": model,
+                                       "messages": [{"role": "system", "content": SYSTEM},
+                                                    {"role": "user", "content": user_msg}],
+                                       "temperature": 0,
+                                       "response_format": {"type": "json_object"},
+                                       "max_tokens": 4000},
+                                 timeout=180)
+        except Exception as e:
+            return {"status": "error", "message": "LLM request failed: " + str(e)[:200]}
+        if resp.status_code != 200:
+            return {"status": "error", "message": "LLM API error " + str(resp.status_code) + ": " + resp.text[:200]}
+        content = resp.json()["choices"][0]["message"]["content"]
+    else:
+        try:
+            rr = requests.post(api_base.rstrip("/") + "/api/agent/run",
+                headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
+                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
+                json={"agent_id": "agent_extella_default",
+                      "input": SYSTEM + "\n\n" + user_msg + "\n\nВерни СТРОГО валидный JSON (Build Plan) без markdown и пояснений.",
+                      "run_timeout": 600, "store": True},
+                timeout=660).json()
+        except Exception as e:
+            return {"status": "error", "message": "platform LLM request failed: " + str(e)[:200]}
+        content = "".join(c.get("text", "") for it in (rr.get("output") or [])
+                          if it.get("type") == "message"
+                          for c in (it.get("content") or []) if c.get("type") == "output_text")
+        if not content:
+            return {"status": "error", "message": "platform LLM empty output: " + str(rr)[:200]}
     try:
-        resp = requests.post(base_url.rstrip("/") + "/chat/completions",
-                             headers={"Authorization": "Bearer " + api_key,
-                                      "Content-Type": "application/json"},
-                             json={"model": model,
-                                   "messages": [{"role": "system", "content": SYSTEM},
-                                                {"role": "user", "content": user_msg}],
-                                   "temperature": 0,
-                                   "response_format": {"type": "json_object"},
-                                   "max_tokens": 4000},
-                             timeout=180)
-    except Exception as e:
-        return {"status": "error", "message": "LLM request failed: " + str(e)[:200]}
-    if resp.status_code != 200:
-        return {"status": "error", "message": "LLM API error " + str(resp.status_code) + ": " + resp.text[:200]}
-    try:
-        plan = json.loads(resp.json()["choices"][0]["message"]["content"])
+        _m = re.search(r"\{.*\}", content, re.S)   # Qwen может добавить текст — берём JSON-объект
+        plan = json.loads(_m.group(0) if _m else content)
         assert isinstance(plan.get("tasks"), list) and plan["tasks"]
     except Exception as e:
         return {"status": "error", "message": "Failed to parse LLM JSON: " + str(e)[:200]}

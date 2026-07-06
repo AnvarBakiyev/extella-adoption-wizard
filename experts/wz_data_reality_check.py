@@ -1,6 +1,6 @@
 # expert: wz_data_reality_check
-# description: Проверка реальности данных: сверяет ФАКТИЧЕСКИЕ колонки загруженного файла с процессом, который клиент описал в интервью, и честно говорит — тянет ли 
-# params: session_id, api_key, base_url, model
+# description: Data reality check (OpenAI or platform Qwen when no api_key)
+# params: session_id, api_key, api_token
 
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
@@ -10,7 +10,10 @@ def wz_data_reality_check(
     session_id: str = "",
     api_key: str = "",
     base_url: str = "https://api.openai.com/v1",
-    model: str = "gpt-4o"
+    model: str = "gpt-4o",
+    api_token: str = "",
+    agent_id: str = "agent_extella_default",
+    api_base: str = "https://api.extella.ai"
 ) -> dict:
     """Проверка реальности данных: сверяет ФАКТИЧЕСКИЕ колонки загруженного файла
     с процессом, который клиент описал в интервью, и честно говорит — тянет ли файл
@@ -89,8 +92,8 @@ def wz_data_reality_check(
         sp.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"status": "success", "data_check": result}
 
-    if not api_key:
-        return {"status": "error", "message": "api_key is required for the reality check LLM"}
+    if not api_key and not api_token:
+        return {"status": "error", "message": "нужен api_key (OpenAI) или api_token (платформенная Qwen)"}
 
     SYSTEM = (
         "Ты — аудитор данных внедрения. Тебе дают: (1) процесс, который клиент описал словами, "
@@ -110,17 +113,31 @@ def wz_data_reality_check(
             json.dumps(files_info, ensure_ascii=False)[:3500])
 
     try:
-        r = requests.post(base_url.rstrip("/") + "/chat/completions",
-                          headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-                          json={"model": model, "temperature": 0,
-                                "response_format": {"type": "json_object"},
-                                "messages": [{"role": "system", "content": SYSTEM},
-                                             {"role": "user", "content": user}],
-                                "max_tokens": 1200},
-                          timeout=120)
-        if r.status_code != 200:
-            return {"status": "error", "message": "LLM " + str(r.status_code) + ": " + r.text[:150]}
-        result = json.loads(r.json()["choices"][0]["message"]["content"])
+        if api_key:
+            r = requests.post(base_url.rstrip("/") + "/chat/completions",
+                              headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+                              json={"model": model, "temperature": 0,
+                                    "response_format": {"type": "json_object"},
+                                    "messages": [{"role": "system", "content": SYSTEM},
+                                                 {"role": "user", "content": user}],
+                                    "max_tokens": 1200},
+                              timeout=120)
+            if r.status_code != 200:
+                return {"status": "error", "message": "LLM " + str(r.status_code) + ": " + r.text[:150]}
+            content = r.json()["choices"][0]["message"]["content"]
+        else:
+            rr = requests.post(api_base.rstrip("/") + "/api/agent/run",
+                headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
+                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
+                json={"agent_id": "agent_extella_default",
+                      "input": SYSTEM + "\n\n" + user + "\n\nВерни СТРОГО валидный JSON без markdown.",
+                      "run_timeout": 180, "store": True}, timeout=240).json()
+            content = "".join(c.get("text", "") for it in (rr.get("output") or [])
+                              if it.get("type") == "message"
+                              for c in (it.get("content") or []) if c.get("type") == "output_text")
+        import re as _re
+        _m = _re.search(r"\{.*\}", content, _re.S)
+        result = json.loads(_m.group(0) if _m else content)
     except Exception as e:
         return {"status": "error", "message": str(e)[:200]}
 
