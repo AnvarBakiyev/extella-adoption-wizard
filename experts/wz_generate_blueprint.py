@@ -1,6 +1,6 @@
 # expert: wz_generate_blueprint
-# description: Эксперт wz_generate_blueprint (Adoption Wizard).
-# params: session_path, session_id, base_dir, catalog_path, api_key, base_url, model, language, output_path
+# description: Blueprint generator (OpenAI or platform Qwen)
+# params: session_id, api_key, api_token, agent_id, language
 
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
@@ -14,7 +14,10 @@ def wz_generate_blueprint(
     base_url: str = "https://api.openai.com/v1",
     model: str = "gpt-4o",
     language: str = "ru",
-    output_path: str = ""
+    output_path: str = "",
+    api_token: str = "",
+    agent_id: str = "agent_extella_default",
+    api_base: str = "https://api.extella.ai"
 ) -> dict:
     import json
     import requests
@@ -25,8 +28,8 @@ def wz_generate_blueprint(
         return datetime.now(timezone.utc).isoformat()
 
     # -- Resolve inputs ------------------------------------------------
-    if not api_key:
-        return {"status": "error", "message": "api_key is required"}
+    if not api_key and not api_token:
+        return {"status": "error", "message": "нужен api_key (OpenAI) ИЛИ api_token (платформенная модель Qwen)"}
     if not session_path:
         if not session_id:
             return {"status": "error", "message": "session_path or session_id is required"}
@@ -118,25 +121,50 @@ def wz_generate_blueprint(
 
 Составь Process Blueprint по правилам."""
 
-    try:
-        resp = requests.post(
-            base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": "Bearer " + api_key,
-                     "Content-Type": "application/json"},
-            json={"model": model,
-                  "messages": [{"role": "system", "content": SYSTEM},
-                               {"role": "user", "content": user_msg}],
-                  "temperature": 0,
-                  "response_format": {"type": "json_object"},
-                  "max_tokens": 4000},
-            timeout=180)
-    except Exception as e:
-        return {"status": "error", "message": "LLM request failed: " + str(e)[:200]}
-    if resp.status_code != 200:
-        return {"status": "error", "message": "LLM API error " + str(resp.status_code) + ": " + resp.text[:200]}
+    # LLM: если есть api_key — OpenAI (dev); иначе — платформенная модель Qwen через агента (клиенту ключ НЕ нужен)
+    content = ""
+    if api_key:
+        try:
+            resp = requests.post(
+                base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": "Bearer " + api_key,
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "system", "content": SYSTEM},
+                                   {"role": "user", "content": user_msg}],
+                      "temperature": 0,
+                      "response_format": {"type": "json_object"},
+                      "max_tokens": 4000},
+                timeout=180)
+        except Exception as e:
+            return {"status": "error", "message": "LLM request failed: " + str(e)[:200]}
+        if resp.status_code != 200:
+            return {"status": "error", "message": "LLM API error " + str(resp.status_code) + ": " + resp.text[:200]}
+        content = resp.json()["choices"][0]["message"]["content"]
+    else:
+        # платформенная модель (Qwen) через /api/agent/run с run_timeout — синхронно, без внешнего ключа
+        try:
+            rr = requests.post(
+                api_base.rstrip("/") + "/api/agent/run",
+                headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
+                         "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
+                json={"agent_id": agent_id or "agent_extella_default",
+                      "input": SYSTEM + "\n\n" + user_msg +
+                               "\n\nВерни СТРОГО валидный JSON-объект (Process Blueprint) без markdown и пояснений.",
+                      "run_timeout": 240, "store": True},
+                timeout=300).json()
+        except Exception as e:
+            return {"status": "error", "message": "platform LLM request failed: " + str(e)[:200]}
+        content = "".join(c.get("text", "") for it in (rr.get("output") or [])
+                          if it.get("type") == "message"
+                          for c in (it.get("content") or []) if c.get("type") == "output_text")
+        if not content:
+            return {"status": "error", "message": "platform LLM empty output: " + str(rr)[:200]}
 
     try:
-        bp = json.loads(resp.json()["choices"][0]["message"]["content"])
+        import re as _re
+        _m = _re.search(r"\{.*\}", content, _re.S)   # Qwen иногда добавляет текст — берём JSON-объект
+        bp = json.loads(_m.group(0) if _m else content)
         assert isinstance(bp.get("stages"), list)
     except Exception as e:
         return {"status": "error", "message": "Failed to parse LLM JSON: " + str(e)[:200]}
