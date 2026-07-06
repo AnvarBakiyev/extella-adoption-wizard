@@ -1,0 +1,397 @@
+# expert: wz_scheduler_tick
+# description: Тик планировщика: читает расписания из KV (ключи sched:*), для каждого, у которого подошёл срок, запускает оркестратор процесса, пишет лог прогона обр
+# params: api_token, api_base
+
+$extens("include.py")
+include("import requests", ["extella-pip install requests"])
+
+def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.ai") -> dict:
+    """Тик планировщика: читает расписания из KV (ключи sched:*), для каждого,
+    у которого подошёл срок, запускает оркестратор процесса, пишет лог прогона
+    обратно в KV и переносит next_due. Вешается на cron always-on устройства.
+    Параметры: api_token (или из bridge-конфига устройства)."""
+    import json
+    import requests
+    from datetime import datetime, timezone, timedelta
+    from pathlib import Path
+
+    if not api_token:
+        cfg = Path.home() / "extella_wizard" / "app" / "config.json"
+        try:
+            api_token = json.loads(cfg.read_text(encoding="utf-8")).get("auth_token", "") if cfg.exists() else ""
+        except Exception:
+            api_token = ""
+    if not api_token:
+        return {"status": "error", "message": "нет api_token и bridge-конфига"}
+
+    headers = {"X-Auth-Token": api_token, "Content-Type": "application/json",
+               "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"}
+    base = api_base.rstrip("/")
+
+    def kv(ep, payload):
+        try:
+            r = requests.post(base + "/api/kv/" + ep, headers=headers, json=payload, timeout=60)
+            return r.json()
+        except Exception as e:
+            return {"status": "error", "message": str(e)[:120]}
+
+    def now():
+        return datetime.now(timezone.utc)
+
+    SCHED_INDEX_KEY = "sched:__index__"
+    RECONCILE_MIN = 360   # как часто индекс пересобирается полным сканом (страховка от рассинхрона); 0 = выкл
+
+    def scan_sched_items():
+        # ДОРОГОЙ разовый проход всего KV (у kv/list нет префикс-фильтра — тянет и file:* base64-чанки,
+        # и sec:*, и чужие данные). Только для бутстрапа/починки индекса, НЕ в штатном тике.
+        lst = kv("list", {})
+        raw = lst.get("results") or lst.get("items") or []
+        out, sids = [], []
+        for it in raw:
+            k = it.get("kv_key") or it.get("key") or ""
+            if not k.startswith("sched:") or k == SCHED_INDEX_KEY:
+                continue
+            out.append({"key": k, "value": it.get("kv_value") or it.get("value")})
+            sids.append(k[len("sched:"):])
+        return out, sids
+
+    def write_index(sids):
+        kv("set", {"key": SCHED_INDEX_KEY,
+                   "value": json.dumps({"sids": sorted(set(sids)), "scan_ts": now().isoformat()},
+                                       ensure_ascii=False),
+                   "description": "schedule index"})
+
+    # Штатно читаем ТОЛЬКО индекс активных расписаний + точечные sched:<sid>, чтобы не тянуть в память
+    # весь стор. Индекс ведёт мост (server.py) на создание/удаление расписания.
+    idx = kv("get", {"key": SCHED_INDEX_KEY})
+    idx_sids, scan_ts = None, None
+    try:
+        iv = json.loads(idx.get("value") or "")
+        if isinstance(iv, dict):
+            idx_sids, scan_ts = iv.get("sids"), iv.get("scan_ts")
+        elif isinstance(iv, list):
+            idx_sids = iv
+    except Exception:
+        idx_sids = None
+
+    stale = False
+    if RECONCILE_MIN > 0:
+        if not scan_ts:
+            stale = True
+        else:
+            try:
+                stale = now() >= datetime.fromisoformat(scan_ts.replace("Z", "+00:00")) + timedelta(minutes=RECONCILE_MIN)
+            except Exception:
+                stale = True
+
+    if not isinstance(idx_sids, list) or stale:
+        # индекса нет / устарел → разовый full-scan + пересборка индекса (миграция и самолечение
+        # от рассинхрона: потерянный из индекса sid не может молча похоронить расписание навсегда)
+        items, _sids = scan_sched_items()
+        write_index(_sids)
+    else:
+        # горячий путь: точечные get по sched:<sid> из индекса, без прохода по всему стору
+        items = [{"key": "sched:" + sid, "value": kv("get", {"key": "sched:" + sid}).get("value")}
+                 for sid in idx_sids]
+
+    # ===== ВХОДЯЩИЕ (B2): дренаж очереди inbq:<sid> (webhook-шлюз/инъекция) + опрос канала (poll) =====
+    # → запуск процесса на ЭТОМ хостинге (пиннинг target) → ответ в чат отправителя. Индекс: inbound:__index__.
+    inbound_fired = []
+    _dbg = {"isids": None, "polls": []}
+
+    def _j(v, d):
+        # KV-значения — JSON (двойные кавычки); РЕЗУЛЬТАТ fython-эксперта — Python-repr (одинарные) →
+        # нужен ast-фолбэк, иначе poll/orch-результат не распарсится (был баг: msgs=0).
+        if not v:
+            return d
+        try:
+            return json.loads(v)
+        except Exception:
+            try:
+                import ast
+                return ast.literal_eval(v)
+            except Exception:
+                return d
+
+    try:
+        iidx = _j(kv("get", {"key": "inbound:__index__"}).get("value"), {})
+        isids = iidx.get("sids", []) if isinstance(iidx, dict) else []
+        _dbg["isids"] = isids
+        for sid in isids:
+            ikey = "inbound:" + sid
+            ic = _j(kv("get", {"key": ikey}).get("value"), {})
+            if not ic or not ic.get("active", True):
+                continue
+            orch = ic.get("orchestrator")
+            src = ic.get("source_file")
+            tgt = ic.get("target")
+            skey = ic.get("source_key")
+            client = ic.get("client", "default")
+            channel = ic.get("channel", "telegram")
+            if not orch:
+                continue
+            events = []  # [{chat_id, text, dedup}]
+            # (1) очередь: webhook-шлюз или тестовая инъекция кладут события в inbq:<sid>
+            qkey = "inbq:" + sid
+            qev = _j(kv("get", {"key": qkey}).get("value"), [])
+            if isinstance(qev, list) and qev:
+                events += [e for e in qev if isinstance(e, dict)]
+                kv("set", {"key": qkey, "value": "[]", "description": "inbq drained"})  # идемпотентный дренаж
+            # (2) опрос канала (тик клиента сам ходит в канал; курсор offset в конфиге)
+            if ic.get("mode") == "poll" and channel == "telegram":
+                pbody = {"expert_name": "wz_connector_telegram", "global": True,
+                         "params": {"api_token": api_token, "client": client, "mode": "poll",
+                                    "offset": int(ic.get("offset", 0) or 0)}}
+                if tgt:
+                    pbody["target"] = tgt
+                try:
+                    po = requests.post(base + "/api/expert/run", headers=headers, json=pbody, timeout=90).json()
+                    po = po.get("result", po)
+                    if isinstance(po, str):
+                        po = _j(po, {})
+                except Exception:
+                    po = {}
+                _dbg["polls"].append({"sid": sid, "mode": ic.get("mode"), "chan": channel,
+                                      "msgs": len(po.get("messages") or []), "ok": po.get("ok"), "err": po.get("err")})
+                for m in (po.get("messages") or []):
+                    events.append({"chat_id": m.get("chat_id"), "text": m.get("text"),
+                                   "dedup": "tg:" + str(m.get("update_id"))})
+                if po.get("next_offset") is not None:
+                    ic["offset"] = po["next_offset"]  # двигаем курсор ТОЛЬКО при успешном ответе канала
+            # дедуп + фиксация курсора ДО медленного прогона. Иначе deferred-прогон (до 45с/сообщение),
+            # наложение тиков или таймаут тика приводят к повторным ответам на одно сообщение = спам.
+            # Стратегия at-most-once: лучше не ответить, чем зациклить рассылку.
+            seen = ic.get("seen") or []
+            fresh = []
+            for ev in events[:20]:  # лимит на тик — не зациклить (канон 50 итераций/ход)
+                dk = ev.get("dedup") or ""
+                if dk and dk in seen:
+                    continue
+                if dk:
+                    seen.append(dk)
+                fresh.append(ev)
+            ic["seen"] = seen[-200:]
+            # зафиксировать курсор+seen СРАЗУ (идемпотентность к падению/наложению/таймауту тика)
+            kv("set", {"key": ikey, "value": json.dumps(ic, ensure_ascii=False), "description": "inbound " + sid})
+            processed = 0
+            for ev in fresh:
+                run_params = {"api_token": api_token, "source_file": src}
+                if tgt:
+                    run_params["target"] = tgt
+                if skey:
+                    run_params["source_key"] = skey
+                rbody = {"expert_name": orch, "params": run_params, "global": True}
+                if tgt:
+                    rbody["target"] = tgt
+                t0 = now()
+                try:
+                    rout = requests.post(base + "/api/expert/run", headers=headers, json=rbody, timeout=900).json()
+                    rout = rout.get("result", rout)
+                    if isinstance(rout, str):
+                        rout = _j(rout, {})
+                except Exception:
+                    rout = {}
+                # deferred → дочитать lastrun:<ns> (как в расписании)
+                if (rout or {}).get("status") != "success":
+                    import time as _t2
+                    ns2 = orch.replace("_run_pipeline", "")
+                    dl = 0
+                    while dl < 45:
+                        _t2.sleep(5); dl += 5
+                        rec = _j(kv("get", {"key": "lastrun:" + ns2}).get("value"), None)
+                        if not rec:
+                            continue
+                        try:
+                            frsh = datetime.fromisoformat(rec.get("at", "").replace("Z", "+00:00")) >= t0
+                        except Exception:
+                            frsh = True
+                        if frsh and rec.get("status") == "success":
+                            rout = {"status": "success", "total_count": rec.get("total_count"),
+                                    "total_sum": rec.get("total_sum")}
+                            break
+                # ответ отправителю в тот же чат
+                ts = (rout or {}).get("total_sum"); tc = (rout or {}).get("total_count")
+                if ts is not None:
+                    reply = "Готово. Сумма: " + format(ts, ",").replace(",", " ") + " ₸" + (("\nПозиций: " + str(tc)) if tc is not None else "")
+                elif (rout or {}).get("status") == "success":
+                    reply = "Готово ✅"
+                else:
+                    reply = "Принял, обрабатываю…"
+                dbody = {"expert_name": "wz_connector_" + channel, "global": True,
+                         "params": {"api_token": api_token, "client": client, "mode": "send",
+                                    "text": reply, "chat_id": ev.get("chat_id")}}
+                if tgt:
+                    dbody["target"] = tgt
+                try:
+                    requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
+                except Exception:
+                    pass
+                processed += 1
+            if processed:
+                ic["last_inbound_ts"] = now().isoformat()
+                kv("set", {"key": ikey, "value": json.dumps(ic, ensure_ascii=False), "description": "inbound " + sid})
+            if processed:
+                inbound_fired.append({"sid": sid, "processed": processed})
+    except Exception as e:
+        inbound_fired.append({"error": str(e)[:120]})
+
+    fired, checked = [], 0
+    for it in items:
+        # kv/list отдаёт kv_key/kv_value, kv/get — key/value
+        key = it.get("kv_key") or it.get("key") or ""
+        if not key.startswith("sched:"):
+            continue
+        checked += 1
+        raw = it.get("kv_value") or it.get("value")
+        if raw is None:
+            raw = kv("get", {"key": key}).get("value", "{}")
+        try:
+            cfg = json.loads(raw)
+        except Exception:
+            continue
+        if not cfg.get("active", True):
+            continue
+        interval = int(cfg.get("interval_min", 0) or 0)
+        orch = cfg.get("orchestrator")
+        src = cfg.get("source_file")
+        if not orch or not src:
+            continue
+        # срок?
+        nd = cfg.get("next_due_ts")
+        due = True
+        if nd:
+            try:
+                due = now() >= datetime.fromisoformat(nd.replace("Z", "+00:00"))
+            except Exception:
+                due = True
+        if not due:
+            continue
+        # запуск оркестратора (пиннинг на хостинг + ключ файла в общем сторе для резолвера)
+        t0 = now()
+        tgt = cfg.get("target")
+        skey = cfg.get("source_key")
+        # B3: процесс-на-источнике — свежий pull данных ПЕРЕД прогоном (refresh=per_run).
+        # Источник кладёт данные в тот же source_key; при ошибке pull — НЕ запускаем (честный fail).
+        _srcinfo = cfg.get("source")
+        if isinstance(_srcinfo, dict) and _srcinfo.get("refresh", "per_run") == "per_run":
+            _kind = str(_srcinfo.get("kind", "")).replace("src_", "")
+            _kind = "".join(ch for ch in _kind.lower() if ch.isalnum() or ch == "_")[:30]
+            _pkey = _srcinfo.get("source_key") or skey
+            _pt0 = now().timestamp()
+            try:
+                _pr = requests.post(base + "/api/expert/run", headers=headers, json={
+                    "expert_name": "wz_source_" + _kind, "global": True, "target": tgt,
+                    "params": {"api_token": api_token, "client": cfg.get("client", "default"),
+                               "mode": "pull", "sid": key.split(":", 1)[-1], "source_key": _pkey}}, timeout=600)
+                _po = _pr.json().get("result", {})
+                if isinstance(_po, str):
+                    try:
+                        _po = json.loads(_po)
+                    except Exception:
+                        _po = {}
+            except Exception:
+                _po = {}
+            _pull_ok = isinstance(_po, dict) and _po.get("ok")
+            if not _pull_ok:
+                # HTTP 500/timeout ≠ провал (канон): источник мог успеть записать данные — проверяем АРТЕФАКТ.
+                # Свежая meta (pulled_at >= начала pull) = данные легли, несмотря на хикап ответа.
+                try:
+                    _mrec = json.loads(kv("get", {"key": _pkey + ":meta"}).get("value") or "{}")
+                    if int(_mrec.get("pulled_at", 0)) >= int(_pt0) - 5 and int(_mrec.get("chunks", 0)) > 0:
+                        _pull_ok = True
+                except Exception:
+                    pass
+            if not _pull_ok:
+                fired.append({"key": key, "status": "source_pull_failed", "err": str((_po or {}).get("err", ""))[:120]})
+                continue   # источник не отдал данные — не гоняем оркестратор на устаревших/пустых данных
+        run_params = {"api_token": api_token, "source_file": src}
+        if tgt:
+            run_params["target"] = tgt          # оркестратор пинит свои стадии на то же устройство
+        if skey:
+            run_params["source_key"] = skey     # резолвер материализует файл из общего стора
+        run_body = {"expert_name": orch, "params": run_params, "global": True}
+        if tgt:
+            run_body["target"] = tgt            # сам оркестратор исполняется на хостинге
+        try:
+            r = requests.post(base + "/api/expert/run", headers=headers, json=run_body, timeout=900)
+            resp = r.json()
+            out = resp.get("result", resp)
+        except Exception as e:
+            resp, out = {}, {"status": "error", "message": str(e)[:150]}
+
+        def as_dict(v):
+            if isinstance(v, dict):
+                return v
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except Exception:
+                    try:
+                        import ast
+                        return ast.literal_eval(v)
+                    except Exception:
+                        return {"status": "unknown", "raw": v[:150]}
+            return {"status": "unknown"}
+
+        out = as_dict(out)
+        # отложенная задача возвращает "deferred" без task_id → оркестратор кладёт итог в
+        # KV lastrun:<ns> (межустройственно). Ждём свежую запись новее старта тика.
+        if out.get("status") != "success":
+            import time as _t
+            ns = orch.replace("_run_pipeline", "")
+            lk = "lastrun:" + ns
+            deadline = 0
+            while deadline < 60:
+                _t.sleep(5); deadline += 5
+                g = kv("get", {"key": lk})
+                raw2 = g.get("value")
+                if not raw2:
+                    continue
+                try:
+                    rec = json.loads(raw2)
+                except Exception:
+                    continue
+                # запись свежая (после запуска этого прогона)?
+                try:
+                    fresh = datetime.fromisoformat(rec.get("at", "").replace("Z", "+00:00")) >= t0
+                except Exception:
+                    fresh = True
+                if fresh and rec.get("status") == "success":
+                    out = {"status": "success", "total_count": rec.get("total_count"),
+                           "total_sum": rec.get("total_sum"), "report_xlsx": rec.get("report_xlsx"),
+                           "host": rec.get("host")}
+                    break
+        run = {"at": now().isoformat(), "status": (out or {}).get("status", "unknown"),
+               "total_count": (out or {}).get("total_count"), "total_sum": (out or {}).get("total_sum"),
+               "report_xlsx": (out or {}).get("report_xlsx"), "host": (out or {}).get("host"),
+               "trigger": "schedule"}
+        runs = (cfg.get("runs") or [])
+        runs.append(run)
+        cfg["runs"] = runs[-10:]
+        cfg["last_run_ts"] = run["at"]
+        cfg["next_due_ts"] = (now() + timedelta(minutes=max(1, interval))).isoformat()
+        kv("set", {"key": key, "value": json.dumps(cfg, ensure_ascii=False),
+                   "description": "schedule " + key.split(":", 1)[-1]})
+        # доставка результата в канал (telegram/email/…) — коннектор wz_connector_<канал> на хостинге
+        deliver = str(cfg.get("deliver") or "").strip().lower()
+        if deliver and deliver.replace("_", "").isalnum() and run.get("status") == "success":
+            tc = run.get("total_count"); ts = run.get("total_sum")
+            msg = "✅ Extella: процесс отработал по расписанию."
+            if tc is not None:
+                msg += "\nПозиций: " + str(tc)
+            if ts is not None:
+                msg += "\nСумма: " + format(ts, ",").replace(",", " ") + " ₸"
+            msg += "\n" + run["at"][:16].replace("T", " ") + " UTC"
+            dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
+                     "params": {"api_token": api_token, "client": cfg.get("client", "default"),
+                                "mode": "send", "text": msg}}
+            if cfg.get("target"):
+                dbody["target"] = cfg["target"]
+            try:
+                requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
+            except Exception:
+                pass
+        fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"]})
+
+    return {"status": "success", "checked": checked, "fired": fired,
+            "inbound": inbound_fired, "inbound_dbg": _dbg, "tick_at": now().isoformat()}

@@ -1,0 +1,49 @@
+{
+  "id": "extella_adoption_wizard",
+  "name": "Визард внедрения",
+  "tagline": "От бизнес-боли к работающему ИИ-процессу — интервью, план, стройка, запуск 24/7",
+  "version": "1.0.0",
+  "type": "github",
+  "install": "INSTALL.md",
+  "model": "qwen-3.7-platform",
+  "experts_dir": "experts/",
+  "concepts_dir": "concepts/",
+  "rules_dir": "rules/",
+  "agents": [
+    {
+      "key": "wizard",
+      "name": "Визард внедрения",
+      "instructions": "agents/wizard_agent.instructions.md",
+      "role": "проектирует процесс: интервью → blueprint"
+    },
+    {
+      "key": "builder",
+      "name": "Строитель",
+      "instructions": "agents/builder_agent.instructions.md",
+      "role": "строит процесс: эксперты + оркестратор + вертикальный срез"
+    }
+  ],
+  "ui": {
+    "type": "local_server",
+    "port": 8765,
+    "rootPath": "~/extella_wizard/app",
+    "mainFile": "wizard.html",
+    "launchCmd": "python3 ~/extella_wizard/app/server.py",
+    "sourceDir": "ui/",
+    "openInBrowser": false,
+    "healthPath": "/x/health"
+  },
+  "service": {
+    "isApp": true,
+    "port": 8765,
+    "launchCmd": "python3 ~/extella_wizard/app/server.py",
+    "healthPath": "/x/health",
+    "autostart": true
+  },
+  "requires": {
+    "python": "3.12",
+    "vault_pin": true,
+    "device_target": true
+  },
+  "secrets_in_repo": false
+}

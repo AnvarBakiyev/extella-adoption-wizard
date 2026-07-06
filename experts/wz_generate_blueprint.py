@@ -1,0 +1,217 @@
+# expert: wz_generate_blueprint
+# description: Эксперт wz_generate_blueprint (Adoption Wizard).
+# params: session_path, session_id, base_dir, catalog_path, api_key, base_url, model, language, output_path
+
+$extens("include.py")
+include("import requests", ["extella-pip install requests"])
+
+def wz_generate_blueprint(
+    session_path: str = "",
+    session_id: str = "",
+    base_dir: str = "",
+    catalog_path: str = "",
+    api_key: str = "",
+    base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-4o",
+    language: str = "ru",
+    output_path: str = ""
+) -> dict:
+    import json
+    import requests
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    def now():
+        return datetime.now(timezone.utc).isoformat()
+
+    # -- Resolve inputs ------------------------------------------------
+    if not api_key:
+        return {"status": "error", "message": "api_key is required"}
+    if not session_path:
+        if not session_id:
+            return {"status": "error", "message": "session_path or session_id is required"}
+        root = Path(base_dir) if base_dir else Path.home() / "extella_wizard" / "sessions"
+        session_path = str(root / (session_id + ".json"))
+    sp = Path(session_path)
+    if not sp.exists():
+        return {"status": "error", "message": "session file not found: " + str(sp)}
+    if catalog_path:
+        cp = Path(catalog_path)
+    else:
+        cat_dir = Path.home() / "extella_wizard" / "catalog"
+        cp = cat_dir / "catalog.json"
+        if not cp.exists():
+            cp = cat_dir / "catalog_v1.json"
+    if not cp.exists():
+        return {"status": "error", "message": "catalog file not found: " + str(cp)}
+
+    session = json.loads(sp.read_text(encoding="utf-8"))
+    catalog = json.loads(cp.read_text(encoding="utf-8"))
+
+    answers = session.get("answers", {})
+    if not answers:
+        return {"status": "error", "message": "session has no answers yet - run the interview first"}
+    open_comments = [c for c in session.get("comments", []) if not c.get("resolved")]
+
+    # -- Allowed vocabulary from catalog -------------------------------
+    cap_ids = set()
+    asset_names = set()
+    for cap in catalog.get("capabilities", []):
+        cap_ids.add(cap.get("id"))
+        for a in cap.get("assets", []):
+            asset_names.add(a)
+    pack_ids = set(p.get("id") for p in catalog.get("packs", []))
+    archetype_ids = set(a.get("id") for a in catalog.get("process_archetypes", []))
+
+    answers_payload = json.dumps(
+        {qid: {"question": a.get("question", ""), "answer": a.get("answer", "")}
+         for qid, a in answers.items()}, ensure_ascii=False)
+    comments_payload = json.dumps(
+        [{"block_ref": c.get("block_ref"), "author": c.get("author"), "text": c.get("text")}
+         for c in open_comments], ensure_ascii=False) if open_comments else "[]"
+    catalog_payload = json.dumps(catalog, ensure_ascii=False)
+    if len(catalog_payload) > 30000:
+        catalog_payload = catalog_payload[:30000]
+
+    rubric = catalog.get("suitability_rubric", {})
+
+    SYSTEM = f"""Ты — архитектор решений платформы Extella. По ответам бизнес-интервью составь Process Blueprint — бизнес-план внедрения ИИ-процесса.
+
+ЖЁСТКИЕ ПРАВИЛА:
+1. Используй ТОЛЬКО возможности из переданного КАТАЛОГА: в capability_ids — только id из catalog.capabilities, в asset_names — только имена из assets каталога, в pack_id — только id из catalog.packs или null, в archetype.id — только id из catalog.process_archetypes или null.
+2. Всё, чего в каталоге нет, но что нужно клиенту, — оформляй как элемент gaps (честный разрыв с предложением, как закрыть), а НЕ как стадию с выдуманными компонентами. И наоборот: ПЕРЕД тем как записать потребность в gaps, проверь каталог — если возможность там есть (например, «еженедельно» = возможность scheduling, «уведомить» = integrations), это СТАДИЯ или её часть, а не разрыв.
+2в. Если клиент назвал периодичность процесса (ежедневно/еженедельно/ежемесячно/к закрытию периода) — в blueprint ОБЯЗАНА быть финальная стадия «Регулярный запуск» с возможностью scheduling, где явно указана периодичность из ответов.
+2б. Активно ищи СКРЫТЫЕ технические разрывы в ответах клиента: сканы/фотографии документов → нужно распознавание (OCR); звонки/аудио/видео → нужна расшифровка речи; данные только в закрытой системе → нужен доступ/выгрузка. Такие вещи честно клади в gaps, даже если клиент о них не спросил.
+2г. Если разрыв закрывается известным расширением из catalog.delivery_extensions — укажи в элементе gap поле extension_id (точный id из каталога) и в proposal перескажи его effort_hint; если подходящего расширения нет — extension_id: null.
+2а. Сначала подбери ближайший АРХЕТИП процесса из catalog.process_archetypes (типовую форму) и строй стадии по его capability_flow, адаптируя под ответы клиента; если ни один архетип не подходит — archetype.id = null и собирай стадии из возможностей напрямую. Процесс может относиться к ЛЮБОМУ департаменту (финансы, HR, юристы, закупки, операции, маркетинг) — не своди всё к контакт-центру.
+3. Суитабилити считай по рубрике каталога: self_serve_allowed=true только для процессов класса {json.dumps(rubric.get("self_serve_allowed", []), ensure_ascii=False)}; процессы с записью во внешние системы или действиями от имени компании — self_serve_allowed=false и risk_level минимум medium.
+4. Не выдумывай числа и факты о клиенте: опирайся только на ответы интервью. Если данных мало — пиши меньше стадий и больше open_questions.
+5. Учитывай открытые комментарии команды (переданы отдельно) — это уточнения к ответам.
+6. Тексты пиши деловым языком ({language}), без внутренних терминов платформы (CSPL, Listener и т.п.) в полях title/business_description/goal.
+7. Верни ТОЛЬКО JSON без пояснений.
+
+ФОРМАТ (строго):
+{{
+  "process_name": "короткое имя процесса",
+  "goal": "1-2 предложения: что получит бизнес",
+  "archetype": {{"id": "id архетипа из каталога или null", "adaptation": "чем процесс клиента отличается от типовой формы"}},
+  "suitability": {{"score": 0-100, "risk_level": "low|medium|high", "self_serve_allowed": true/false, "rationale": "почему такой скор"}},
+  "stages": [
+    {{"id": "s1", "title": "...", "business_description": "что происходит, бизнес-языком",
+      "capability_ids": ["id из каталога"], "asset_names": ["имена из каталога"],
+      "inputs": "что на входе", "outputs": "что на выходе"}}
+  ],
+  "pack_recommendation": {{"pack_id": "id из каталога или null", "fit": "почему подходит / чего не хватает", "adaptation_needed": ["что настроить под клиента"]}},
+  "gaps": [{{"title": "...", "description": "чего нет в каталоге", "proposal": "как закрыть (разработка/поставка/ручной шаг)", "extension_id": "id из catalog.delivery_extensions или null"}}],
+  "sample_test_plan": {{"data_needed": "какие данные нужны для теста", "steps": ["шаг 1", "..."], "success_criteria": ["критерий 1", "..."]}},
+  "open_questions": ["вопрос клиенту 1", "..."]
+}}"""
+
+    user_msg = f"""ОТВЕТЫ ИНТЕРВЬЮ (JSON):
+{answers_payload}
+
+ОТКРЫТЫЕ КОММЕНТАРИИ КОМАНДЫ (JSON):
+{comments_payload}
+
+КАТАЛОГ ВОЗМОЖНОСТЕЙ EXTELLA (JSON):
+{catalog_payload}
+
+Составь Process Blueprint по правилам."""
+
+    try:
+        resp = requests.post(
+            base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": "Bearer " + api_key,
+                     "Content-Type": "application/json"},
+            json={"model": model,
+                  "messages": [{"role": "system", "content": SYSTEM},
+                               {"role": "user", "content": user_msg}],
+                  "temperature": 0,
+                  "response_format": {"type": "json_object"},
+                  "max_tokens": 4000},
+            timeout=180)
+    except Exception as e:
+        return {"status": "error", "message": "LLM request failed: " + str(e)[:200]}
+    if resp.status_code != 200:
+        return {"status": "error", "message": "LLM API error " + str(resp.status_code) + ": " + resp.text[:200]}
+
+    try:
+        bp = json.loads(resp.json()["choices"][0]["message"]["content"])
+        assert isinstance(bp.get("stages"), list)
+    except Exception as e:
+        return {"status": "error", "message": "Failed to parse LLM JSON: " + str(e)[:200]}
+
+    # -- Catalog guardrail --------------------------------------------
+    warnings = []
+    gaps = bp.get("gaps") or []
+    for st in bp["stages"]:
+        bad_caps = [c for c in (st.get("capability_ids") or []) if c not in cap_ids]
+        bad_assets = [a for a in (st.get("asset_names") or []) if a not in asset_names]
+        if bad_caps or bad_assets:
+            st["capability_ids"] = [c for c in (st.get("capability_ids") or []) if c in cap_ids]
+            st["asset_names"] = [a for a in (st.get("asset_names") or []) if a in asset_names]
+            removed = bad_caps + bad_assets
+            warnings.append("stage '" + str(st.get("title", st.get("id", "?")))[:60] +
+                            "': unknown components stripped: " + ", ".join(str(x) for x in removed))
+            gaps.append({"title": "Компоненты вне каталога в стадии «" + str(st.get("title", "?"))[:60] + "»",
+                         "description": "Модель предложила компоненты, которых нет в каталоге: " + ", ".join(str(x) for x in removed),
+                         "proposal": "Проверить потребность и при необходимости запланировать разработку"})
+    bp["gaps"] = gaps
+
+    pr = bp.get("pack_recommendation") or {}
+    if pr.get("pack_id") and pr["pack_id"] not in pack_ids:
+        warnings.append("pack_recommendation: unknown pack_id '" + str(pr["pack_id"]) + "' -> null")
+        pr["pack_id"] = None
+        bp["pack_recommendation"] = pr
+
+    ar = bp.get("archetype") or {}
+    if ar.get("id") and ar["id"] not in archetype_ids:
+        warnings.append("archetype: unknown id '" + str(ar["id"]) + "' -> null")
+        ar["id"] = None
+        bp["archetype"] = ar
+
+    ext_ids = set(e.get("id") for e in catalog.get("delivery_extensions", []))
+    for g in bp.get("gaps") or []:
+        if isinstance(g, dict) and g.get("extension_id") and g["extension_id"] not in ext_ids:
+            warnings.append("gap '" + str(g.get("title", "?"))[:50] + "': unknown extension_id -> null")
+            g["extension_id"] = None
+
+    sut = bp.get("suitability") or {}
+    try:
+        sut["score"] = max(0, min(100, int(sut.get("score", 0))))
+    except Exception:
+        sut["score"] = 0
+        warnings.append("suitability.score was not a number -> 0")
+    if str(sut.get("risk_level", "")).lower() not in ("low", "medium", "high"):
+        sut["risk_level"] = "medium"
+    bp["suitability"] = sut
+
+    # -- Write output + attach to session ------------------------------
+    out = Path(output_path) if output_path else sp.parent / (session.get("session_id", sp.stem) + "_blueprint.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "generated_at": now(),
+        "model_version": model,
+        "catalog_version": catalog.get("catalog_version", ""),
+        "session_id": session.get("session_id", ""),
+        "blueprint": bp,
+        "warnings": warnings
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    session["blueprint_path"] = str(out)
+    session["stage"] = "blueprint"
+    session.setdefault("log", []).append({"ts": now(), "event": "blueprint generated: " + str(out)})
+    session["updated_at"] = now()
+    sp.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"status": "success",
+            "blueprint_path": str(out),
+            "process_name": bp.get("process_name", ""),
+            "archetype": (bp.get("archetype") or {}).get("id"),
+            "suitability_score": sut.get("score"),
+            "risk_level": sut.get("risk_level"),
+            "self_serve_allowed": sut.get("self_serve_allowed"),
+            "stages_count": len(bp.get("stages", [])),
+            "gaps_count": len(bp.get("gaps", [])),
+            "open_questions_count": len(bp.get("open_questions", [])),
+            "warnings": warnings[:5]}

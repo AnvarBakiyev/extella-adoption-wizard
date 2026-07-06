@@ -1,0 +1,1905 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extella — Визард внедрения</title>
+<style>
+:root{
+  --cream:#F5F3EE; --cream-dark:#EBE8E1; --paper:#FAFAF8;
+  --ink:#0A0A0A; --ink-soft:#1A1A1A; --ink-medium:#2A2A2A;
+  --nav:#555; --silver:#8C8C8C; --silver-light:#AAA;
+  --gold:#C57E33; --gold-light:#d4984f; --gold-bg:#FBF4E8;
+  --ok:#3d7a4a; --warn:#a8631f; --bad:#9c3a2e;
+  --sans:"DM Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --mono:ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);background:var(--cream);color:var(--ink-soft);font-size:15px;line-height:1.55}
+button{font-family:var(--sans);cursor:pointer}
+textarea,input,select{font-family:var(--sans);font-size:14px}
+
+/* ---------- top bar ---------- */
+.topbar{display:flex;align-items:center;gap:20px;padding:14px 28px;background:var(--paper);border-bottom:1px solid var(--cream-dark);position:sticky;top:0;z-index:50}
+.wordmark{font-weight:700;letter-spacing:.18em;font-size:15px}
+.wordmark .dot{color:var(--gold)}
+.topbar .sub{color:var(--nav);font-size:13px;border-left:1px solid var(--cream-dark);padding-left:20px}
+.topbar .spacer{flex:1}
+.sess-select{padding:7px 10px;border:1px solid var(--cream-dark);border-radius:8px;background:#fff;max-width:280px}
+.btn{border:1px solid var(--ink);background:var(--ink);color:#fff;border-radius:8px;padding:8px 16px;font-size:13.5px;font-weight:600;transition:.15s}
+.btn:hover{background:var(--ink-medium)}
+.btn.gold{background:var(--gold);border-color:var(--gold)}
+.btn.gold:hover{background:var(--gold-light);border-color:var(--gold-light)}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--silver-light)}
+.btn.ghost:hover{border-color:var(--ink)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.sm{padding:5px 11px;font-size:12.5px;font-weight:500}
+
+/* ---------- stepper ---------- */
+.stepper{display:flex;gap:0;padding:0 28px;background:var(--paper);border-bottom:1px solid var(--cream-dark)}
+.step{display:flex;align-items:center;gap:9px;padding:13px 22px 13px 0;margin-right:22px;color:var(--silver);font-size:13.5px;border-bottom:2px solid transparent;background:none;border-top:none;border-left:none;border-right:none}
+.step .n{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--silver-light);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600}
+.step.active{color:var(--ink);border-bottom-color:var(--gold)}
+.step.active .n{border-color:var(--gold);background:var(--gold);color:#fff}
+.step.done{color:var(--ink-medium)}
+.step.done .n{border-color:var(--ok);color:var(--ok)}
+
+/* ---------- layout ---------- */
+.main{max-width:980px;margin:0 auto;padding:34px 28px 90px}
+.main.chat-open{margin-right:400px}
+body.chat-open .topbar{padding-right:412px}
+body.chat-open .stepper{padding-right:412px}
+h1{font-size:26px;font-weight:700;letter-spacing:-.01em;margin-bottom:6px}
+.lede{color:var(--nav);font-size:14.5px;margin-bottom:28px;max-width:640px}
+.kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);font-weight:700;margin-bottom:8px}
+
+/* ---------- cards ---------- */
+.card{background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:20px 22px;margin-bottom:14px}
+.card-foot{display:flex;align-items:center;gap:10px;margin-top:10px}
+
+/* ---------- конспект интервью ---------- */
+.brief-item{border-bottom:1px dashed var(--cream-dark);padding:10px 2px}
+.brief-item:last-child{border-bottom:none}
+.brief-head{display:flex;align-items:center;gap:10px;cursor:pointer}
+.brief-head .st{width:20px;height:20px;border-radius:50%;flex:0 0 20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:1.5px solid var(--silver-light);color:var(--silver)}
+.brief-item.filled .brief-head .st{border-color:var(--ok);background:#eef5ef;color:var(--ok)}
+.brief-head .bt{font-weight:600;font-size:14px}
+.brief-head .prev{flex:1;color:var(--nav);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:6px}
+.brief-head .prev.empty{color:var(--silver-light);font-style:italic}
+.brief-edit{display:none;margin:8px 0 4px 30px}
+.brief-item.open .brief-edit{display:block}
+.brief-edit textarea{width:100%;min-height:64px;border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;background:#fff;resize:vertical}
+.brief-edit textarea:focus{outline:none;border-color:var(--gold)}
+
+/* ---------- files ---------- */
+.file-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px dashed var(--cream-dark);font-size:13.5px}
+.file-row:last-child{border-bottom:none}
+.file-row .fi{color:var(--gold)}
+.file-row .fs{color:var(--silver);font-size:12px}
+
+/* ---------- comments ---------- */
+.cbtn{background:none;border:none;color:var(--silver);font-size:12.5px;padding:2px 4px}
+.cbtn:hover{color:var(--gold)}
+.cbtn.has{color:var(--gold);font-weight:600}
+.cthread{margin-top:10px;border-top:1px dashed var(--cream-dark);padding-top:10px;display:none}
+.cthread.open{display:block}
+.citem{display:flex;gap:9px;margin-bottom:8px;font-size:13px}
+.citem .cauthor{font-weight:600;white-space:nowrap}
+.citem .ctext{flex:1;color:var(--ink-medium)}
+.citem.resolved{opacity:.45;text-decoration:line-through}
+.cform{display:flex;gap:8px;margin-top:6px}
+.cform input{flex:1;border:1px solid var(--cream-dark);border-radius:7px;padding:7px 10px;background:#fff}
+
+/* ---------- toolbar / status ---------- */
+.toolbar{display:flex;gap:10px;align-items:center;margin:22px 0;flex-wrap:wrap}
+.statusline{font-size:13px;color:var(--nav);min-height:18px}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--cream-dark);border-top-color:var(--gold);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:7px}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---------- blueprint ---------- */
+.suit{display:flex;gap:26px;align-items:center}
+.score{width:86px;height:86px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:conic-gradient(var(--gold) calc(var(--v)*1%), var(--cream-dark) 0);position:relative}
+.score::before{content:"";position:absolute;inset:7px;background:var(--paper);border-radius:50%}
+.score b{position:relative;font-size:22px}
+.score span{position:relative;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--silver)}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.badge{font-size:11.5px;font-weight:600;padding:4px 10px;border-radius:20px;background:var(--cream);border:1px solid var(--cream-dark)}
+.badge.ok{color:var(--ok)} .badge.warn{color:var(--warn)} .badge.bad{color:var(--bad)}
+.flow{display:flex;flex-direction:column;gap:0;margin:8px 0}
+.stage{background:var(--paper);border:1px solid var(--cream-dark);border-left:3px solid var(--gold);border-radius:10px;padding:16px 20px;position:relative}
+.stage+.stage-arrow{width:2px;height:18px;background:var(--cream-dark);margin-left:38px}
+.stage .stitle{font-weight:700;font-size:15px}
+.stage .sdesc{color:var(--ink-medium);font-size:13.5px;margin:5px 0 8px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-size:11.5px;background:var(--gold-bg);color:var(--gold);border:1px solid #eddfc4;padding:3px 9px;border-radius:14px;font-weight:600}
+.io{font-size:12px;color:var(--silver);margin-top:7px}
+.gap-card{border-left:3px solid var(--warn);background:#FBF6ED}
+.pack-card{border:1.5px solid var(--gold);background:var(--gold-bg)}
+ul.plain{list-style:none} ul.plain li{padding:4px 0 4px 18px;position:relative}
+ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
+
+/* ---------- ТЗ (spec) ---------- */
+.spec-doc{background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:34px 40px;font-size:14.5px}
+.spec-doc h1{font-size:22px;margin:0 0 14px}
+.spec-doc h2{font-size:17px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--cream-dark)}
+.spec-doc h3{font-size:15px;margin:18px 0 8px}
+.spec-doc p{margin:8px 0}
+.spec-doc ul,.spec-doc ol{margin:8px 0 8px 22px}
+.spec-doc li{margin:3px 0}
+.spec-doc code{font-family:var(--mono);font-size:12.5px;background:var(--cream);padding:1px 5px;border-radius:4px}
+.spec-doc hr{border:none;border-top:1px solid var(--cream-dark);margin:18px 0}
+.spec-doc strong{font-weight:700}
+.spec-sec{position:relative;border-radius:8px;padding:2px 8px;margin:0 -8px}
+.spec-sec:hover{background:var(--gold-bg)}
+.spec-sec .seccomment{position:absolute;top:4px;right:6px;opacity:0;transition:.15s}
+.spec-sec:hover .seccomment{opacity:1}
+
+/* ---------- схема процесса (flow) ---------- */
+.schema{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:10px 2px 4px}
+.schema .node{flex:0 0 auto;min-width:130px;max-width:190px;background:var(--paper);border:1.5px solid var(--cream-dark);border-radius:10px;padding:10px 12px}
+.schema .node.src{border-color:var(--silver-light);background:var(--cream)}
+.schema .node.out{border-color:var(--gold);background:var(--gold-bg)}
+.schema .node .nh{font-size:11px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+.schema .node .nt{font-weight:700;font-size:13px;margin:3px 0}
+.schema .node .nd{font-size:11.5px;color:var(--silver);line-height:1.35}
+.schema .arrow{flex:0 0 auto;display:flex;align-items:center;color:var(--gold);font-size:20px;padding:0 8px}
+.schema .chip.sm{font-size:10px;padding:2px 6px;margin:2px 2px 0 0;display:inline-block}
+
+/* ---------- автоматизации ---------- */
+.auto-card{background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px}
+.auto-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.auto-head h3{font-size:16px;font-weight:700}
+.auto-meta{color:var(--silver);font-size:12.5px}
+.auto-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.auto-kpis{display:flex;gap:22px;flex-wrap:wrap;margin:8px 0}
+.auto-kpis b{font-size:20px}
+.run-row{font-size:12.5px;color:var(--nav);padding:4px 0;border-bottom:1px dashed var(--cream-dark)}
+.nav-toggle{display:flex;gap:2px;background:var(--cream);border-radius:9px;padding:3px}
+.nav-toggle button{border:none;background:none;padding:6px 13px;border-radius:7px;font-size:13px;font-weight:600;color:var(--nav)}
+.nav-toggle button.on{background:var(--ink);color:#fff}
+
+/* ---------- chat drawer ---------- */
+.chat{position:fixed;top:0;right:0;bottom:0;width:392px;background:var(--paper);border-left:1px solid var(--cream-dark);display:none;flex-direction:column;z-index:60}
+.chat.open{display:flex}
+.chat-head{padding:14px 18px;border-bottom:1px solid var(--cream-dark);display:flex;align-items:center;gap:10px}
+.chat-head b{font-size:13.5px}
+.chat-head .sub{font-size:11.5px;color:var(--silver)}
+.chat-log{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:88%;padding:10px 13px;border-radius:12px;font-size:13.5px;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--cream);border:1px solid var(--cream-dark);border-bottom-left-radius:4px}
+.msg .apply{margin-top:8px}
+.chat-form{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--cream-dark)}
+.chat-form input{flex:1;border:1px solid var(--cream-dark);border-radius:9px;padding:9px 12px;background:#fff}
+.chat-form input:focus{outline:none;border-color:var(--gold)}
+.chat-form .attach{border:1px solid var(--cream-dark);background:#fff;color:var(--nav);border-radius:9px;padding:0 11px;font-size:16px}
+.empty{color:var(--silver);font-size:13.5px;text-align:center;padding:40px 20px}
+.hide{display:none!important}
+.notice{background:var(--gold-bg);border:1px solid #eddfc4;border-radius:10px;padding:12px 16px;font-size:13.5px;margin-bottom:16px}
+
+/* ---------- modal + toasts (замена prompt/alert: работают и внутри Extella) ---------- */
+.mod-back{position:fixed;inset:0;background:rgba(10,10,10,.35);display:none;align-items:center;justify-content:center;z-index:100}
+.mod-back.open{display:flex}
+.mod{background:var(--paper);border-radius:14px;padding:24px 26px;width:min(430px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.25)}
+.mod h3{font-size:16px;margin-bottom:6px}
+.mod .mhint{color:var(--silver);font-size:12.5px;margin-bottom:12px}
+.mod input:not([type=radio]):not([type=checkbox]){width:100%;border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;background:#fff;margin-bottom:14px}
+.mod input:not([type=radio]):not([type=checkbox]):focus{outline:none;border-color:var(--gold)}
+.mod input[type=radio],.mod input[type=checkbox]{width:auto;margin:0;padding:0;border:0;background:none;accent-color:var(--gold)}
+.mod label.opt{display:flex;align-items:flex-start;gap:9px;text-align:left;cursor:pointer;margin-bottom:10px;font-size:12.5px;line-height:1.45}
+.mod label.opt input{margin-top:2px;flex:none}
+.mod label.opt span{flex:1}
+.mod label.opt:hover{color:var(--gold)}
+.mod .mrow{display:flex;gap:10px;justify-content:flex-end}
+.toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;display:flex;flex-direction:column;gap:8px;z-index:120;align-items:center}
+.toast{background:var(--ink);color:#fff;border-radius:10px;padding:10px 18px;font-size:13.5px;box-shadow:0 8px 30px rgba(0,0,0,.3);animation:tin .2s ease}
+.toast.err{background:var(--bad)}
+.toast.ok{background:var(--ok)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wordmark">EXTELLA<span class="dot">.</span></div>
+  <div class="nav-toggle">
+    <button id="navWizard" class="on" onclick="setMode('wizard')">Мастер</button>
+    <button id="navAuto" onclick="setMode('automations')">🗂 Автоматизации</button>
+    <button id="navCore" onclick="setMode('core')">🧬 Процессное ядро</button>
+  </div>
+  <div class="spacer"></div>
+  <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
+  <button class="btn ghost" onclick="newSession()">+ Новая сессия</button>
+  <button class="btn gold" id="chatToggle" onclick="toggleChat()">💬 Помощник</button>
+</div>
+
+<div class="stepper" id="stepper"></div>
+
+<div class="main" id="mainAuto" style="display:none">
+  <div class="kicker">Мои автоматизации</div>
+  <h1>Автоматизации бизнес-процессов</h1>
+  <p class="lede">Собранные процессы: логика в виде схемы, запуск сейчас или по расписанию, логи и результаты прогонов, продовый агент, публикация.</p>
+  <div id="connBar"></div>
+  <div id="monitorBar"></div>
+  <div id="autoList"></div>
+</div>
+
+<div class="main" id="mainCore" style="display:none">
+  <div class="kicker">Ров продукта</div>
+  <h1>Процессное ядро</h1>
+  <p class="lede">Мы строим шесть универсальных процессных модулей один раз — каждая отрасль переиспользует их, добавляя лишь тонкий регуляторный слой. Продаём отраслью, строим процессами.</p>
+  <div id="coreArea"></div>
+</div>
+
+<div class="main" id="main">
+  <div id="noSession" class="empty">Создайте новую сессию или выберите существующую, чтобы начать.</div>
+
+  <!-- ИНТЕРВЬЮ -->
+  <section id="view-interview" class="hide">
+    <div class="kicker">Шаг 1 · Интервью</div>
+    <h1>Расскажите о вашем процессе</h1>
+    <p class="lede">Главный способ — разговор с Помощником справа: он проведёт интервью и сам заполнит конспект ниже. Любой пункт конспекта можно поправить руками — кликните по нему. Приложите файлы-образцы (выгрузки, шаблоны) — это сильно ускоряет проектирование.</p>
+    <div class="card">
+      <div class="kicker">Конспект интервью <span id="briefCount" style="color:var(--silver);font-weight:400;text-transform:none;letter-spacing:0"></span></div>
+      <div style="font-size:12.5px;color:var(--silver);margin:-4px 0 8px">Заполняется сам по ходу разговора с Помощником. Руками правьте, когда хотите уточнить формулировку или добавить то, о чём он не спросил.</div>
+      <div id="qlist"></div>
+    </div>
+    <div class="card">
+      <div class="kicker">Файлы-образцы</div>
+      <div id="fileList" style="margin-bottom:10px"><span style="color:var(--silver);font-size:13px">Пока ничего не приложено.</span></div>
+      <label class="btn ghost sm" style="display:inline-block">📎 Приложить файл<input type="file" id="fileInput" multiple style="display:none" onchange="uploadFiles(this.files)"></label>
+      <span class="statusline" id="stFiles" style="margin-left:10px"></span>
+    </div>
+    <div class="toolbar">
+      <button class="btn" onclick="saveAnswers()">Сохранить конспект</button>
+      <button class="btn gold" onclick="finishInterview()">Завершить интервью → План</button>
+      <span class="statusline" id="stInterview"></span>
+    </div>
+  </section>
+
+  <!-- ПЛАН (Blueprint) -->
+  <section id="view-blueprint" class="hide">
+    <div class="kicker">Шаг 2 · План процесса</div>
+    <h1>План вашего процесса</h1>
+    <p class="lede">План собирается ИИ-архитектором строго из каталога возможностей Extella: ничего выдуманного. Всё, чего платформе не хватает, честно показано в «Разрывах».</p>
+    <div class="toolbar" style="margin-top:0">
+      <button class="btn gold" id="genBtn" onclick="generateBlueprint()">⚙ Собрать план</button>
+      <button class="btn ghost" onclick="gotoStage('spec')" id="toSpecBtn" disabled>Дальше: техзадание →</button>
+      <span class="statusline" id="stBlueprint"></span>
+    </div>
+    <div id="bpArea"></div>
+
+    <!-- Отраслевая библиотека (синтетический посев) + живой демо-прогон -->
+    <div id="libraryPanel"></div>
+    <div class="card" id="demoRunner" style="display:none"></div>
+    <div id="demoProgress"></div>
+    <div id="demoResult"></div>
+  </section>
+
+  <!-- ТЗ -->
+  <section id="view-spec" class="hide">
+    <div class="kicker">Шаг 3 · Техзадание</div>
+    <h1>Техзадание проекта</h1>
+    <p class="lede">Живой документ: собирается из всего, что накоплено в сессии — интервью, план, решения, комментарии. Наведите на раздел, чтобы оставить комментарий; правки — через Помощника («изменить в ТЗ…») или комментарием, команда внесёт.</p>
+    <div class="toolbar" style="margin-top:0">
+      <button class="btn gold" id="specBtn" onclick="regenerateSpec()">⟳ Обновить ТЗ</button>
+      <button class="btn ghost" onclick="askAssistant('Хочу внести изменение в техзадание: ')">💬 Попросить изменение</button>
+      <button class="btn ghost" onclick="gotoStage('test')">Дальше: тест →</button>
+      <span class="statusline" id="stSpec"></span>
+    </div>
+    <div class="card" id="specSchemaCard" style="display:none">
+      <div class="kicker">Схема процесса — как это будет работать</div>
+      <div id="specSchema"></div>
+    </div>
+    <div id="specArea"></div>
+    <div class="card" style="margin-top:14px">
+      <div class="kicker">Комментарии к ТЗ</div>
+      <div id="specComments"></div>
+    </div>
+  </section>
+
+  <!-- ТЕСТ -->
+  <section id="view-test" class="hide">
+    <div class="kicker">Шаг 4 · Стройка</div>
+    <h1>Соберём процесс</h1>
+    <p class="lede">Нажмите одну кнопку — платформа сама соберёт процесс по техзаданию: составит план, построит компоненты и проверит их. Отдельные чаты и команды не нужны. В конце — проверка безопасности перед запуском.</p>
+    <div class="card" id="buildRunner"></div>
+    <div id="buildProgress"></div>
+    <div class="toolbar" id="buildFoot" style="display:none">
+      <button class="btn gold" onclick="gotoStage('launch')">Дальше: запуск →</button>
+    </div>
+  </section>
+
+  <!-- ЗАПУСК -->
+  <section id="view-launch" class="hide">
+    <div class="kicker">Шаг 5 · Запуск</div>
+    <h1>Запуск процесса</h1>
+    <div id="launchArea"></div>
+  </section>
+</div>
+
+<!-- CHAT -->
+<div class="chat" id="chat">
+  <div class="chat-head">
+    <b>Помощник Extella</b><span class="sub">ведёт интервью · заполняет конспект сам</span>
+    <div class="spacer" style="flex:1"></div>
+    <button class="cbtn" onclick="toggleChat()">✕</button>
+  </div>
+  <div class="chat-log" id="chatLog">
+    <div class="msg bot">Здравствуйте! Я помогу спроектировать ваш ИИ-процесс на Extella. Расскажите своими словами, какая задача или боль привела вас сюда — остальное я спрошу сам, а конспект слева буду заполнять по ходу разговора. Руками его править не нужно (но можно — если хотите уточнить).</div>
+  </div>
+  <div class="chat-form">
+    <label class="attach" title="Приложить файл">📎<input type="file" multiple style="display:none" onchange="uploadFiles(this.files)"></label>
+    <input id="chatInput" placeholder="Сообщение… (Shift+Enter — новая строка)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}">
+    <button class="btn" onclick="sendChat()">→</button>
+  </div>
+</div>
+
+<!-- MODAL + TOASTS -->
+<div class="mod-back" id="modBack">
+  <div class="mod">
+    <h3 id="modTitle"></h3>
+    <div class="mhint" id="modHint"></div>
+    <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
+    <div class="mrow">
+      <button class="btn ghost" onclick="modCancel()">Отмена</button>
+      <button class="btn gold" onclick="modOk()">OK</button>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<div class="mod-back" id="busyBack">
+  <div class="mod" style="text-align:center">
+    <div style="font-size:26px;margin-bottom:10px"><span class="spin" style="width:22px;height:22px"></span></div>
+    <h3 id="busyText">Секунду…</h3>
+    <div class="mhint">Платформа выполняет запуск с записью в журнал — это честная работа, не зависание.</div>
+  </div>
+</div>
+
+<script>
+/* ================= state ================= */
+const QUESTIONS = [
+  {id:"pain", q:"Какая бизнес-боль?", hint:"Что болит сильнее всего, во что это обходится"},
+  {id:"process_today", q:"Как процесс устроен сейчас?", hint:"Кто и что делает руками, есть ли чек-лист/регламент"},
+  {id:"volumes", q:"Объёмы", hint:"Сколько обращений/документов в месяц"},
+  {id:"data_sources", q:"Откуда данные?", hint:"Системы-источники и формат выгрузки (Excel, CSV…)"},
+  {id:"pii", q:"ПДн и требования ИБ", hint:"Есть ли персональные данные, можно ли выносить, что требует ИБ"},
+  {id:"frequency", q:"Как часто нужен результат?", hint:"Разово / еженедельно / ежемесячно"},
+  {id:"success", q:"Что будет успехом?", hint:"Как поймём, что работает: метрики, критерии доверия"},
+  {id:"owner", q:"Владелец процесса", hint:"Кто отвечает, кого можно привлечь на калибровку"}
+];
+const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch"};
+const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
+let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"wizard"};
+
+const jget = (u)=>fetch(u).then(r=>r.json());
+const jpost = (u,b)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()).then(r=>{
+  // подключил/отключил в любом диалоге → сразу освежаем блок «Подключения» (статус, чипы)
+  if((u==="/x/secret_set"||u==="/x/secret_remove") && r && r.status==="success" && typeof renderConnections==="function") renderConnections();
+  return r;
+});
+const esc = (s)=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const el = (id)=>document.getElementById(id);
+
+/* ================= modal + toast (замена prompt/alert) ================= */
+let _modCb = null;
+function _modClearExtras(){
+  // убрать кастомные поля прошлой модалки (всё между #modHint и .mrow, включая скрытый #modInput
+  // и осиротевшие textarea/select/radio, в т.ч. с секретами) и вернуть ЧИСТОЕ видимое текстовое #modInput.
+  const mod = el("modBack") && el("modBack").querySelector(".mod");
+  const hint = el("modHint");
+  if(!mod || !hint) return;
+  const row = mod.querySelector(".mrow");
+  let n = hint.nextElementSibling;
+  while(n && n !== row){ const nx = n.nextElementSibling; n.remove(); n = nx; }
+  const inp = document.createElement("input");
+  inp.id = "modInput";
+  inp.setAttribute("onkeydown", "if(event.key==='Enter')modOk()");
+  hint.after(inp);
+}
+function resetModInput(){ _modClearExtras(); }   // всегда чистый видимый инпут (после hidden/select-модалок)
+function ask(title, hint, def, cb){
+  resetModInput();
+  el("modTitle").textContent = title;
+  el("modHint").textContent = hint||"";
+  el("modInput").value = def||"";
+  el("modBack").classList.add("open");
+  _modCb = cb;
+  setTimeout(()=>el("modInput").focus(), 50);
+}
+function modOk(){ const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
+function modCancel(){ el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
+function busy(text){ el("busyText").textContent = text; el("busyBack").classList.add("open"); }
+function busyOff(){ el("busyBack").classList.remove("open"); }
+function toast(text, kind){
+  const t = document.createElement("div");
+  t.className = "toast "+(kind||"");
+  t.textContent = text;
+  el("toasts").appendChild(t);
+  setTimeout(()=>t.remove(), kind==="err" ? 7000 : 3500);
+}
+
+/* ================= sessions ================= */
+async function refreshSessions(keep){
+  const d = await jget("/x/sessions");
+  const sel = el("sessSelect");
+  sel.innerHTML = '<option value="">— выбрать сессию —</option>' +
+    (d.sessions||[]).map(s=>`<option value="${s.session_id}">${esc(s.client_name)} · ${s.stage} · ответов ${s.answers_count}</option>`).join("");
+  if(keep) sel.value = keep;
+}
+function newSession(){
+  ask("Новая сессия", "Название клиента или процесса — как в договоре/чате", "", async (name)=>{
+    if(!name) return;
+    busy("Создаю сессию «"+name+"» — обычно 5–15 секунд");
+    const r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"create",client_name:name}});
+    const sid = r.session && r.session.session_id;
+    if(!sid){ busyOff(); toast("Не удалось создать сессию: "+(r.message||JSON.stringify(r).slice(0,150)), "err"); return; }
+    await refreshSessions(sid);
+    await loadSession(sid);
+    busyOff();
+    toast("✓ Сессия создана — расскажите Помощнику о задаче", "ok");
+    if(!el("chat").classList.contains("open")) toggleChat();
+  });
+}
+async function loadSession(sid){
+  if(!sid){ S.sessionId=null; render(); return; }
+  if(S.demoTimer) clearTimeout(S.demoTimer);
+  S.demoRunId = null; S.demoDone = false;
+  S.sessionId = sid;
+  S.session = await jget("/x/session?id="+encodeURIComponent(sid));
+  S.blueprint = null; S.spec = null;
+  try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(bp && bp.blueprint) S.blueprint = bp; }catch(e){}
+  try{ const sp = await jget("/x/spec?session_id="+encodeURIComponent(sid)); if(sp && sp.markdown) S.spec = sp.markdown; }catch(e){}
+  S.view = STAGE2VIEW[S.session.stage] || "interview";
+  render();
+}
+async function reloadSession(){
+  if(!S.sessionId) return;
+  S.session = await jget("/x/session?id="+encodeURIComponent(S.sessionId));
+  try{ const sp = await jget("/x/spec?session_id="+encodeURIComponent(S.sessionId)); S.spec = (sp && sp.markdown) || S.spec; }catch(e){}
+}
+
+/* ================= схема процесса (flow) ================= */
+function flowHTML(stages){
+  const nodes = [];
+  nodes.push(`<div class="node src"><div class="nh">Источник</div><div class="nt">Данные клиента</div><div class="nd">файл / выгрузка</div></div>`);
+  (stages||[]).forEach((s,i)=>{
+    const caps = (s.capability_ids||[]).slice(0,3).map(c=>`<span class="chip sm">${esc(typeof capTitle==='function'?capTitle(c):c)}</span>`).join("");
+    const isOut = i===(stages.length-1);
+    nodes.push(`<div class="node ${isOut?"out":""}">
+      <div class="nh">Шаг ${i+1}${isOut?" · результат":""}</div>
+      <div class="nt">${esc(s.title||"")}</div>
+      <div class="nd">${esc((s.business_description||s.outputs||"").toString().slice(0,90))}</div>
+      ${caps?`<div style="margin-top:4px">${caps}</div>`:""}
+    </div>`);
+  });
+  return `<div class="schema">${nodes.join('<div class="arrow">→</div>')}</div>`;
+}
+
+/* ================= режим: Мастер / Автоматизации ================= */
+function setMode(m){
+  S.mode = m;
+  el("navWizard").classList.toggle("on", m==="wizard");
+  el("navAuto").classList.toggle("on", m==="automations");
+  el("navCore").classList.toggle("on", m==="core");
+  const auto = m==="automations", core = m==="core";
+  el("mainAuto").style.display = auto?"block":"none";
+  el("mainCore").style.display = core?"block":"none";
+  el("main").style.display = (auto||core)?"none":"block";
+  el("stepper").style.display = (auto||core)?"none":"flex";
+  if(auto) renderAutomations();
+  if(core) renderProcessCore();
+}
+
+/* ================= render ================= */
+function render(){
+  if(S.mode==="automations"){ renderAutomations(); return; }
+  if(S.mode==="core"){ renderProcessCore(); return; }
+  el("noSession").classList.toggle("hide", !!S.sessionId);
+  ["interview","blueprint","spec","test","launch"].forEach(v=>el("view-"+v).classList.toggle("hide", !S.sessionId || S.view!==v));
+  renderStepper();
+  if(!S.sessionId) return;
+  if(S.view==="interview"){ renderBrief(); renderFiles(); }
+  if(S.view==="blueprint"){ renderBlueprint(); renderLibraryPanel(); }
+  if(S.view==="spec") renderSpec();
+  if(S.view==="test") renderTest();
+  if(S.view==="launch") renderLaunch();
+}
+function renderStepper(){
+  const order = ["interview","blueprint","spec","test","launch"];
+  const cur = S.sessionId ? order.indexOf(S.view) : -1;
+  el("stepper").innerHTML = STEPS.map(([k,t],i)=>
+    `<button class="step ${i===cur?"active":(i<cur?"done":"")}" onclick="S.view='${k}';render()">
+       <span class="n">${i<cur?"✓":i+1}</span>${t}</button>`).join("");
+}
+function commentsFor(ref){ return (S.session.comments||[]).filter(c=>c.block_ref===ref); }
+function threadHTML(ref){
+  const cs = commentsFor(ref);
+  const open = S.openThreads[ref] ? "open" : "";
+  return `<div class="card-foot">
+      <button class="cbtn ${cs.length?"has":""}" onclick="toggleThread('${ref}')">💬 ${cs.length? cs.filter(c=>!c.resolved).length+" коммент." : "комментарий"}</button>
+    </div>
+    <div class="cthread ${open}" id="th-${cssRef(ref)}">
+      ${cs.map(c=>`<div class="citem ${c.resolved?"resolved":""}"><span class="cauthor">${esc(c.author)}</span><span class="ctext">${esc(c.text)}</span>${c.resolved?"":`<button class="cbtn" title="решено" onclick="resolveComment('${c.id}')">✓</button>`}</div>`).join("")}
+      <div class="cform"><input id="ci-${cssRef(ref)}" placeholder="Комментарий для команды…" onkeydown="if(event.key==='Enter')addComment('${ref}')"><button class="btn sm ghost" onclick="addComment('${ref}')">Добавить</button></div>
+    </div>`;
+}
+const cssRef = (r)=>r.replace(/[^a-z0-9_-]/gi,"_");
+function toggleThread(ref){ S.openThreads[ref]=!S.openThreads[ref]; render(); }
+
+/* ================= конспект интервью ================= */
+function renderBrief(){
+  const a = S.session.answers||{};
+  const filled = QUESTIONS.filter(q=>{ const r=a[q.id]; return r && (typeof r==="string" ? r : (r.answer||"")).trim(); }).length;
+  el("briefCount").textContent = ` · заполнено ${filled} из ${QUESTIONS.length}`;
+  el("qlist").innerHTML = QUESTIONS.map(q=>{
+    const raw = a[q.id];
+    const saved = typeof raw === "string" ? raw : ((raw && raw.answer) || "");
+    const ans = (S.drafts[q.id] !== undefined) ? S.drafts[q.id] : saved;
+    const has = !!ans.trim();
+    const open = S.openBrief[q.id] ? "open" : "";
+    return `<div class="brief-item ${has?"filled":""} ${open}" id="bi-${q.id}">
+      <div class="brief-head" onclick="toggleBrief('${q.id}')">
+        <span class="st">${has?"✓":"·"}</span>
+        <span class="bt">${esc(q.q)}</span>
+        <span class="prev ${has?"":"empty"}">${has? esc(ans) : esc(q.hint)}</span>
+      </div>
+      <div class="brief-edit">
+        <textarea id="ans-${q.id}" oninput="S.drafts['${q.id}']=this.value">${esc(ans)}</textarea>
+        <div style="margin-top:6px"><button class="btn gold sm" onclick="saveAnswers()">✓ Сохранить</button></div>
+        ${threadHTML("q:"+q.id)}
+      </div>
+    </div>`;
+  }).join("");
+}
+function toggleBrief(id){
+  // без полного перерендера — набранный текст в других пунктах не теряется
+  S.openBrief[id]=!S.openBrief[id];
+  const item = el("bi-"+id);
+  if(item) item.classList.toggle("open", S.openBrief[id]);
+}
+async function saveAnswers(){
+  const payload = {};
+  QUESTIONS.forEach(q=>{
+    const t = el("ans-"+q.id);
+    const prev = (S.session.answers||{})[q.id];
+    const v = (S.drafts[q.id] !== undefined ? S.drafts[q.id] : (t ? t.value : (typeof prev === "string" ? prev : (prev||{}).answer)) || "").trim();
+    if(v) payload[q.id] = {question:q.q, answer:v};
+  });
+  if(!Object.keys(payload).length){ setStatus("stInterview","конспект пуст — поговорите с Помощником или заполните пункт"); return; }
+  setStatus("stInterview","<span class='spin'></span>сохраняю через платформу…");
+  const r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(payload)}});
+  if(r.status==="success") S.drafts = {};
+  await reloadSession();
+  setStatus("stInterview", r.status==="success" ? `✓ сохранено (${r.answers_count} ответов)` : "ошибка: "+esc(r.message||""));
+  render(); refreshSessions(S.sessionId);
+}
+async function finishInterview(){
+  await saveAnswers();
+  await jpost("/x/expert",{expert_name:"wz_session",params:{action:"set_stage",session_id:S.sessionId,stage:"blueprint"}});
+  await reloadSession(); S.view="blueprint"; render();
+}
+async function gotoStage(st){
+  await jpost("/x/expert",{expert_name:"wz_session",params:{action:"set_stage",session_id:S.sessionId,stage:st}});
+  await reloadSession(); S.view=st; render();
+}
+function addComment(ref){
+  const inp = el("ci-"+cssRef(ref));
+  const text = inp.value.trim(); if(!text) return;
+  const saved = localStorage.getItem("wz_author");
+  const doAdd = async (author)=>{
+    if(!author) author = "гость";
+    localStorage.setItem("wz_author", author);
+    await jpost("/x/expert",{expert_name:"wz_session",params:{action:"add_comment",session_id:S.sessionId,payload_json:JSON.stringify({block_ref:ref,author,text})}});
+    S.openThreads[ref]=true; await reloadSession(); render();
+  };
+  if(saved) doAdd(saved); else ask("Ваше имя", "Подпись для комментариев (запомним)", "", doAdd);
+}
+async function resolveComment(cid){
+  await jpost("/x/expert",{expert_name:"wz_session",params:{action:"resolve_comment",session_id:S.sessionId,payload_json:cid}});
+  await reloadSession(); render();
+}
+
+/* ================= файлы ================= */
+function renderFiles(){
+  const files = S.session.files||[];
+  el("fileList").innerHTML = files.length
+    ? files.map(f=>`<div class="file-row"><span class="fi">📄</span><span>${esc(f.name)}</span><span class="fs">${Math.round((f.size||0)/1024)} КБ · ${esc((f.uploaded_at||"").slice(0,16).replace("T"," "))}</span></div>`).join("")
+    : `<span style="color:var(--silver);font-size:13px">Пока ничего не приложено.</span>`;
+}
+async function uploadFiles(fileList){
+  if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
+  for(const f of fileList){
+    if(f.size > 25*1024*1024){ toast(f.name+": больше 25 МБ, пропускаю", "err"); continue; }
+    setStatus("stFiles","<span class='spin'></span>загружаю "+esc(f.name)+"…");
+    const b64 = await new Promise(res=>{ const rd=new FileReader(); rd.onload=()=>res(rd.result.split(",")[1]); rd.readAsDataURL(f); });
+    const r = await jpost("/x/upload",{session_id:S.sessionId, filename:f.name, content_base64:b64});
+    if(r.status!=="success"){ toast("Не удалось загрузить "+f.name+": "+(r.message||""), "err"); continue; }
+    toast("✓ "+f.name+" приложен", "ok");
+    // помощник узнаёт о файле
+    sendChatSilent(`[К сессии приложен файл-образец: ${r.path}. Посмотри при проектировании; если это выгрузка/шаблон — учти структуру.]`);
+  }
+  setStatus("stFiles","");
+  await reloadSession(); render();
+}
+
+/* ================= план (blueprint) ================= */
+async function generateBlueprint(){
+  el("genBtn").disabled = true;
+  setStatus("stBlueprint","<span class='spin'></span>ИИ-архитектор собирает план (≈20–60 с)…");
+  const r = await jpost("/x/expert",{expert_name:"wz_generate_blueprint",params:{session_id:S.sessionId}});
+  el("genBtn").disabled = false;
+  if(r.status!=="success"){ setStatus("stBlueprint","ошибка: "+esc(r.message||JSON.stringify(r).slice(0,200))); return; }
+  setStatus("stBlueprint",`✓ готово · пригодность ${r.suitability_score}/100`);
+  S.blueprint = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
+  await reloadSession(); render();
+}
+function dataCheckHTML(){
+  const dc = S.session && S.session.data_check;
+  const files = (S.session && S.session.files) || [];
+  if(!files.length) return "";
+  if(!dc){
+    return `<div class="card"><div class="kicker">Проверка данных</div>
+      <div style="font-size:13.5px;color:var(--nav)">Проверю, поддерживает ли ваш файл описанный процесс.</div>
+      <div style="margin-top:8px"><button class="btn ghost sm" id="dcBtn" onclick="runDataCheck()">🔎 Проверить данные</button> <span class="statusline" id="stDC"></span></div></div>`;
+  }
+  const v = dc.verdict;
+  const badge = v==="yes"?`<span class="badge ok">файл поддерживает процесс</span>`
+    : v==="no"?`<span class="badge bad">файл не поддерживает процесс</span>`
+    : v==="no_files"?`<span class="badge warn">нет файла</span>`
+    : `<span class="badge warn">поддерживает частично</span>`;
+  const miss = (dc.missing||[]).filter(m=>m && (m.in_file===false||m.need));
+  return `<div class="card ${v==="yes"?"":"gap-card"}">
+    <div class="kicker">Проверка данных ${badge}</div>
+    <div style="font-size:13.5px;margin:6px 0">${esc(dc.client_message||dc.summary||"")}</div>
+    ${(dc.computable_metrics||[]).length?`<div style="font-size:13px"><b>Можно посчитать из файла:</b><ul class="plain">${dc.computable_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
+    ${(dc.blocked_metrics||[]).length?`<div style="font-size:13px;color:var(--warn)"><b>Нельзя (нет данных):</b><ul class="plain">${dc.blocked_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
+    ${miss.length?`<div style="font-size:13px;color:var(--warn)"><b>Не хватает полей:</b><ul class="plain">${miss.map(m=>`<li>${esc(m.need||m)}${m.why?" — "+esc(m.why):""}</li>`).join("")}</ul></div>`:""}
+    <div style="margin-top:8px"><button class="btn ghost sm" onclick="runDataCheck()">↻ Перепроверить</button> <span class="statusline" id="stDC"></span></div>
+    ${threadHTML("bp:datacheck")}</div>`;
+}
+async function runDataCheck(){
+  setStatus("stDC","<span class='spin'></span>сверяю файл с процессом…");
+  const r = await jpost("/x/expert",{expert_name:"wz_data_reality_check",params:{session_id:S.sessionId}});
+  if(r.status!=="success"){ setStatus("stDC","ошибка: "+esc(r.message||"")); return; }
+  setStatus("stDC","");
+  await reloadSession(); render();
+}
+function renderBlueprint(){
+  el("toSpecBtn").disabled = !S.blueprint;
+  const dcCard = dataCheckHTML();
+  // авто-проверка при первом входе, если файл есть, а проверки ещё нет
+  if(S.session && (S.session.files||[]).length && !S.session.data_check && !S._dcAuto){
+    S._dcAuto = true; setTimeout(runDataCheck, 300);
+  }
+  if(!S.blueprint){ el("bpArea").innerHTML = dcCard + `<div class="empty">План ещё не собран. Завершите интервью и нажмите «Собрать план».</div>`; return; }
+  const bp = S.blueprint.blueprint, su = bp.suitability||{};
+  const risk = {low:["ok","низкий риск"],medium:["warn","средний риск"],high:["bad","высокий риск"]}[su.risk_level]||["warn",su.risk_level];
+  el("bpArea").innerHTML = dcCard + `
+    <div class="card">
+      <div class="suit">
+        <div class="score" style="--v:${su.score||0}"><b>${su.score??"—"}</b><span>из 100</span></div>
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:17px">${esc(bp.process_name||"")}</div>
+          <div style="color:var(--ink-medium);font-size:13.5px;margin:4px 0 2px">${esc(bp.goal||"")}</div>
+          <div class="badges">
+            <span class="badge ${risk[0]}">${risk[1]}</span>
+            <span class="badge ${su.self_serve_allowed?"ok":"warn"}">${su.self_serve_allowed?"допустимо самообслуживание":"нужна ИТ/ИБ-проверка"}</span>
+            ${bp.archetype && bp.archetype.id ? `<span class="badge">архетип: ${esc(archetypeTitle(bp.archetype.id))}</span>` : ""}
+          </div>
+          ${bp.archetype && bp.archetype.adaptation ? `<div style="font-size:12.5px;color:var(--silver);margin-top:6px">Адаптация типовой формы: ${esc(bp.archetype.adaptation)}</div>` : ""}
+          <div style="font-size:12.5px;color:var(--silver);margin-top:8px">${esc(su.rationale||"")}</div>
+        </div>
+      </div>
+      ${threadHTML("bp:suitability")}
+    </div>
+
+    <div class="kicker" style="margin-top:26px">Стадии процесса</div>
+    <div class="flow">
+      ${(bp.stages||[]).map((s,i)=>`
+        ${i?'<div class="stage-arrow"></div>':""}
+        <div class="stage">
+          <div class="stitle">${i+1}. ${esc(s.title)}</div>
+          <div class="sdesc">${esc(s.business_description||"")}</div>
+          <div class="chips">${(s.capability_ids||[]).map(c=>`<span class="chip">${esc(capTitle(c))}</span>`).join("")}</div>
+          <div class="io">вход: ${esc(s.inputs||"—")} · выход: ${esc(s.outputs||"—")}</div>
+          ${threadHTML("stage:"+s.id)}
+        </div>`).join("")}
+    </div>
+
+    ${bp.pack_recommendation && bp.pack_recommendation.pack_id ? `
+    <div class="kicker" style="margin-top:26px">Рекомендованное готовое решение</div>
+    <div class="card pack-card">
+      <div style="font-weight:700">${esc(packTitle(bp.pack_recommendation.pack_id))}</div>
+      <div style="font-size:13.5px;margin:6px 0">${esc(bp.pack_recommendation.fit||"")}</div>
+      ${(bp.pack_recommendation.adaptation_needed||[]).length?`<div style="font-size:13px"><b>Настроить под вас:</b><ul class="plain">${bp.pack_recommendation.adaptation_needed.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
+      ${threadHTML("bp:pack")}
+    </div>`:""}
+
+    ${(bp.gaps||[]).length?`
+    <div class="kicker" style="margin-top:26px">Разрывы (честно)</div>
+    ${bp.gaps.map((g,i)=>`<div class="card gap-card">
+      <div style="font-weight:700">${esc(g.title)} ${g.extension_id?`<span class="badge" style="margin-left:6px">поставляемое расширение: ${esc(extTitle(g.extension_id))}</span>`:""}</div>
+      <div style="font-size:13.5px;margin:4px 0">${esc(g.description||"")}</div>
+      <div style="font-size:13px;color:var(--warn)"><b>Как закрываем:</b> ${esc(g.proposal||"")}</div>
+      ${threadHTML("gap:"+i)}
+    </div>`).join("")}`:""}
+
+    ${(bp.open_questions||[]).length?`
+    <div class="kicker" style="margin-top:26px">Открытые вопросы</div>
+    <div class="card"><ul class="plain">${bp.open_questions.map(q=>`<li>${esc(q)}</li>`).join("")}</ul>${threadHTML("bp:questions")}</div>`:""}
+  `;
+}
+let CATALOG = null;
+function capTitle(id){ if(!CATALOG) return id; const c=(CATALOG.capabilities||[]).find(x=>x.id===id); return c?c.title:id; }
+function packTitle(id){ if(!CATALOG) return id; const p=(CATALOG.packs||[]).find(x=>x.id===id); return p?p.title:id; }
+function archetypeTitle(id){ if(!CATALOG) return id; const a=(CATALOG.process_archetypes||[]).find(x=>x.id===id); return a?a.title:id; }
+function extTitle(id){ if(!CATALOG) return id; const e=(CATALOG.delivery_extensions||[]).find(x=>x.id===id); return e?e.title:id; }
+
+/* ================= ТЗ (spec) ================= */
+async function regenerateSpec(){
+  el("specBtn").disabled = true;
+  setStatus("stSpec","<span class='spin'></span>собираю ТЗ из сессии…");
+  const r = await jpost("/x/expert",{expert_name:"wz_project_spec",params:{session_id:S.sessionId}});
+  el("specBtn").disabled = false;
+  if(r.status!=="success"){ setStatus("stSpec","ошибка: "+esc(r.message||"")); toast("Не удалось обновить ТЗ","err"); return; }
+  setStatus("stSpec","✓ ТЗ обновлено");
+  toast("✓ Техзадание обновлено","ok");
+  await reloadSession(); render();
+}
+function mdToHtml(md, withComments){
+  // маленький безопасный renderer: заголовки, списки, жирный, код, hr, ссылки
+  // withComments (по умолчанию true) — вставлять кнопки-комментарии на ## (для ТЗ);
+  // false — чистый рендер (для отраслевой регуляторики в панели библиотеки)
+  if(withComments===undefined) withComments = true;
+  const lines = String(md||"").split("\n");
+  let html = "", inList = false, secIdx = 0;
+  const closeList = ()=>{ if(inList){ html+="</ul>"; inList=false; } };
+  for(const raw of lines){
+    const line = esc(raw);
+    if(/^###\s/.test(raw)){ closeList(); html+=`<h3>${inline(line.slice(4))}</h3>`; }
+    else if(/^##\s/.test(raw)){ closeList(); secIdx++;
+      html += withComments
+        ? `</div><div class="spec-sec" data-sec="${secIdx}"><button class="cbtn seccomment" onclick="specComment(${secIdx}, this)">💬</button><h2>${inline(line.slice(3))}</h2>`
+        : `<h3 style="margin-top:14px">${inline(line.slice(3))}</h3>`; }
+    else if(/^#\s/.test(raw)){ closeList(); html+=`<h1>${line.slice(2)}</h1>`; }
+    else if(/^---+\s*$/.test(raw)){ closeList(); html+="<hr>"; }
+    else if(/^[-*]\s/.test(raw)){ if(!inList){ html+="<ul>"; inList=true; } html+=`<li>${inline(line.slice(2))}</li>`; }
+    else if(raw.trim()===""){ closeList(); }
+    else { closeList(); html+=`<p>${inline(line)}</p>`; }
+  }
+  closeList();
+  return `<div class="spec-sec" data-sec="0">`+html+`</div>`;
+  function inline(s){
+    s = s.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>")
+         .replace(/`([^`]+)`/g,"<code>$1</code>")
+         .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // bare URLs → clickable (skip ones already inside an anchor: they follow a quote, not whitespace/paren)
+    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)"]+)/g, (m,pre,url)=>pre+'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
+    return s;
+  }
+}
+function renderSpec(){
+  // схема будущего процесса из плана (визуальное ТЗ)
+  const bp = S.blueprint && S.blueprint.blueprint;
+  if(bp && (bp.stages||[]).length){
+    el("specSchemaCard").style.display = "block";
+    el("specSchema").innerHTML = flowHTML(bp.stages);
+  } else {
+    el("specSchemaCard").style.display = "none";
+  }
+  if(!S.spec){
+    el("specArea").innerHTML = `<div class="empty">Текст ТЗ ещё не собран. Нажмите «Обновить ТЗ» — документ соберётся из интервью, плана и решений сессии.</div>`;
+  } else {
+    el("specArea").innerHTML = `<div class="spec-doc">${mdToHtml(S.spec)}</div>`;
+  }
+  el("specComments").innerHTML = threadHTML("spec:doc");
+}
+function specComment(sec, btn){
+  const h2 = btn.parentElement.querySelector("h2");
+  const title = h2 ? h2.textContent : ("раздел "+sec);
+  const inp = el("ci-"+cssRef("spec:doc"));
+  S.openThreads["spec:doc"] = true; render();
+  setTimeout(()=>{
+    const i = el("ci-"+cssRef("spec:doc"));
+    if(i){ i.value = "["+title+"] "; i.focus(); i.scrollIntoView({block:"center"}); }
+  }, 60);
+}
+function askAssistant(prefill){
+  if(!el("chat").classList.contains("open")) toggleChat();
+  const i = el("chatInput"); i.value = prefill; i.focus();
+  // заметно подсветить: клиент видит, что строка появилась в чате
+  i.scrollIntoView({block:"center"});
+  i.style.transition="none"; i.style.boxShadow="0 0 0 3px var(--gold)";
+  setTimeout(()=>{ i.style.transition="box-shadow .8s"; i.style.boxShadow="none"; }, 100);
+  toast("Дополните фразу в чате и нажмите →","ok");
+}
+
+/* ================= процессное ядро (визуализация рва) ================= */
+const CORE_PROC_TITLE = {billing:"Биллинг / платежи", refund:"Возвраты / компенсации", legal:"Юридические претензии",
+  service_quality:"Качество сервиса", logistics:"Логистика / доставка / багаж", tech_support:"Техподдержка"};
+const CORE_PROC_ORDER = ["billing","refund","legal","service_quality","logistics","tech_support"];
+const CORE_MOD_DESC = {billing:"Разбор спорного списания / комиссии", refund:"Обработка возврата / компенсации",
+  legal:"Работа с юридической претензией", service_quality:"Работа с жалобой на сервис",
+  logistics:"Разбор проблемы доставки / сроков", tech_support:"Диагностика технической проблемы"};
+async function renderProcessCore(){
+  const host = el("coreArea"); if(!host) return;
+  host.innerHTML = `<div class="empty">Загрузка ядра…</div>`;
+  let man;
+  try{ const m = await jget("/x/library"); man = (m&&m.manifest)||{industries:[]}; }catch(e){ man={industries:[]}; }
+  const inds = man.industries||[];
+  const avail = inds.filter(i=>i.available);
+  const data = {};
+  for(const it of avail){ try{ data[it.id] = await jget("/x/library?industry="+encodeURIComponent(it.id)); }catch(e){} }
+  const first = avail.map(i=>data[i.id]).find(Boolean);
+  const coreCrit = (first && first.checklist ? (first.checklist.criteria||[]) : []).filter(c=>c.source==="core");
+  const anyCrit = coreCrit.filter(c=>(c.process||"any")==="any");
+  const modIndustry = {};
+  avail.forEach(it=>{
+    const cl = (data[it.id]&&data[it.id].checklist&&data[it.id].checklist.criteria)||[];
+    cl.filter(c=>c.source==="industry").forEach(c=>{ const p=c.process||"any"; (modIndustry[p]=modIndustry[p]||[]).push(it.title); });
+  });
+  const rows = avail.map(it=>{
+    const cl=(data[it.id]&&data[it.id].checklist&&data[it.id].checklist.criteria)||[];
+    return {title:it.title, total:cl.length, core:cl.filter(c=>c.source==="core").length,
+            ind:cl.filter(c=>c.source==="industry").length, reuse:it.reuse_from_core_pct||0};
+  });
+  const avgReuse = rows.length? Math.round(rows.reduce((a,r)=>a+r.reuse,0)/rows.length) : 0;
+  const notSeeded = inds.filter(i=>!i.available);
+  const bar = (pct,color)=>`<div style="flex:1;background:var(--cream);border-radius:6px;height:10px;overflow:hidden;min-width:80px"><div style="width:${Math.min(100,pct)}%;height:100%;background:${color||'var(--gold)'}"></div></div>`;
+  const sevBadge = s=>({low:"",medium:"warn",high:"warn",critical:"bad"}[s]||"");
+  const modCards = CORE_PROC_ORDER.map(p=>{
+    const c = coreCrit.find(x=>(x.process||"any")===p);
+    const users = [...new Set(modIndustry[p]||[])];
+    return `<div class="card" style="border-left:3px solid var(--gold)">
+      <div style="font-weight:700;font-size:14px">${esc(CORE_PROC_TITLE[p]||p)}</div>
+      ${c?`<div style="font-size:12.5px;color:var(--ink-medium);margin:4px 0">${esc(c.id)} · ${esc(CORE_MOD_DESC[p]||c.name)} <span class="badge ${sevBadge(c.severity)}">${esc(c.severity||"")}</span></div>`:""}
+      <div style="font-size:12px;color:var(--silver)">${users.length?("отраслевые надстройки: "+users.map(esc).join(", ")):"работает во всех отраслях как есть"}</div>
+    </div>`;
+  }).join("");
+  host.innerHTML = `
+    <div class="card">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;text-align:center">
+        <div><div style="font-size:26px;font-weight:700">6</div><div style="font-size:12px;color:var(--silver)">процессных модулей</div></div>
+        <div><div style="font-size:26px;font-weight:700">${coreCrit.length}</div><div style="font-size:12px;color:var(--silver)">критериев-заготовок в ядре</div></div>
+        <div><div style="font-size:26px;font-weight:700;color:var(--gold)">${avgReuse}%</div><div style="font-size:12px;color:var(--silver)">средний повтор ядра</div></div>
+        <div><div style="font-size:26px;font-weight:700">${avail.length}</div><div style="font-size:12px;color:var(--silver)">отраслей засеяно</div></div>
+      </div>
+    </div>
+
+    <div class="kicker" style="margin-top:26px">Шесть процессных модулей — строим один раз</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">${modCards}</div>
+    ${anyCrit.length?`<div class="card"><div style="font-weight:700;font-size:13px;color:var(--nav);margin-bottom:6px">Универсальные критерии (любой процесс) · ${anyCrit.length}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${anyCrit.map(c=>`<span class="badge">${esc(c.id)} ${esc(c.name)}</span>`).join("")}</div></div>`:""}
+
+    <div class="kicker" style="margin-top:26px">Переиспользование по отраслям</div>
+    <div class="card">
+      ${rows.length?rows.map(r=>`
+        <div style="display:flex;align-items:center;gap:12px;padding:7px 0;border-bottom:1px dashed var(--cream-dark);font-size:13px">
+          <div style="flex:0 0 150px;font-weight:700">${esc(r.title)}</div>
+          <div style="flex:0 0 150px;color:var(--silver)">из ядра ${r.core} · отраслевых ${r.ind}</div>
+          ${bar(r.reuse, r.reuse>=90?"var(--ok)":"var(--gold)")}
+          <div style="flex:0 0 46px;text-align:right;font-weight:700;color:var(--gold)">${r.reuse}%</div>
+        </div>`).join(""):`<div class="empty">Пока не засеяна ни одна отрасль. Запустите wz_seed_library.</div>`}
+      ${notSeeded.length?`<div style="font-size:12px;color:var(--silver);margin-top:8px">Ещё не засеяны: ${notSeeded.map(i=>esc(i.title)).join(", ")} — соберутся от того же ядра.</div>`:""}
+    </div>
+
+    <div class="card" style="background:var(--gold-bg)">
+      <div style="font-size:13.5px">Каждая новая отрасль наследует ${coreCrit.length} критериев-заготовок ядра и добавляет лишь тонкий регуляторный слой (обычно 1–3 критерия). Поэтому вторая и последующие отрасли собираются без новой стройки — это и есть ров: методология переиспользуется, наружу продаётся готовое отраслевое решение.</div>
+    </div>`;
+}
+
+/* ================= отраслевая библиотека (синтетический посев) ================= */
+async function renderLibraryPanel(){
+  const host = el("libraryPanel"); if(!host) return;
+  if(!S.libIndustry) S.libIndustry = "airline";
+  // список отраслей из манифеста (один раз)
+  if(!S.libManifest){
+    try{ const m = await jget("/x/library"); S.libManifest = (m && m.manifest) || {industries:[]}; }
+    catch(e){ S.libManifest = {industries:[]}; }
+  }
+  const inds = (S.libManifest.industries)||[];
+  // данные выбранной отрасли
+  let d = null;
+  try{ d = await jget("/x/library?industry="+encodeURIComponent(S.libIndustry)); }catch(e){ d = null; }
+  S.libData = d;
+  const opts = inds.map(it=>`<option value="${esc(it.id)}" ${it.id===S.libIndustry?"selected":""}>${esc(it.title)}${it.available?"":" — не засеяна"}</option>`).join("");
+  const head = `
+    <div class="kicker" style="margin-top:26px">Отраслевая библиотека</div>
+    <div class="card">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--nav)">Отрасль
+          <select id="libIndustry" class="sess-select" style="max-width:200px;margin-left:6px"
+            onchange="S.libIndustry=this.value; renderLibraryPanel();">${opts}</select></label>
+        ${d&&d.available?`<span class="badge ok">библиотека засеяна · ${esc(d.validated_on||"")}</span>
+          ${d.reuse_from_core_pct?`<span class="badge">переиспользование ядра ${d.reuse_from_core_pct}%</span>`:""}`
+          :`<span class="badge warn">библиотека ещё не засеяна</span>`}
+      </div>`;
+  if(!d || !d.available){
+    host.innerHTML = head + `
+      <div style="font-size:13.5px;color:var(--silver);margin-top:10px">
+        Для этой отрасли ещё нет заготовленного чек-листа, таксономии и регуляторики.
+        Демо-прогон пойдёт на базовом чек-листе из 9 критериев. Засев отрасли — по матрице «процессы × отрасли».
+      </div></div>`;
+    renderDemoRunner();
+    return;
+  }
+  const cl = d.checklist||{}, tx = d.taxonomy||{};
+  const crit = cl.criteria||[];
+  // критерии сгруппированы по процессным модулям
+  const byProc = {};
+  crit.forEach(c=>{ const p=c.process||"any"; (byProc[p]=byProc[p]||[]).push(c); });
+  const procTitle = {any:"Универсальные (любой процесс)", billing:"Биллинг / платежи", refund:"Возвраты / компенсации",
+    legal:"Юридические претензии", service_quality:"Качество сервиса", logistics:"Логистика / багаж", tech_support:"Техподдержка"};
+  const sevBadge = s=>({low:"",medium:"warn",high:"warn",critical:"bad"}[s]||"");
+  const critHTML = Object.keys(byProc).map(p=>`
+    <div style="margin:8px 0">
+      <div style="font-weight:700;font-size:13px;color:var(--nav)">${esc(procTitle[p]||p)}</div>
+      ${byProc[p].map(c=>`
+        <div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:13px">
+          <span style="flex:0 0 44px;color:var(--silver)">${esc(c.id||"")}</span>
+          <span style="flex:1">${esc(c.name||"")}
+            ${c.source==="industry"?`<span class="badge" style="margin-left:4px">отраслевой</span>`:""}
+            ${c.na_condition?`<span class="badge" style="margin-left:4px">условный</span>`:""}</span>
+          <span class="badge ${sevBadge(c.severity)}">${esc(c.severity||"")}</span>
+          <span style="flex:0 0 44px;text-align:right;color:var(--silver)">${c.weight!=null?Math.round(c.weight*100)+"%":""}</span>
+        </div>`).join("")}
+    </div>`).join("");
+  // таксономия — дерево причин (уровень 1 = процесс)
+  const tree = tx.reason_tree||[];
+  const taxHTML = tree.slice(0,20).map(node=>{
+    const l3 = node.level3 || (node.level2 && Array.isArray(node.level2) ? node.level2.map(x=>x.reason) : []);
+    const l2label = typeof node.level2==="string" ? node.level2 : "";
+    return `<div style="padding:3px 0;font-size:13px">
+      <span class="badge" style="margin-right:6px">${esc(node.process||"")}</span>
+      <b>${esc(l2label)}</b>
+      ${(l3&&l3.length)?`<div style="margin:2px 0 4px 16px;color:var(--ink-medium)">${l3.slice(0,6).map(x=>esc(typeof x==="string"?x:(x.reason||""))).join(" · ")}</div>`:""}
+    </div>`;
+  }).join("");
+  // словарь RU/KZ
+  const voc = tx.vocabulary_ru_kk||[];
+  const vocHTML = voc.slice(0,14).map(v=>`<span class="badge" style="margin:2px">${esc(v.ru)} · ${esc(v.kk)}</span>`).join("");
+  host.innerHTML = head + `
+    <div style="font-size:13px;color:var(--silver);margin-top:8px">${esc((cl.note||"").slice(0,220))}</div>
+    </div>
+    <details class="card" open>
+      <summary style="cursor:pointer;font-weight:700">Чек-лист качества · ${crit.length} критериев</summary>
+      <div style="margin-top:8px">${critHTML}</div>
+    </details>
+    <details class="card">
+      <summary style="cursor:pointer;font-weight:700">Таксономия причин обращений</summary>
+      <div style="margin-top:8px">${taxHTML}</div>
+      ${vocHTML?`<div style="margin-top:10px"><div style="font-size:12px;color:var(--nav);margin-bottom:4px">Словарь RU · KZ</div>${vocHTML}</div>`:""}
+    </details>
+    ${d.regulatory_md?`
+    <details class="card">
+      <summary style="cursor:pointer;font-weight:700">Регуляторика (первоисточники с ссылками)</summary>
+      <div class="spec-doc" style="margin-top:8px;font-size:13px">${mdToHtml(d.regulatory_md.replace(/^#\s+.*(\n|$)/,""), false)}</div>
+    </details>`:""}`;
+  renderDemoRunner();
+}
+
+/* ================= test: demo run ================= */
+function renderDemoRunner(){
+  const running = !!S.demoRunId && !S.demoDone;
+  const dr = el("demoRunner"); if(!dr) return;
+  dr.style.display = "block";
+  const indTitle = (S.libData && S.libData.title) || "выбранной отрасли";
+  const onLib = !!(S.libData && S.libData.available);
+  dr.innerHTML = `
+    <div class="kicker">Живой прогон на синтетике · ${esc(indTitle)}</div>
+    <div style="font-size:12.5px;color:${onLib?"var(--ok)":"var(--silver)"};margin-bottom:8px">
+      ${onLib?"Чек-лист прогона — отраслевой (из библиотеки): матрица «процессы × отрасли» + регуляторные критерии."
+             :"Отраслевая библиотека ещё не засеяна — прогон пойдёт на базовом чек-листе из 9 критериев."}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <label style="font-size:12px;color:var(--nav)">Диалогов<br>
+        <select id="demoN" class="sess-select" style="max-width:130px">
+          <option value="15">15 (~3 мин)</option>
+          <option value="30">30 (~5 мин)</option>
+          <option value="60">60 (~8 мин)</option>
+          <option value="120">120 (~13 мин)</option>
+        </select></label>
+      <label style="font-size:12px;color:var(--nav)">ИИ-оценка<br>
+        <select id="demoSample" class="sess-select" style="max-width:110px">
+          <option value="5">5 диалогов</option>
+          <option value="8">8 диалогов</option>
+          <option value="15">15 диалогов</option>
+          <option value="30">30 диалогов</option>
+        </select></label>
+      <button class="btn gold" id="demoBtn" onclick="startDemo()" ${running?"disabled":""}>${running?"Идёт прогон…":"▶ Прогнать демо"}</button>
+    </div>
+    <div style="font-size:12px;color:var(--silver);margin-top:8px">Каждая стадия — трассируемый запуск на платформе. Данные полностью синтетические.</div>`;
+}
+async function startDemo(){
+  if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
+  const r = await jpost("/x/demo_run",{session_id:S.sessionId,
+    industry:(S.libIndustry||"airline"),
+    n_dialogues:parseInt(el("demoN").value),
+    sample_n:parseInt(el("demoSample").value)});
+  if(r.status!=="success"){ toast("Не удалось запустить: "+(r.message||""), "err"); return; }
+  S.demoRunId = r.run_id; S.demoDone = false; S.demoT0 = Date.now();
+  el("demoResult").innerHTML = "";
+  renderDemoRunner();
+  pollDemo();
+}
+async function pollDemo(){
+  if(!S.demoRunId || S.demoDone) return;
+  let d;
+  try{ d = await jget("/x/demo_progress?run_id="+S.demoRunId); }catch(e){ d = null; }
+  if(d && d.status==="success"){
+    renderDemoProgress(d);
+    const st = d.progress.status;
+    if(st==="success" || d.result_ready){
+      S.demoDone = true; renderDemoRunner();
+      await showDemoResult(S.demoRunId);
+      await reloadSession();
+      return;
+    }
+    if(st==="error"){
+      S.demoDone = true; renderDemoRunner();
+      el("demoProgress").innerHTML += `<div class="card gap-card"><b>Прогон прервался:</b> ${esc(d.progress.error||"см. progress.json")}</div>`;
+      return;
+    }
+  }
+  S.demoTimer = setTimeout(pollDemo, 4000);
+}
+function renderDemoProgress(d){
+  const steps = d.progress.steps||[];
+  const mins = Math.floor((Date.now()-(S.demoT0||Date.now()))/60000);
+  const secs = Math.floor(((Date.now()-(S.demoT0||Date.now()))%60000)/1000);
+  const icon = s => s==="success" ? "✓" : s==="running" ? `<span class="spin"></span>` : s==="error" ? "✕" : "·";
+  el("demoProgress").innerHTML = `
+    <div class="card">
+      <div class="kicker">Прогресс · ${mins}:${String(secs).padStart(2,"0")}</div>
+      ${steps.map(s=>`
+        <div style="padding:7px 0;border-bottom:1px dashed var(--cream-dark)">
+          <span style="display:inline-block;width:22px;color:${s.status==="error"?"var(--bad)":"var(--gold)"}">${icon(s.status)}</span>
+          <b style="font-size:14px">${esc(s.title)}</b>
+          <span style="color:var(--silver);font-size:12.5px">${s.seconds?` · ${s.seconds}с`:""}</span>
+          ${s.id==="pipeline" && s.status!=="pending" ? `
+            <div style="margin:6px 0 0 22px;display:flex;gap:6px;flex-wrap:wrap">
+              ${d.pipeline_substages.map(x=>`<span class="badge ${x.done?"ok":""}" style="font-weight:500">${x.done?"✓ ":""}${esc(x.title)}</span>`).join("")}
+            </div>`:""}
+        </div>`).join("")}
+    </div>`;
+}
+async function showDemoResult(runId){
+  let r;
+  try{ r = await jget("/x/demo_result?run_id="+runId); }catch(e){ return; }
+  if(!r || r.status==="error") return;
+  el("demoProgress").innerHTML = "";
+  const ev = r.evaluation||{}, gen = r.generated||{}, an = (r.anonymization||{});
+  const rep = an.replacements||{}; const totalRep = Object.values(rep).reduce((a,b)=>a+(b||0),0);
+  const verif = an.verification||{};
+  const crit = ev.criteria||{};
+  const fnd = (r.findings||{}).items||[];
+  const sev = s=>({low:"ok",medium:"warn",high:"bad",critical:"bad"}[s]||"warn");
+  el("demoResult").innerHTML = `
+    <div class="kicker" style="margin-top:20px">Результаты прогона · ${Math.round((r.total_seconds||0)/60*10)/10} мин машинного времени</div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;text-align:center">
+        <div><div style="font-size:26px;font-weight:700">${gen.rows??(r.params||{}).n_dialogues??"—"}</div><div style="font-size:12px;color:var(--silver)">синтетических диалогов</div></div>
+        <div><div style="font-size:26px;font-weight:700">${ev.total_evaluated??"—"}</div><div style="font-size:12px;color:var(--silver)">оценено ИИ по чек-листу</div></div>
+        <div><div style="font-size:26px;font-weight:700;color:var(--gold)">${ev.avg_score_pct??"—"}%</div><div style="font-size:12px;color:var(--silver)">средний скор качества</div></div>
+        <div><div style="font-size:26px;font-weight:700">${totalRep}</div><div style="font-size:12px;color:var(--silver)">ПДн-замен ${verif.clean?"· чисто ✓":""}</div></div>
+      </div>
+      ${threadHTML("demo:kpi")}
+    </div>
+    <div class="card">
+      <div class="kicker">Критерии чек-листа (${esc(ev.checklist_version||"")})</div>
+      ${Object.entries(crit).map(([name,c])=>{
+        const raw = c.pass_rate||0;
+        const pr = Math.min(100, Math.round(raw>1 ? raw : raw*100));
+        return `<div style="display:flex;align-items:center;gap:10px;padding:4px 0;font-size:13px">
+          <div style="flex:0 0 300px">${esc(name)}</div>
+          <div style="flex:1;background:var(--cream);border-radius:6px;height:10px;overflow:hidden"><div style="width:${pr}%;height:100%;background:${pr>=70?"var(--ok)":pr>=40?"var(--gold)":"var(--bad)"}"></div></div>
+          <div style="flex:0 0 110px;color:var(--silver)">${pr}% · ${c.pass||0}✓/${c.fail||0}✕${c.na?"/"+c.na+" н/п":""}</div>
+        </div>`;}).join("")}
+      ${threadHTML("demo:criteria")}
+    </div>
+    ${fnd.length?`
+    <div class="kicker" style="margin-top:20px">Выводы ИИ-аналитика (каждая цитата проверена дословно)</div>
+    ${fnd.map((f,i)=>`
+      <div class="card" style="border-left:3px solid var(--gold)">
+        <div style="display:flex;gap:8px;align-items:center"><b>${esc(f.title)}</b><span class="badge ${sev(f.severity)}">${esc(f.severity)}</span></div>
+        <div style="font-size:13.5px;margin:6px 0">${esc(f.body)}</div>
+        ${(f.evidence||[]).map(e=>`<div style="font-size:12.5px;background:var(--gold-bg);border-radius:8px;padding:8px 12px;margin:4px 0">«${esc(e.quote)}» <span class="badge ${e.verified?"ok":"warn"}" style="margin-left:6px">${e.verified?"цитата подтверждена":"не подтверждена"}</span></div>`).join("")}
+        ${f.recommendation?`<div style="font-size:13px;color:var(--nav);margin-top:6px"><b>Рекомендация:</b> ${esc(f.recommendation)}</div>`:""}
+        ${threadHTML("demo:finding:"+i)}
+      </div>`).join("")}`:""}
+    <div style="font-size:12px;color:var(--silver);margin:8px 0 20px">Артефакты прогона: ${esc(r.artifacts_dir||"")}</div>`;
+}
+
+/* ================= стройка ================= */
+function lastBuild(){ const b = S.session.builds||[]; return b.length? b[b.length-1] : null; }
+function renderTest(){
+  const bp = S.blueprint && S.blueprint.blueprint;
+  const running = !!S.buildId && !S.buildDone;
+  const lb = lastBuild();
+  el("buildRunner").innerHTML = `
+    <div class="kicker">Сборка процесса</div>
+    <div style="font-size:14px;margin-bottom:10px">${bp? "Процесс: <b>"+esc(bp.process_name)+"</b>" : "Сначала соберите план процесса (шаг «План»)."}</div>
+    <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running)?"disabled":""}>${running?"Идёт сборка…":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
+    <span class="statusline" id="stBuild" style="margin-left:10px"></span>
+    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, построит компоненты и проверит их. Это займёт несколько минут — можно не ждать у экрана, прогресс сохраняется.</div>`;
+  if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
+  else if(running){ pollBuild(); }
+  else el("buildProgress").innerHTML = "";
+}
+async function startBuild(){
+  if(!S.sessionId){ toast("Сначала создайте сессию","err"); return; }
+  el("buildBtn").disabled = true;
+  setStatus("stBuild","<span class='spin'></span>запускаю сборку…");
+  const r = await jpost("/x/build",{session_id:S.sessionId});
+  if(r.status!=="success"){ setStatus("stBuild",""); toast("Не удалось запустить сборку: "+(r.message||""),"err"); el("buildBtn").disabled=false; return; }
+  S.buildId = r.build_id; S.buildDone = false; setStatus("stBuild","");
+  el("buildFoot").style.display="none";
+  renderTest(); pollBuild();
+}
+async function pollBuild(){
+  if(!S.buildId || S.buildDone) return;
+  let d; try{ d = await jget("/x/build_progress?build_id="+S.buildId); }catch(e){ d=null; }
+  if(d && d.status==="success"){
+    const p = d.progress;
+    renderBuildProgress(p);
+    if(p.status==="built"){ S.buildDone=true; await reloadSession(); renderTest(); return; }
+    if(p.status==="error"){ S.buildDone=true; el("buildProgress").innerHTML += `<div class="card gap-card"><b>Сборка прервалась:</b> ${esc(p.error||"см. лог")}</div>`; el("buildBtn")&&(el("buildBtn").disabled=false); return; }
+  }
+  S.buildTimer = setTimeout(pollBuild, 4000);
+}
+function buildStageRow(s){
+  const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>` : s.status==="error" ? "✕" : "·";
+  const col = s.status==="error"?"var(--bad)":s.status==="success"?"var(--ok)":"var(--gold)";
+  return `<div style="padding:7px 0;border-bottom:1px dashed var(--cream-dark)">
+    <span style="display:inline-block;width:22px;color:${col}">${icon}</span>
+    <b style="font-size:14px">${esc(s.title)}</b>
+    ${s.reused?`<span class="badge ok" style="margin-left:6px">переиспользовано</span>`:""}
+    ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
+  </div>`;
+}
+function renderBuildProgress(p){
+  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${(p.stages||[]).map(buildStageRow).join("")}</div>`;
+}
+function renderBuildResult(lb){
+  const aud = lb.audit||{}; const experts = lb.experts||[];
+  const vbadge = aud.verdict==="allow" ? `<span class="badge ok">проверка пройдена</span>`
+    : aud.verdict==="escalate" ? `<span class="badge bad">требуется эскалация</span>`
+    : `<span class="badge warn">пройдена с замечаниями</span>`;
+  el("buildProgress").innerHTML = `
+    <div class="card">
+      <div class="kicker">Процесс собран ✓</div>
+      <div style="margin-bottom:8px">Построено компонентов: <b>${experts.length}</b> ${vbadge}</div>
+      <div style="font-size:13px;color:var(--nav)">${experts.map(e=>`<code style="background:var(--cream);padding:1px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(e)}</code>`).join(" ")}</div>
+      ${(aud.issues&&aud.issues.length)?`<div style="font-size:13px;color:var(--warn);margin-top:8px"><b>На подтверждение:</b><ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`:`<div style="font-size:13px;color:var(--ok);margin-top:8px">Проверка безопасности замечаний не нашла.</div>`}
+      ${threadHTML("build:result")}
+    </div>`;
+}
+
+/* ================= запуск (аудит-гейт) ================= */
+function renderLaunch(){
+  const bp = S.blueprint && S.blueprint.blueprint;
+  const lb = lastBuild();
+  const openC = (S.session.comments||[]).filter(c=>!c.resolved);
+  const launched = S.session.stage==="launched";
+  let gate;
+  if(!lb){
+    gate = `<div class="card gap-card"><b>Процесс ещё не построен.</b> Вернитесь на шаг «Стройка» и нажмите «Построить процесс».</div>`;
+  } else {
+    const aud = lb.audit||{}; const v = aud.verdict;
+    const vtext = v==="allow" ? "✓ Проверка безопасности пройдена — можно запускать."
+      : v==="escalate" ? "❌ Проверка требует вмешательства команды Extella — запуск заблокирован."
+      : "⚠️ Проверка пройдена с замечаниями — подтвердите перед запуском.";
+    gate = `
+      <div class="card">
+        <div class="kicker">Проверка перед запуском</div>
+        <div style="font-size:14px;margin-bottom:6px">${vtext}</div>
+        ${(aud.issues&&aud.issues.length)?`<ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul>`:""}
+        ${threadHTML("launch:audit")}
+      </div>
+      ${launched ? `<div class="card pack-card"><b>✓ Процесс запущен.</b> Компоненты собраны и одобрены. Для работы 24/7 по расписанию команда Extella один раз настроит машину-исполнитель (Listener) — это последний технический шаг вне вашего пути.</div>`
+        : `<div class="toolbar"><button class="btn gold" id="launchBtn" onclick="doLaunch()" ${v==="escalate"?"disabled":""}>🚀 Запустить процесс</button><span class="statusline" id="stLaunch"></span></div>`}`;
+  }
+  // сводка результата прогона (из вертикального среза сборки)
+  const sm = lb && lb.slice_summary;
+  let summaryCard = "";
+  if(sm && typeof sm==="object"){
+    const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n);
+    const breakdowns = Object.entries(sm).filter(([k,v])=>k.startsWith("by_") && v && typeof v==="object" && Object.keys(v).length && Object.keys(v).length<=8);
+    summaryCard = `
+    <div class="card pack-card">
+      <div class="kicker">📊 Результат на ваших данных (пробный прогон)</div>
+      <div style="display:flex;gap:26px;flex-wrap:wrap;margin:6px 0 10px">
+        ${sm.total_count!=null?`<div><div style="font-size:24px;font-weight:700">${fmt(sm.total_count)}</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>`:""}
+        ${sm.total_sum!=null?`<div><div style="font-size:24px;font-weight:700;color:var(--gold)">${fmt(sm.total_sum)}</div><div style="font-size:12px;color:var(--silver)">общая сумма</div></div>`:""}
+      </div>
+      ${breakdowns.map(([k,v])=>`
+        <div style="margin-top:6px"><b style="font-size:13px">${esc(k.slice(3))}</b>
+        ${Object.entries(v).map(([kk,vv])=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:2px 0;border-bottom:1px dashed var(--cream-dark)"><span>${esc(kk)}</span><span>${fmt(vv)}</span></div>`).join("")}</div>`).join("")}
+      ${lb.orchestrator?`<div style="font-size:12px;color:var(--silver);margin-top:10px">Оркестратор процесса: <code>${esc(lb.orchestrator)}</code> · отчёт .md/.xlsx формируется при каждом прогоне</div>`:""}
+      ${threadHTML("launch:summary")}
+    </div>`;
+  }
+  el("launchArea").innerHTML = `
+    <div class="card">
+      <div class="kicker">Итог</div>
+      <ul class="plain">
+        <li>Процесс: <b>${esc(bp? bp.process_name : "—")}</b></li>
+        <li>Пригодность: <b>${bp? (bp.suitability||{}).score+"/100" : "—"}</b></li>
+        <li>Компонентов построено: <b>${lb? (lb.experts||[]).length : 0}</b></li>
+        <li>Оркестратор процесса: <b>${lb&&lb.orchestrator? esc(lb.orchestrator) : "—"}</b></li>
+        <li>Файлов-образцов: <b>${(S.session.files||[]).length}</b></li>
+        <li>Открытых комментариев: <b>${openC.length}</b></li>
+      </ul>
+    </div>
+    ${summaryCard}
+    ${gate}`;
+}
+async function doLaunch(){
+  el("launchBtn").disabled = true;
+  setStatus("stLaunch","<span class='spin'></span>проверяю и запускаю…");
+  let r = await jpost("/x/deploy",{session_id:S.sessionId});
+  if(r.status==="need_confirm"){
+    const msg = (r.issues&&r.issues.length)? "Аудит отметил на подтверждение:\n• "+r.issues.join("\n• ")+"\n\nЗапустить процесс?" : "Запустить процесс?";
+    if(!confirm(msg)){ setStatus("stLaunch",""); el("launchBtn").disabled=false; return; }
+    r = await jpost("/x/deploy",{session_id:S.sessionId, confirmed:true});
+  }
+  if(r.status!=="success"){ setStatus("stLaunch",""); toast("Не удалось запустить: "+(r.message||""),"err"); el("launchBtn").disabled=false; return; }
+  setStatus("stLaunch","");
+  toast("🚀 Процесс запущен","ok");
+  await reloadSession(); render();
+}
+
+/* ================= chat ================= */
+function toggleChat(){
+  el("chat").classList.toggle("open");
+  const open = el("chat").classList.contains("open");
+  el("main").classList.toggle("chat-open", open);
+  document.body.classList.toggle("chat-open", open);
+}
+function pushMsg(cls, text){
+  const log = el("chatLog");
+  const d = document.createElement("div");
+  d.className = "msg "+cls; d.textContent = text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+async function sendChatSilent(text){
+  // служебное сообщение помощнику (о файлах) — без пузыря пользователя
+  const wait = pushMsg("bot","…");
+  const r = await jpost("/x/chat",{input:text, previous_response_id:S.chatRespId, session_id:S.sessionId});
+  if(r.status!=="success"){ wait.textContent = "Ошибка: "+(r.message||"нет ответа"); return; }
+  S.chatRespId = r.response_id;
+  wait.textContent = r.text;
+  afterBotReply(wait, r.text);
+}
+async function sendChat(){
+  const inp = el("chatInput");
+  const text = inp.value.trim(); if(!text) return;
+  inp.value = ""; pushMsg("user", text);
+  const wait = pushMsg("bot","<span class='spin'></span> Помощник думает и записывает ответы в проект — это нормально, до ~минуты…");
+  wait.innerHTML = wait.textContent = ""; wait.innerHTML = "<span class='spin'></span> Помощник думает и записывает ответы — это нормально, до ~минуты…";
+  const slow = setTimeout(()=>{ wait.innerHTML = "<span class='spin'></span> Идёт важная работа: помощник сохраняет ответы в проект. Подождите, не закрывайте…"; }, 12000);
+  const r = await jpost("/x/chat",{input:text, previous_response_id:S.chatRespId, session_id:S.sessionId});
+  clearTimeout(slow);
+  if(r.status!=="success"){ wait.textContent = "Ошибка: "+(r.message||"нет ответа"); return; }
+  S.chatRespId = r.response_id;
+  wait.textContent = r.text;
+  afterBotReply(wait, r.text);
+}
+async function afterBotReply(bubble, text){
+  // помощник мог сам сохранить ответы/решения — обновляем конспект живьём
+  if(S.sessionId){
+    await reloadSession();
+    if(S.view==="interview") render();
+    refreshSessions(S.sessionId);
+    // на шаге ТЗ: после ответа помощника сам пересобираю ТЗ, чтобы правка была видна без лишних кнопок
+    if(S.view==="spec"){ render(); regenerateSpec(); }
+  }
+  // контракт «интервью завершено»: кнопка переноса
+  const m = text.match(/ИНТЕРВЬЮ ЗАВЕРШЕНО[\s\S]*?```json\s*([\s\S]*?)```/);
+  if(m){
+    try{
+      const answers = JSON.parse(m[1]);
+      const btn = document.createElement("button");
+      btn.className = "btn gold sm apply"; btn.textContent = "⤵ Перенести ответы в конспект";
+      btn.onclick = async ()=>{
+        if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
+        await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(answers)}});
+        await reloadSession(); S.view="interview"; render();
+        btn.textContent = "✓ Перенесено"; btn.disabled = true;
+      };
+      bubble.appendChild(btn);
+    }catch(e){}
+  }
+}
+
+/* ================= автоматизации ================= */
+let AUTOS = [];
+const OUT_CH = [["telegram","Telegram","connectTelegram"],["email","Email","connectEmail"],["slack","Slack","connectSlack"],["whatsapp","WhatsApp","connectWhatsapp"],["sms","SMS","connectSms"]];
+const IN_SRC = [["src_gsheets","Google Sheets","connectGSheets"],["src_bitrix24","Bitrix24","connectBitrix24"],["src_postgres","PostgreSQL","connectPostgres"],["src_mysql","MySQL","connectMysql"],["src_amocrm","amoCRM","connectAmocrm"],["src_1c_file","1С (файл)","connect1cFile"],["src_1c_winrm","1С (сервер)","connect1cWinrm"]];
+window.CONN = null;   // список подключённых коннекторов; null = ещё не загружали
+async function ensureConn(){
+  if(!window.CONN){ try{ const sc=await jget("/x/secrets"); window.CONN=(sc.secrets||[]).map(x=>x.connector); }catch(e){ window.CONN=[]; } }
+  return window.CONN;
+}
+async function renderConnections(){
+  // Блок «Подключения»: подключаешь ОДИН раз, статус виден всегда. В процессах — выбор из подключённого.
+  const bar = el("connBar"); if(!bar) return;
+  try{ const sc=await jget("/x/secrets"); window.CONN=(sc.secrets||[]).map(x=>x.connector); }catch(e){ window.CONN=[]; }
+  const conn = window.CONN;
+  const chip = (key,label,fn,isSrc)=> conn.includes(key)
+    ? `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:rgba(45,160,95,.15);color:#2fa86a;border-radius:8px;padding:5px 11px">${esc(label)} ✓ <a href="#" onclick="testConn('${key}',${isSrc?1:0});return false" style="color:#2fa86a">тест</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33" title="отключить">×</a></span>`
+    : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid rgba(128,128,128,.3);color:var(--silver,#889);border-radius:8px;padding:5px 11px">${esc(label)} · <a href="#" onclick="${fn}();return false" style="color:#c60">подключить</a></span>`;
+  bar.innerHTML = `<div style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:12px 14px;margin:0 0 16px">
+    <div style="font-size:14px;font-weight:600">🔌 Подключения</div>
+    <div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 10px">Подключаешь один раз — статус виден здесь. В процессах ниже просто выбираешь из подключённого.</div>
+    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">Каналы вывода</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${OUT_CH.map(c=>chip(c[0],c[1],c[2],false)).join("")}</div>
+    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">Источники данных</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">${IN_SRC.map(c=>chip(c[0],c[1],c[2],true)).join("")}</div>
+  </div>`;
+}
+async function disconnectConn(key){
+  busy("Отключаю…");
+  const r = await jpost("/x/secret_remove",{connector:key});
+  busyOff();
+  toast(r.status==="success"?"Отключено":("Ошибка: "+(r.message||"")), r.status==="success"?"ok":"err");
+  renderConnections();
+}
+async function testConn(key,isSrc){
+  busy("Проверяю связь…");
+  const r = isSrc ? await jpost("/x/source_test",{kind:key}) : await jpost("/x/connector_test",{connector:key});
+  busyOff();
+  const res=(r&&r.result)||{};
+  if(res.ok) toast("✓ Связь есть"+(res.bot?(" @"+res.bot):(res.rows_estimate!=null?(" (~"+res.rows_estimate+" строк)"):(res.account?(" ("+res.account+")"):""))),"ok");
+  else toast("Не подтверждено: "+(res.err||"проверьте данные"),"err");
+}
+async function renderMonitor(){
+  // Панель наблюдения (A4): сводное здоровье пилота из /x/monitor — прогоны/просрочка/доставки/входящие.
+  const bar = el("monitorBar"); if(!bar) return;
+  let d; try{ d = await jget("/x/monitor"); }catch(e){ d=null; }
+  if(!d || d.status!=="success" || !((d.processes||[]).length)){ bar.innerHTML=""; return; }
+  const su=d.summary||{}, ps=d.processes||[];
+  const dot = h => h==="error"?"🔴":(h==="warn"?"🟡":"🟢");
+  const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n||"");
+  const tm = t => t ? esc(String(t).slice(0,16).replace("T"," ")) : "—";
+  const head = `<div style="font-size:13px;margin-bottom:8px">🩺 <b>Мониторинг</b>: ${su.total||0} процессов &nbsp; 🟢 ${su.healthy||0} &nbsp; 🟡 ${su.warn||0} &nbsp; 🔴 ${su.error||0}${su.overdue?(" &nbsp; ⏰ просрочено "+su.overdue):""} &nbsp; <a href="#" onclick="renderMonitor();return false" style="color:#c60;font-size:12px">обновить</a></div>`;
+  const rows = ps.map(p=>{
+    const s=p.schedule, lr=p.last_run, bits=[];
+    if(s) bits.push("⏱ "+esc(s.period||"по расписанию")+(s.overdue?" · <span style='color:var(--bad,#c33)'>просрочено</span>":(s.next_due?(" · след. "+tm(s.next_due)):"")));
+    if(lr) bits.push("прогон "+tm(lr.at)+" · "+esc(lr.status||"")+(lr.total_sum!=null?(" · "+fmt(lr.total_sum)+" ₸"):""));
+    else if(!s) bits.push("<span style='color:#999'>нет расписания/прогонов</span>");
+    if(p.source) bits.push("🔌 "+esc(String(p.source.kind||"").replace("src_","")));
+    if(p.deliver) bits.push("→ "+esc(p.deliver)+(p.delivery?(p.delivery.ok?" ✓":" ✗"):""));
+    if(p.inbound&&p.inbound.mode) bits.push("📥 "+esc(p.inbound.mode));
+    const why=(p.reasons&&p.reasons.length)?`<div style="font-size:11.5px;color:var(--bad,#c33);margin-top:2px">${p.reasons.map(esc).join(" · ")}</div>`:"";
+    return `<div style="display:flex;gap:8px;padding:6px 0;border-top:1px solid rgba(128,128,128,.15)"><span>${dot(p.health)}</span><div style="flex:1;min-width:0"><b style="font-size:13px">${esc(p.process_name||p.session_id)}</b><div style="font-size:12px;color:var(--silver,#889)">${bits.join(" &nbsp;·&nbsp; ")}</div>${why}</div></div>`;
+  }).join("");
+  bar.innerHTML = `<div style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:12px 14px;margin:0 0 16px">${head}${rows}</div>`;
+}
+async function renderAutomations(){
+  renderConnections();   // блок «Подключения» — видимый статус каналов/источников
+  renderMonitor();   // A4: health-баннер параллельно со списком
+  const box = el("autoList");
+  box.innerHTML = `<div class="empty"><span class="spin"></span> загружаю автоматизации…</div>`;
+  let d; try{ d = await jget("/x/automations"); }catch(e){ d=null; }
+  AUTOS = (d && d.automations) || [];
+  if(!AUTOS.length){ box.innerHTML = `<div class="empty">Пока нет собранных автоматизаций. Соберите процесс в «Мастере» (шаг «Стройка»).</div>`; return; }
+  const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n);
+  const SRCNAME = k=>({src_gsheets:"Google Sheets",src_bitrix24:"Bitrix24",src_postgres:"PostgreSQL",src_mysql:"MySQL",src_amocrm:"amoCRM",src_1c_file:"1С (файл)",src_1c_winrm:"1С (сервер)"}[k]||k);
+  const CHNAME = k=>({telegram:"Telegram",email:"Email",slack:"Slack",whatsapp:"WhatsApp",sms:"SMS"}[k]||k);
+  const tile = (lbl,val,ok,fn)=>`<div style="background:rgba(128,128,128,.08);border-radius:8px;padding:7px 10px;min-width:0"><div style="font-size:11px;color:var(--silver,#889)">${lbl}</div><div style="font-size:12.5px;display:flex;align-items:center;gap:5px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${val}${ok?' <span style="color:#2fa86a">✓</span>':''}</span><a href="#" onclick="${fn};return false" style="margin-left:auto;color:#c60;font-size:11.5px;flex:none">изменить</a></div></div>`;
+  box.innerHTML = AUTOS.map((a,i)=>{
+    const sm = a.slice_summary||{};
+    const lr = a.last_run;
+    const bd = Object.entries(sm).filter(([k,v])=>k.startsWith("by_")&&v&&typeof v==="object"&&Object.keys(v).length<=6).slice(0,2);
+    return `<div class="auto-card">
+      <div class="auto-head">
+        <h3>${esc(a.process_name||a.client_name||"Процесс")}</h3>
+        <span class="badge ${a.audit==="allow"?"ok":"warn"}">${a.audit==="allow"?"проверен":"с замечаниями"}</span>
+        ${a.schedule?`<span class="badge">🕐 ${esc(a.schedule.period)}</span>`:""}
+        ${a.production_agent?`<span class="badge ok">🤖 агент</span>`:""}
+        <span class="auto-meta">· ${esc(a.client_name||"")} · компонентов ${(a.components||[]).length} · прогонов ${a.runs_count||0}</span>
+      </div>
+      ${(a.stages_meta&&a.stages_meta.length)?flowHTML(a.stages_meta):""}
+      ${(sm.total_count!=null||sm.total_sum!=null)?`<div class="auto-kpis">
+        ${sm.total_count!=null?`<div><b>${fmt(sm.total_count)}</b><div style="font-size:12px;color:var(--silver)">позиций</div></div>`:""}
+        ${sm.total_sum!=null?`<div><b style="color:var(--gold)">${fmt(sm.total_sum)}</b><div style="font-size:12px;color:var(--silver)">сумма</div></div>`:""}
+      </div>`:""}
+      ${bd.map(([k,v])=>`<div style="font-size:12.5px"><b>${esc(k.slice(3))}:</b> ${Object.entries(v).map(([kk,vv])=>esc(kk)+" — "+fmt(vv)).join(" · ")}</div>`).join("")}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0">
+        ${tile("Источник", a.source&&a.source.kind?SRCNAME(a.source.kind):"— файл —", !!(a.source&&a.source.kind), `sourceProcess(${i})`)}
+        ${tile("Расписание", (a.schedule&&a.schedule.period)?esc(a.schedule.period):"— вручную —", !!(a.schedule&&a.schedule.period), `scheduleProcess(${i})`)}
+        ${tile("Куда слать результат", (a.schedule&&a.schedule.deliver)?CHNAME(a.schedule.deliver):"— не слать —", !!(a.schedule&&a.schedule.deliver), `scheduleProcess(${i})`)}
+        ${tile("Входящие", (a.inbound&&a.inbound.mode)?(a.inbound.mode==="poll"?"опрос":esc(a.inbound.mode)):"— выкл —", !!(a.inbound&&a.inbound.mode), `inboundProcess(${i})`)}
+      </div>
+      <div class="auto-actions">
+        <button class="btn gold sm" onclick="runProcess(${i})">▶ Запустить сейчас</button>
+        <button class="btn ghost sm" onclick="deployAgentPrompt(${i})">🤖 ${a.production_agent?"Обновить агента":"Развернуть агента"}</button>
+        <button class="btn ghost sm" onclick="shareProcess(${i})">🔗 Поделиться</button>
+        <button class="btn ghost sm" onclick="openInWizard('${a.session_id}')">✎ Изменить</button>
+      </div>
+      <div id="autoRun-${i}" style="margin-top:8px"></div>
+      <div class="run-row" id="runrow-${i}">${lr?`Последний прогон: ${esc((lr.at||"").slice(0,16).replace("T"," "))} · ${esc(lr.status)} · сумма ${fmt(lr.total_sum)}${lr.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(lr.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:""}`:""}</div>
+    </div>`;
+  }).join("");
+}
+async function runProcess(i){
+  const a = AUTOS[i]; if(!a) return;
+  const out = el("autoRun-"+i);
+  out.innerHTML = `<span class="spin"></span> запускаю процесс на данных…`;
+  const r = await jpost("/x/run_process",{session_id:a.session_id});
+  if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">Ошибка: ${esc(r.message||"")}</span>`; return; }
+  const run = r.run||{}; const fmt=n=>(typeof n==="number")?n.toLocaleString("ru-RU"):esc(n);
+  const dl = run.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(run.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:"";
+  const dlv = r.delivered ? (r.delivered.ok?` · <span style="color:var(--ok,#2a2)">→ отправлено в ${esc(r.delivered.channel)} ✓</span>`:` · <span style="color:var(--bad,#c33)">→ доставка в ${esc(r.delivered.channel)} не прошла: ${esc(r.delivered.err||"")}</span>`) : "";
+  out.innerHTML = `<div class="card pack-card" style="margin:6px 0"><b>✓ Прогон завершён</b> · позиций ${fmt(run.total_count)} · сумма <b>${fmt(run.total_sum)}</b>${dl}${dlv}</div>`;
+  // обновляем строку «последний прогон» ЭТОЙ карточки на месте (без перерисовки всего списка)
+  const rr = el("runrow-"+i);
+  if(rr) rr.innerHTML = `Последний прогон: ${esc((run.at||"").slice(0,16).replace("T"," "))} · ${esc(run.status)} · сумма ${fmt(run.total_sum)}${dl}`;
+  if(a.last_run) a.last_run = run;
+  renderMonitor();
+}
+const SCHED_PRESETS = [
+  ["Каждые 2 минуты (тест)", 2],
+  ["Каждый час", 60],
+  ["Ежедневно", 1440],
+  ["Еженедельно", 10080],
+  ["Ежемесячно", 43200],
+];
+async function scheduleProcess(i){
+  const a = AUTOS[i]; if(!a) return;
+  const cur = (a.schedule&&a.schedule.interval_min)||0;
+  const curDel = (a.schedule&&a.schedule.deliver)||"";
+  const conn = await ensureConn();
+  const opts = SCHED_PRESETS.map(([lbl,m])=>`<option value="${m}" ${m===cur?"selected":""}>${lbl}</option>`).join("");
+  const CH=[["telegram","Telegram"],["email","Email"],["slack","Slack"],["whatsapp","WhatsApp"],["sms","SMS"]];
+  const connCh = CH.filter(c=>conn.includes(c[0]));
+  // Подключённые каналы — вперёд, «не слать» — последним пунктом (не сбивает с толку дефолтом)
+  const delOpts = connCh.map(c=>`<option value="${c[0]}" ${c[0]===curDel?"selected":""}>Слать в ${c[1]}</option>`).join("")
+    + `<option value="" ${!curDel?"selected":""}>— результат не слать —</option>`;
+  const delBlock = connCh.length
+    ? `<div style="font-size:13px;text-align:left;margin-bottom:6px">Куда слать результат:</div><select id="modDeliver" class="sess-select" style="width:100%;max-width:none;margin-bottom:8px">${delOpts}</select>`
+    : `<input id="modDeliver" type="hidden" value=""><div style="font-size:12px;color:#888;text-align:left;margin-bottom:8px">Каналы вывода не подключены. Чтобы слать результат — подключите канал в блоке <b>🔌 Подключения</b> вверху страницы.</div>`;
+  el("modTitle").textContent = "Расписание запуска";
+  el("modHint").innerHTML = "Процесс будет запускаться сам на постоянно включённом сервере (Listener) и складывать результат в логи.";
+  el("modInput").outerHTML =
+      `<div style="font-size:13px;text-align:left;margin-bottom:6px">Как часто запускать:</div>`
+    + `<select id="modInput" class="sess-select" style="width:100%;max-width:none;margin-bottom:10px"><option value="0">— без расписания (только вручную) —</option>${opts}</select>`
+    + delBlock;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const im = parseInt((el("modInput")||{}).value)||0;
+    const label = im ? (SCHED_PRESETS.find(p=>p[1]===im)||["",im])[0] : "";
+    const deliver = (el("modDeliver")||{}).value || "";
+    busy(im?"Сохраняю расписание…":"Снимаю расписание…");
+    const r = await jpost("/x/schedule",{session_id:a.session_id, period:label, interval_min:im, deliver:deliver});
+    busyOff();
+    if(r.status==="success"){ toast(im?("✓ Расписание: "+label+(deliver?" → "+deliver:"")):"Расписание снято","ok"); renderAutomations(); }
+    else toast("Ошибка: "+(r.message||""),"err");
+  };
+}
+async function inboundProcess(i){
+  const a = AUTOS[i]; if(!a) return;
+  const conn = await ensureConn();
+  const IN_CH=[["telegram","Telegram"]];          // каналы с приёмом входящих (пока Telegram; WhatsApp GREEN — далее)
+  const cur = a.inbound||{};
+  const curMode = cur.mode || "poll";              // рекомендованный дефолт — опрос
+  const curCh = cur.channel || "telegram";
+  const connIn = IN_CH.filter(c=>conn.includes(c[0]));
+  resetModInput();   // чистый слот (убрать поля прошлой модалки)
+  el("modTitle").textContent = "Приём входящих сообщений";
+  el("modHint").innerHTML = "Процесс сможет запускаться по входящему сообщению и отвечать в тот же чат — как живой ассистент 24/7.";
+  if(!connIn.length){
+    // нет подключённого канала приёма — направляем в хаб «Подключения», без connect-внутри
+    el("modInput").outerHTML =
+        `<input id="modInput" type="hidden">`
+      + `<div style="font-size:13px;color:#888;text-align:left;margin-bottom:6px">Для приёма входящих нужен подключённый канал (пока — Telegram).</div>`
+      + `<div style="font-size:12.5px;text-align:left">Подключите <b>Telegram</b> в блоке <b>🔌 Подключения</b> вверху страницы, затем вернитесь сюда и включите опрос.</div>`;
+    el("modBack").classList.add("open");
+    _modCb = async ()=>{ modCancel(); };
+    return;
+  }
+  const chOpts = connIn.map(c=>`<option value="${c[0]}" ${c[0]===curCh?"selected":""}>${c[1]}</option>`).join("");
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<div style="font-size:13px;text-align:left;margin-bottom:6px">Канал приёма:</div>`
+    + `<select id="inCh" class="sess-select" style="width:100%;max-width:none;margin-bottom:12px">${chOpts}</select>`
+    + `<div style="font-size:13px;text-align:left;margin-bottom:6px">Как принимать входящие:</div>`
+    + `<label class="opt"><input type="radio" name="inMode" value="poll" ${curMode==="poll"?"checked":""}><span><b>Опрос</b> — проще, в канале ничего не настраивать, работает даже за фаерволом. Небольшая задержка (до одного тика).</span></label>`
+    + `<label class="opt"><input type="radio" name="inMode" value="webhook" ${curMode==="webhook"?"checked":""}><span><b>Вебхук</b> — мгновенно, но нужен публичный адрес Extella (поднимается один раз для всех).</span></label>`
+    + `<label class="opt" style="color:#999"><input type="radio" name="inMode" value="off" ${curMode==="off"?"checked":""}><span>Выключить приём</span></label>`;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const mode = (document.querySelector('input[name=inMode]:checked')||{}).value || "poll";
+    const channel = (el("inCh")||{}).value || "telegram";
+    const r = await jpost("/x/inbound",{session_id:a.session_id, mode:mode, channel:channel});
+    if(r.status!=="success"){ toast("Ошибка: "+(r.message||""),"err"); return; }
+    const ib = r.inbound;
+    if(!ib){ toast("Приём выключен","ok"); }
+    else if(ib.mode==="webhook"){
+      toast("Вебхук зарезервирован","ok");
+      if(ib.hook_url) ask("Адрес вебхука (скопируйте)", (ib.gateway_status==="pending_gateway"?"Публичный шлюз ещё поднимается — адрес закреплён за вами. ":"")+"Вставьте этот адрес в настройках канала/CRM.", ib.hook_url, ()=>{});
+    } else { toast("✓ Опрос включён — напишите боту, ответ придёт в течение ~2 минут","ok"); }
+    renderAutomations();
+  };
+}
+async function sourceProcess(i){
+  // B3: привязать источник данных к процессу (тянуть свежие данные вместо файла). Подключение — в хабе «Подключения».
+  const a = AUTOS[i]; if(!a) return;
+  const conn = await ensureConn();
+  const SRC=[["src_gsheets","Google Sheets"],["src_bitrix24","Bitrix24"],["src_postgres","PostgreSQL"],["src_mysql","MySQL"],["src_amocrm","amoCRM / Kommo"],["src_1c_file","1С (файл .1CD)"],["src_1c_winrm","1С (сервер WinRM)"]];
+  const connSrc = SRC.filter(x=>conn.includes(x[0]));
+  const cur = a.source||{};
+  const curKind = cur.kind||"";
+  resetModInput();
+  el("modTitle").textContent = "Источник данных процесса";
+  el("modHint").innerHTML = "Процесс будет сам тянуть свежие данные из источника перед каждым запуском — вместо ручной загрузки файла.";
+  let body = `<input id="modInput" type="hidden">`;
+  if(connSrc.length){
+    const opts = connSrc.map(x=>`<option value="${x[0]}" ${x[0]===curKind?"selected":""}>${x[1]}</option>`).join("");
+    body += `<div style="font-size:13px;text-align:left;margin-bottom:6px">Тянуть данные из (подключённые источники):</div>`
+          + `<select id="srcKind" class="sess-select" style="width:100%;max-width:none;margin-bottom:10px">${opts}</select>`
+          + `<label class="opt" style="color:#999"><input type="radio" name="srcAct" value="off"><span>Отвязать источник (вернуться к загрузке файла)</span></label>`;
+  } else {
+    body += `<div style="font-size:13px;color:#888;text-align:left;margin-bottom:6px">Пока не подключён ни один источник данных.</div>`
+          + `<div style="font-size:12.5px;text-align:left">Подключите источник в блоке <b>🔌 Подключения</b> вверху страницы (Google Sheets — просто по ссылке), затем вернитесь сюда и выберите его.</div>`;
+    if(curKind) body += `<label class="opt" style="color:#999;margin-top:6px"><input type="radio" name="srcAct" value="off"><span>Отвязать текущий источник</span></label>`;
+  }
+  el("modInput").outerHTML = body;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const off = (document.querySelector('input[name=srcAct]:checked')||{}).value === "off";
+    if(off){
+      busy("Отвязываю источник…");
+      const r = await jpost("/x/source_bind",{session_id:a.session_id, kind:"off"});
+      busyOff(); toast(r.status==="success"?"Источник отвязан":("Ошибка: "+(r.message||"")), r.status==="success"?"ok":"err");
+      renderAutomations(); return;
+    }
+    const kind = (el("srcKind")||{}).value;
+    if(!kind){ toast("Нет подключённых источников — подключите в блоке «Подключения»","err"); return; }
+    busy("Привязываю источник и тяну данные…");
+    const r = await jpost("/x/source_bind",{session_id:a.session_id, kind:kind});
+    busyOff();
+    if(r.status!=="success"){ toast("Не удалось: "+(r.message||""),"err"); return; }
+    toast("✓ Источник подключён"+(r.rows!=null?(", строк: "+r.rows):""),"ok");
+    renderAutomations();
+  };
+}
+function connectEmail(){
+  ask("Email — адрес отправителя", "Ваш email (он же логин SMTP), например report@company.kz. Хранится шифрованно.", "", (email)=>{
+    if(!email) return;
+    ask("Email — пароль SMTP", "Пароль (или пароль приложения) для SMTP.", "", (pw)=>{
+      if(!pw) return;
+      ask("SMTP сервер:порт", "Например smtp.gmail.com:587. Пусто — определю по домену.", "", (smtp)=>{
+        ask("Кому слать результат", "Email получателя (можно тот же адрес).", email, async (to)=>{
+          let host="", port=587;
+          if(smtp){ const p=smtp.split(":"); host=(p[0]||"").trim(); port=parseInt(p[1])||587; }
+          else{ const dom=(email.split("@")[1]||"").toLowerCase();
+            const M={"gmail.com":["smtp.gmail.com",587],"yandex.ru":["smtp.yandex.ru",465],"yandex.kz":["smtp.yandex.ru",465],"mail.ru":["smtp.mail.ru",465],"list.ru":["smtp.mail.ru",465],"outlook.com":["smtp.office365.com",587]};
+            const g=M[dom]||["smtp."+dom,587]; host=g[0]; port=g[1]; }
+          busy("Подключаю Email…");
+          const s = await jpost("/x/secret_set",{connector:"email", value:JSON.stringify({host:host,port:port,username:email,password:pw,from:email,to:(to||email),use_tls:port!==465})});
+          if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+          const t = await jpost("/x/connector_test",{connector:"email"});
+          busyOff();
+          const res=(t&&t.result)||{};
+          if(res.ok) toast("✓ Email подключён ("+(res.smtp||host)+")","ok");
+          else toast("Сохранено, связь не подтверждена: "+(res.err||"проверьте данные"),"err");
+        });
+      });
+    });
+  });
+}
+function connectTelegram(){
+  el("modTitle").textContent = "Подключить Telegram";
+  el("modHint").innerHTML = "Выберите способ подключения.";
+  el("modInput").outerHTML = `<select id="modInput" class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"><option value="bot">Бот (BotFather) — уведомления в чат/канал</option><option value="mtproto">Аккаунт (сессия) — слать как пользователь</option></select><div style="font-size:12px;color:#888;margin-bottom:6px">Бот — проще и безопаснее для уведомлений. Аккаунт — когда нужно писать людям в ЛС / читать входящие.</div>`;
+  el("modBack").classList.add("open");
+  _modCb = ()=>{ const m = (el("modInput")||{}).value; if(m==="mtproto") connectTelegramSession(); else connectTelegramBot(); };
+}
+function connectTelegramBot(){
+  ask("Telegram-бот — токен", "Токен от @BotFather (вида 123456:ABC-…). Хранится шифрованно.", "", (token)=>{
+    token=(token||"").trim();
+    if(!token) return;
+    if(!/^\d{6,}:[A-Za-z0-9_-]{30,}$/.test(token)){ toast("Токен не похож на бот-токен (нужен вида 123456:ABC…). Скопируйте целиком от @BotFather.","err"); return; }
+    ask("Telegram — chat_id", "ID чата/канала для результата (987654321 или @mychannel).", "", async (chat)=>{
+      chat=(chat||"").trim();
+      busy("Подключаю Telegram-бота…");
+      const s = await jpost("/x/secret_set",{connector:"telegram", value:JSON.stringify({token:token, chat_id:chat})});
+      if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+      // сразу шлём реальное приветствие в чат — чтобы было ВИДНО, что связь работает (а не молчаливый getMe)
+      const t = await jpost("/x/connector_send",{connector:"telegram", text:"✅ Extella подключён к этому чату. Сюда будут приходить результаты процессов."});
+      busyOff();
+      const res=(t&&t.result)||{};
+      if(res.ok) toast("✓ Telegram подключён — проверьте: в чат пришло приветствие","ok");
+      else toast("Не удалось отправить в чат: "+(res.err||"проверьте токен и chat_id (нужен числовой id вашего чата с ботом)"),"err");
+    });
+  });
+}
+function connectTelegramSession(){
+  ask("Telegram-аккаунт — телефон", "Номер в формате +7… — на него придёт код в приложение Telegram.", "", (phone)=>{
+    if(!phone) return;
+    ask("Куда слать результат", "«me» = Избранное, либо @канал / id чата.", "me", async (target)=>{
+      busy("Отправляю код в Telegram…");
+      const st = await jpost("/x/tg_login_start",{phone:phone, target:target||"me"});
+      busyOff();
+      if(st.status!=="success"){ toast("Не удалось отправить код: "+(st.message||""),"err"); return; }
+      const lid = st.login_id;
+      ask("Код из Telegram", "Введите код, пришедший в приложение Telegram.", "", (code)=>{ if(code) completeTgLogin(lid, code, ""); });
+    });
+  });
+}
+async function completeTgLogin(lid, code, password){
+  busy("Завершаю вход…");
+  const r = await jpost("/x/tg_login_complete",{login_id:lid, code:code, password:password});
+  busyOff();
+  if(r.status==="need_password"){
+    ask("Пароль облака Telegram (2FA)", "У аккаунта включена двухэтапная проверка — введите пароль.", "", (pw)=>{ if(pw) completeTgLogin(lid, code, pw); });
+    return;
+  }
+  if(r.status==="success") toast("✓ Telegram-аккаунт подключён: "+(r.acct||""),"ok");
+  else toast("Вход не удался: "+(r.message||""),"err");
+}
+async function _saveConn(connector, obj, label){
+  busy("Подключаю "+label+"…");
+  const s = await jpost("/x/secret_set",{connector:connector, value:JSON.stringify(obj)});
+  if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+  const t = await jpost("/x/connector_test",{connector:connector});
+  busyOff();
+  const res=(t&&t.result)||{};
+  if(res.ok) toast("✓ "+label+" подключён","ok");
+  else toast(label+" сохранён, связь не подтверждена: "+(res.err||"проверьте данные"),"err");
+}
+function connectSlack(){
+  ask("Slack — Incoming Webhook URL", "URL вида https://hooks.slack.com/services/… (создаётся в настройках Slack за минуту). Хранится шифрованно.", "", (url)=>{
+    if(!url) return; _saveConn("slack",{webhook_url:url.trim()},"Slack");
+  });
+}
+function connectGSheets(){
+  // B3-источник Google Sheets: ссылка/ID + режим (публичная ссылка без ключа ИЛИ сервис-аккаунт).
+  const st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  resetModInput();
+  el("modTitle").textContent = "Источник: Google Sheets";
+  el("modHint").innerHTML = "Вставьте ссылку на таблицу. Публичная («всем, у кого есть ссылка») — без ключей. Приватная — сервис-аккаунт (JSON-ключ + доступ на его e-mail).";
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<input id="gsUrl" ${st} placeholder="Ссылка на таблицу (или её ID)">`
+    + `<label class="opt"><input type="radio" name="gsMode" value="public" checked><span>Публичная ссылка (без ключа)</span></label>`
+    + `<label class="opt"><input type="radio" name="gsMode" value="sa"><span>Приватная — сервис-аккаунт</span></label>`
+    + `<textarea id="gsJson" ${st.replace('margin-bottom:8px','height:90px;margin-bottom:8px;font-family:monospace;font-size:11px')} placeholder="(только для приватной) вставьте JSON-ключ сервис-аккаунта"></textarea>`
+    + `<input id="gsRange" ${st.replace('margin-bottom:8px','margin-bottom:4px')} placeholder="(приватная) диапазон, напр. Лист1!A:Z" value="A:Z">`;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const raw = ((el("gsUrl")||{}).value||"").trim();
+    const m = raw.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
+    const sheet_id = m ? m[1] : raw;   // из ссылки или как есть (ID)
+    if(!sheet_id){ toast("Вставьте ссылку или ID таблицы","err"); return; }
+    const mode = (document.querySelector('input[name=gsMode]:checked')||{}).value || "public";
+    let creds;
+    if(mode === "public"){
+      creds = {spreadsheet_id:sheet_id, public:true};
+    } else {
+      const gj = el("gsJson"); const rawj = ((gj||{}).value||"").trim(); if(gj) gj.value="";
+      let saj; try{ saj = JSON.parse(rawj); }catch(e){ toast("JSON-ключ не парсится — вставьте файл целиком","err"); return; }
+      creds = {service_account_json:saj, spreadsheet_id:sheet_id, range:((el("gsRange")||{}).value||"A:Z").trim()};
+    }
+    busy("Подключаю Google Sheets…");
+    const s = await jpost("/x/secret_set",{connector:"src_gsheets", value:JSON.stringify(creds)});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t = await jpost("/x/source_test",{kind:"src_gsheets"});
+    busyOff();
+    const res=(t&&t.result)||{};
+    if(res.ok) toast("✓ Google Sheets подключён"+(res.rows_estimate!=null?(" (~"+res.rows_estimate+" строк)"):""),"ok");
+    else toast("Сохранено, доступ не подтверждён: "+(res.err||"проверьте доступ к таблице"),"err");
+  };
+}
+function connectBitrix24(){
+  // B3-источник: входящий вебхук Bitrix24 — одна строка URL (без OAuth). Проверка через /x/source_test.
+  ask("Источник: Bitrix24", "Вставьте URL входящего вебхука (в Bitrix24: Разработчикам → Другое → Входящий вебхук, отметьте права CRM). Вид: https://ВАШ.bitrix24.kz/rest/1/КОД/ . Хранится шифрованно.", "", async (url)=>{
+    if(!url) return;
+    url = url.trim();
+    if(!/\/rest\//.test(url)){ toast("Не похоже на URL вебхука (нет /rest/)","err"); return; }
+    busy("Подключаю Bitrix24…");
+    const s = await jpost("/x/secret_set",{connector:"src_bitrix24", value:JSON.stringify({webhook_url:url, entity:"crm.deal"})});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t = await jpost("/x/source_test",{kind:"src_bitrix24"});
+    busyOff();
+    const res=(t&&t.result)||{};
+    if(res.ok) toast("✓ Bitrix24 подключён"+(res.account?(" ("+res.account+")"):""),"ok");
+    else toast("Сохранено, доступ не подтверждён: "+(res.err||"проверьте URL/права вебхука"),"err");
+  });
+}
+function connectDB(kind, label, defPort){
+  // B3-источник БД (PostgreSQL/MySQL): host/port/база/пользователь/пароль + таблица или SQL. Только чтение.
+  const V = id => ((el(id)||{}).value||"").trim();
+  resetModInput();
+  el("modTitle").textContent = "Источник: "+label;
+  el("modHint").innerHTML = "Подключение к базе (только чтение). Пароль хранится шифрованно, в логи не попадает.";
+  const st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<input id="dbHost" ${st} placeholder="Хост (IP или домен)">`
+    + `<input id="dbPort" ${st} placeholder="Порт" value="${defPort}">`
+    + `<input id="dbName" ${st} placeholder="База данных">`
+    + `<input id="dbUser" ${st} placeholder="Пользователь">`
+    + `<input id="dbPass" type="password" ${st} placeholder="Пароль">`
+    + `<input id="dbQuery" ${st.replace('margin-bottom:8px','margin-bottom:4px')} placeholder="Таблица (напр. public.deals) или SQL SELECT …">`;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const host=V("dbHost"), db=V("dbName"), user=V("dbUser"), q=V("dbQuery");
+    const pass=(el("dbPass")||{}).value||"";
+    if(el("dbPass")) el("dbPass").value="";   // стереть пароль из DOM после чтения
+    if(!host||!db||!user){ toast("Заполните хост, базу и пользователя","err"); return; }
+    const creds={host:host, port:parseInt(V("dbPort"))||defPort, database:db, user:user, password:pass};
+    if(/^\s*select/i.test(q)) creds.query=q; else if(q) creds.table=q;
+    busy("Подключаю "+label+"…");
+    const s=await jpost("/x/secret_set",{connector:kind, value:JSON.stringify(creds)});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t=await jpost("/x/source_test",{kind:kind}); busyOff();
+    const res=(t&&t.result)||{};
+    if(res.ok) toast("✓ "+label+" подключён","ok");
+    else toast("Сохранено, подключение не удалось: "+(res.err||"проверьте данные"),"err");
+  };
+}
+function connectPostgres(){ connectDB("src_postgres","PostgreSQL",5432); }
+function connectMysql(){ connectDB("src_mysql","MySQL",3306); }
+function connectAmocrm(){
+  // B3-источник amoCRM/Kommo: адрес аккаунта + долгосрочный токен (без OAuth) + сущность.
+  const st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  resetModInput();
+  el("modTitle").textContent = "Источник: amoCRM / Kommo";
+  el("modHint").innerHTML = "В amoCRM: Настройки → Интеграции → создайте интеграцию → «Ключи и доступы» → <b>Сгенерировать долгосрочный токен</b> (права на чтение CRM). Токен хранится шифрованно.";
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<input id="amoBase" ${st} placeholder="Адрес: mycompany.amocrm.ru или https://mycompany.kommo.com">`
+    + `<textarea id="amoTok" ${st.replace('class="','class="').replace('margin-bottom:8px','height:80px;margin-bottom:8px;font-family:monospace;font-size:11px')} placeholder="Долгосрочный токен (начинается с eyJ…)"></textarea>`
+    + `<select id="amoEnt" ${st.replace('margin-bottom:8px','margin-bottom:4px')}><option value="leads">Сделки (leads)</option><option value="contacts">Контакты</option><option value="companies">Компании</option></select>`;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    let base=((el("amoBase")||{}).value||"").trim();
+    const tk=el("amoTok"); const token=((tk||{}).value||"").trim(); if(tk) tk.value="";
+    const entity=(el("amoEnt")||{}).value||"leads";
+    if(!base||!token){ toast("Укажите адрес и токен","err"); return; }
+    const creds={token:token, entity:entity};
+    if(/^https?:\/\//i.test(base)) creds.base_url=base.replace(/\/+$/,"");
+    else { creds.subdomain=base.split(".")[0]; if(/\./.test(base)) creds.domain=base.split(".").slice(1).join("."); }
+    busy("Подключаю amoCRM…");
+    const s=await jpost("/x/secret_set",{connector:"src_amocrm", value:JSON.stringify(creds)});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t=await jpost("/x/source_test",{kind:"src_amocrm"}); busyOff();
+    const res=(t&&t.result)||{};
+    if(res.ok) toast("✓ amoCRM подключён"+(res.account?(" ("+res.account+")"):""),"ok");
+    else toast("Сохранено, доступ не подтверждён: "+(res.err||"проверьте адрес/токен"),"err");
+  };
+}
+function connect1cFile(){
+  // B3-источник: файловая база 1С (.1CD) на устройстве. Сначала открываем и показываем список таблиц.
+  ask("Источник: 1С (файл .1CD)", "Путь к файлу 1Cv8.1CD на устройстве, где крутится процесс (обычно устройство клиента).", "", async (path)=>{
+    if(!path) return; path=path.trim();
+    busy("Открываю базу 1С…");
+    const s=await jpost("/x/secret_set",{connector:"src_1c_file", value:JSON.stringify({db_path:path})});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t=await jpost("/x/source_test",{kind:"src_1c_file"}); busyOff();
+    const res=(t&&t.result)||{};
+    if(!res.ok){ toast("База не открылась: "+(res.err||""),"err"); return; }
+    const tbls=(res.tables||[]).map(x=>x.table);
+    ask("Таблица 1С для выгрузки", "Найдено таблиц: "+(res.table_count||tbls.length)+". Впишите имя нужной таблицы. Доступные: "+tbls.slice(0,40).join(", "), tbls[0]||"", async (tbl)=>{
+      if(!tbl) return; tbl=tbl.trim();
+      const s2=await jpost("/x/secret_set",{connector:"src_1c_file", value:JSON.stringify({db_path:path, table:tbl})});
+      if(s2.status==="success") toast("✓ 1С (файл): таблица "+tbl,"ok"); else toast("Ошибка сохранения","err");
+    });
+  });
+}
+function connect1cWinrm(){
+  // B3-источник: живой сервер 1С через WinRM (устройство с процессом — в сети клиента).
+  const st='class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  resetModInput();
+  el("modTitle").textContent = "Источник: 1С (сервер WinRM)";
+  el("modHint").innerHTML = "Устройству с процессом нужен WinRM-доступ к серверу 1С (порт 5985). Пароль хранится шифрованно, не логируется.";
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<input id="c1Ip" ${st} placeholder="IP сервера 1С (напр. 192.168.1.10)">`
+    + `<input id="c1Login" ${st} placeholder="Windows-логин">`
+    + `<input id="c1Pass" type="password" ${st} placeholder="Пароль">`
+    + `<input id="c1Base" ${st} placeholder="Путь к базе 1С (напр. C:\\1C\\Base)">`
+    + `<select id="c1Type" ${st}><option value="catalog">Справочник</option><option value="document">Документ</option></select>`
+    + `<input id="c1Obj" ${st} placeholder="Имя объекта 1С (напр. Товары)">`
+    + `<input id="c1Fields" ${st.replace('margin-bottom:8px','margin-bottom:4px')} placeholder="Поля через запятую" value="Code,Description">`;
+  el("modBack").classList.add("open");
+  _modCb = async ()=>{
+    const V=id=>((el(id)||{}).value||"").trim();
+    const ip=V("c1Ip"), login=V("c1Login"), base=V("c1Base"), obj=V("c1Obj");
+    const pass=(el("c1Pass")||{}).value||""; if(el("c1Pass")) el("c1Pass").value="";
+    const fields=V("c1Fields").split(",").map(x=>x.trim()).filter(Boolean);
+    if(!ip||!login||!base){ toast("Заполните IP, логин и путь к базе","err"); return; }
+    const creds={server_ip:ip, login:login, password:pass, base_path:base, object_type:(el("c1Type")||{}).value||"catalog", object_name:obj, fields:fields.length?fields:["Code","Description"]};
+    busy("Проверяю WinRM-связь с 1С…");
+    const s=await jpost("/x/secret_set",{connector:"src_1c_winrm", value:JSON.stringify(creds)});
+    if(s.status!=="success"){ busyOff(); toast("Не удалось сохранить: "+(s.message||""),"err"); return; }
+    const t=await jpost("/x/source_test",{kind:"src_1c_winrm"}); busyOff();
+    const res=(t&&t.result)||{};
+    if(res.ok) toast("✓ 1С (WinRM) подключён","ok");
+    else toast("Связь не подтверждена: "+(res.err||"проверьте WinRM/креды"),"err");
+  };
+}
+function connectWhatsapp(){
+  el("modTitle").textContent = "Подключить WhatsApp";
+  el("modHint").innerHTML = "Выберите провайдера.";
+  el("modInput").outerHTML = `<select id="modInput" class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"><option value="green">GREEN-API — обычный номер по QR (проще, популярно в СНГ)</option><option value="meta">Meta Cloud API — официальный Business API</option></select>`;
+  el("modBack").classList.add("open");
+  _modCb = ()=>{ const p=(el("modInput")||{}).value; if(p==="meta") connectWhatsappMeta(); else connectWhatsappGreen(); };
+}
+function connectWhatsappGreen(){
+  ask("GREEN-API — idInstance", "ID инстанса из консоли green-api.com (номер привязывается по QR там же).", "", (idi)=>{
+    if(!idi) return;
+    ask("GREEN-API — apiTokenInstance", "Токен инстанса. Хранится шифрованно.", "", (tok)=>{
+      if(!tok) return;
+      ask("WhatsApp — кому (номер)", "Номер получателя, напр. 77001234567 (или id группы …@g.us).", "", (to)=>{
+        _saveConn("whatsapp",{provider:"green", id_instance:idi.trim(), api_token:tok.trim(), to:(to||"").trim()},"WhatsApp (GREEN-API)");
+      });
+    });
+  });
+}
+function connectWhatsappMeta(){
+  ask("WhatsApp — Phone Number ID", "ID номера из WhatsApp Business (Meta Cloud API).", "", (pid)=>{
+    if(!pid) return;
+    ask("WhatsApp — Access Token", "Постоянный токен доступа (Meta). Хранится шифрованно.", "", (tok)=>{
+      if(!tok) return;
+      ask("WhatsApp — кому (номер)", "Номер получателя в межд. формате, напр. 77001234567.", "", (to)=>{
+        _saveConn("whatsapp",{provider:"meta", phone_id:pid.trim(), access_token:tok.trim(), to:(to||"").trim()},"WhatsApp (Meta)");
+      });
+    });
+  });
+}
+function connectSms(){
+  ask("SMS (Twilio) — Account SID", "SID аккаунта Twilio (AC…).", "", (sid)=>{
+    if(!sid) return;
+    ask("Twilio — Auth Token", "Токен Twilio. Хранится шифрованно.", "", (tok)=>{
+      if(!tok) return;
+      ask("Twilio — отправитель (from)", "Ваш номер Twilio, напр. +1…", "", (frm)=>{
+        ask("SMS — кому (to)", "Номер получателя, напр. +7…", "", (to)=>{
+          _saveConn("sms",{account_sid:sid.trim(), auth_token:tok.trim(), from:(frm||"").trim(), to:(to||"").trim()},"SMS");
+        });
+      });
+    });
+  });
+}
+function deployAgentPrompt(i){
+  const a = AUTOS[i]; if(!a) return;
+  ask("Развернуть агента процесса", "Вставьте id UI-копии агента (Qwen). Копия базового агента делается в Extella в 2 клика.", (a.production_agent&&a.production_agent.agent_id)||"agent_", async (aid)=>{
+    if(!aid || !aid.startsWith("agent_")){ toast("Нужен корректный agent_id (agent_…)","err"); return; }
+    busy("Разворачиваю агента на процесс…");
+    const r = await jpost("/x/deploy_agent",{session_id:a.session_id, agent_id:aid});
+    busyOff();
+    if(r.status==="success"){ toast("🤖 Агент развёрнут: "+(r.name||aid),"ok"); renderAutomations(); }
+    else toast("Ошибка: "+(r.message||""),"err");
+  });
+}
+function shareProcess(i){
+  const a = AUTOS[i]; if(!a) return;
+  const link = location.origin + "/?session=" + encodeURIComponent(a.session_id);
+  ask("Поделиться автоматизацией", "Ссылка на процесс (в этом контуре). Публикация в общий каталог — на следующем этапе.", link, ()=>{
+    try{ navigator.clipboard && navigator.clipboard.writeText(link); }catch(e){}
+    toast("Ссылка скопирована","ok");
+  });
+}
+async function openInWizard(sid){
+  setMode("wizard");
+  await loadSession(sid);
+  S.view = "spec"; render();
+}
+
+/* ================= misc ================= */
+function setStatus(id, html){ el(id).innerHTML = html; }
+(async function init(){
+  try{ CATALOG = await jget("/x/catalog"); }catch(e){}
+  const deep = new URLSearchParams(location.search).get("session");
+  await refreshSessions(deep || undefined);
+  if(deep){ await loadSession(deep); } else { render(); }
+  // chat-first: помощник открыт по умолчанию
+  if(!el("chat").classList.contains("open")) toggleChat();
+})();
+</script>
+</body>
+</html>
