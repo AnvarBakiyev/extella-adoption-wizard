@@ -23,6 +23,12 @@ def wz_data_reality_check(
 
     if not session_id:
         return {"status": "error", "message": "session_id is required"}
+    if not agent_id:   # keyless: свой agent_id клиента из локального конфига (не чужой агент, не Claude)
+        try:
+            _cfg = json.loads((Path.home() / "extella_wizard" / "app" / "config.json").read_text(encoding="utf-8"))
+            agent_id = _cfg.get("llm_agent_id") or _cfg.get("agent_id", "")
+        except Exception:
+            agent_id = ""
     sp = Path.home() / "extella_wizard" / "sessions" / (session_id + ".json")
     if not sp.exists():
         return {"status": "error", "message": "session not found: " + session_id}

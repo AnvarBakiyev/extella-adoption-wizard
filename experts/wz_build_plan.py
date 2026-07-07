@@ -28,8 +28,16 @@ def wz_build_plan(
         return {"status": "error", "message": "namespace is required: short snake prefix for process experts, e.g. 'dz' (lowercase, 2-12 chars)"}
     if not api_token:
         return {"status": "error", "message": "api_token is required"}
+    # keyless: если мост не передал agent_id — читаем СВОЙ agent_id клиента из локального конфига устройства
+    # (его собственный Qwen-Визард; чужой агент → 'Agent does not belong to this user'; Claude-дефолт запрещён)
     if not api_key and not agent_id:
-        return {"status": "error", "message": "для платформенной модели нужен agent_id Qwen-агента (config.agent_id); Claude-дефолт запрещён клиентам"}
+        try:
+            _cfg = json.loads((Path.home() / "extella_wizard" / "app" / "config.json").read_text(encoding="utf-8"))
+            agent_id = _cfg.get("llm_agent_id") or _cfg.get("agent_id", "")
+        except Exception:
+            agent_id = ""
+        if not agent_id:
+            return {"status": "error", "message": "нет Qwen-агента для keyless: передайте agent_id или настройте config.agent_id (свой Qwen-Визард)"}
     if not session_path:
         if not session_id:
             return {"status": "error", "message": "session_id or session_path is required"}
