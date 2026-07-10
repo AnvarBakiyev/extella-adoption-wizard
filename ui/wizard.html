@@ -203,26 +203,79 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 <div class="topbar">
   <div class="wordmark">EXTELLA<span class="dot">.</span></div>
   <div class="nav-toggle">
+    <button id="navComposer" onclick="setMode('composer')">✨ Composer</button>
+    <button id="navMy" onclick="setMode('my')">📦 Мои</button>
     <button id="navWizard" class="on" onclick="setMode('wizard')">Мастер</button>
     <button id="navAuto" onclick="setMode('automations')">🗂 Автоматизации</button>
     <button id="navCore" onclick="setMode('core')">🧬 Процессное ядро</button>
   </div>
   <div class="spacer"></div>
   <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
-  <button class="btn ghost" onclick="newSession()">+ Новая сессия</button>
+  <button class="btn ghost" id="wNewSess" onclick="newSession()">+ Новая сессия</button>
+  <button class="btn ghost" id="wLangBtn" onclick="toggleWLang()" title="Language / Язык">EN</button>
   <button class="btn gold" id="chatToggle" onclick="toggleChat()">💬 Помощник</button>
 </div>
 
 <div class="stepper" id="stepper"></div>
 
 <div class="main" id="mainAuto" style="display:none">
-  <div class="kicker">Мои автоматизации</div>
-  <h1>Автоматизации бизнес-процессов</h1>
-  <p class="lede">Собранные процессы: логика в виде схемы, запуск сейчас или по расписанию, логи и результаты прогонов, продовый агент, публикация.</p>
+  <div class="kicker" id="autoKicker">Мои автоматизации</div>
+  <h1 id="autoH1">Автоматизации бизнес-процессов</h1>
+  <p class="lede" id="autoLede">Собранные процессы: логика в виде схемы, запуск сейчас или по расписанию, логи и результаты прогонов, продовый агент, публикация.</p>
   <div id="connBar"></div>
   <div id="monitorBar"></div>
   <div id="autoList"></div>
 </div>
+
+<div class="main" id="mainComposer" style="display:none">
+  <div class="kicker">✨ AI Composer</div>
+  <h1>Describe it. Extella builds it.</h1>
+  <p class="lede">Type what you need in one sentence. The Composer picks the right tools, models and skills from your library, installs what's missing, and assembles a working automation — then runs it.</p>
+  <div style="display:flex;gap:8px;margin:14px 0 6px">
+    <input id="composerInput" placeholder="e.g. Find subscriptions I forgot about in my bank statements and tell me what to cancel"
+      style="flex:1;padding:14px 16px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:12px;background:#fff;color:var(--ink,#0a0a0a);font-size:15px"
+      onkeydown="if(event.key==='Enter')composeNow()">
+    <button id="composeBtn" class="btn gold" style="padding:0 22px;font-size:15px" onclick="composeNow()">✨ Compose</button>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+    <span class="chip-ex" onclick="composerFill(this)">Find forgotten subscriptions in my bank statements</span>
+    <span class="chip-ex" onclick="composerFill(this)">Watch OpenAI, Anthropic, LangChain and give me a daily competitor digest</span>
+    <span class="chip-ex" onclick="composerFill(this)">Turn my folder of PDFs into a searchable private knowledge base</span>
+  </div>
+  <div id="composerOut"></div>
+</div>
+
+<div class="main" id="mainMy" style="display:none">
+  <div class="kicker">📦 Моя библиотека</div>
+  <h1>Найди что угодно. Extella поставит.</h1>
+  <p class="lede">Ищи способности по всему интернету — локальные модели (HuggingFace), MCP-серверы (npm), CLI-инструменты (GitHub), навыки (Smithery). Ставится по клику; установленное появляется здесь.</p>
+  <div style="display:flex;gap:8px;margin:14px 0 6px">
+    <input id="mySearchInput" placeholder="напр. перевести документы · распознать речь · MCP для Slack"
+      style="flex:1;padding:14px 16px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:12px;background:#fff;color:var(--ink,#0a0a0a);font-size:15px"
+      onkeydown="if(event.key==='Enter')capSearch(this.value,'mySearchOut')">
+    <button class="btn gold" style="padding:0 22px;font-size:15px" onclick="capSearch(el('mySearchInput').value,'mySearchOut')">🔎 Искать</button>
+  </div>
+  <div id="mySearchOut" style="margin:8px 0 18px"></div>
+  <div style="display:flex;align-items:center;gap:10px;margin:22px 0 8px">
+    <h2 style="margin:0;font-size:16px">Установлено</h2>
+    <button class="btn ghost" style="padding:4px 12px;font-size:12px" onclick="loadMyLibrary()">↻ Обновить</button>
+  </div>
+  <div id="myLibOut"><div class="cmp-step"><span class="spin"></span> загружаю…</div></div>
+</div>
+
+<style>
+.chip-ex{cursor:pointer;font-size:12px;color:var(--silver,#889);background:#fff;border:1px solid var(--cream-dark,#e0dccf);border-radius:999px;padding:5px 11px}
+.chip-ex:hover{color:var(--gold,#c60);border-color:var(--gold,#c60)}
+.cmp-step{display:flex;align-items:center;gap:9px;padding:8px 12px;border:1px solid var(--cream-dark,#e0dccf);border-radius:10px;margin:6px 0;font-size:13.5px;background:#fff}
+.cmp-dot{width:8px;height:8px;border-radius:50%;background:var(--gold,#c60);flex:0 0 auto}
+.cap-card{border:1px solid var(--cream-dark,#e0dccf);border-radius:12px;padding:12px 14px;margin:8px 0;background:#fff;display:flex;gap:12px;align-items:flex-start}
+.cap-card .cc-body{flex:1;min-width:0}
+.cap-kind{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:6px;background:#f2ede4;color:#7a6a4a;margin-right:7px}
+.cap-title{font-weight:700;font-size:14px}
+.cap-desc{color:var(--nav,#6b665f);font-size:12.5px;margin:3px 0}
+.cap-meta{color:var(--silver,#a49c8c);font-size:11.5px}
+.cap-src{color:var(--gold,#C67E34);text-decoration:none}
+</style>
 
 <div class="main" id="mainCore" style="display:none">
   <div class="kicker">Ров продукта</div>
@@ -398,6 +451,48 @@ function _modClearExtras(){
   hint.after(inp);
 }
 function resetModInput(){ _modClearExtras(); }   // всегда чистый видимый инпут (после hidden/select-модалок)
+/* ================= EN/RU (демо на английский) ================= */
+var WLANG = (function(){ try { return localStorage.getItem('wz_lang') || 'ru'; } catch(e){ return 'ru'; } })();
+var WT = {
+  navWizard:{ru:'Мастер',en:'Wizard'}, navAuto:{ru:'🗂 Автоматизации',en:'🗂 Automations'}, navCore:{ru:'🧬 Процессное ядро',en:'🧬 Process core'},
+  newSess:{ru:'+ Новая сессия',en:'+ New session'}, assistant:{ru:'💬 Помощник',en:'💬 Assistant'},
+  kicker:{ru:'Мои автоматизации',en:'My automations'}, h1:{ru:'Автоматизации бизнес-процессов',en:'Business process automations'},
+  lede:{ru:'Собранные процессы: логика в виде схемы, запуск сейчас или по расписанию, логи и результаты прогонов, продовый агент, публикация.',en:'Composed processes: logic as a flow, run now or on a schedule, logs and run results, a production agent, publishing.'},
+  run:{ru:'▶ Запустить сейчас',en:'▶ Run now'}, configure:{ru:'⚙ Настроить словами',en:'⚙ Configure in words'},
+  deployAg:{ru:'🤖 Развернуть агента',en:'🤖 Deploy agent'}, updateAg:{ru:'🤖 Обновить агента',en:'🤖 Update agent'},
+  share:{ru:'🔗 Поделиться',en:'🔗 Publish'}, edit:{ru:'✎ Изменить',en:'✎ Edit'},
+  tSource:{ru:'Источник',en:'Source'}, tSchedule:{ru:'Расписание',en:'Schedule'}, tDeliver:{ru:'Куда слать результат',en:'Where to send results'}, tInbound:{ru:'Входящие',en:'Inbound'},
+  cfgTitle:{ru:'Настроить словами',en:'Configure in words'},
+  cfgHint:{ru:'Опишите, что мониторить (можно по-английски). Напр.: «watch OpenAI, Anthropic, LangChain and r/LocalLLaMA, post a daily digest to Slack».',en:'Describe what to monitor. E.g.: "watch OpenAI, Anthropic, LangChain and r/LocalLLaMA, post a daily digest to Slack".'},
+  cfgBusy:{ru:'Понимаю запрос — агент собирает конфиг…',en:'Understanding your request — the agent is building the config…'},
+  cfgToast:{ru:'✓ Конфиг собран агентом',en:'✓ Config built by the agent'}, cfgOkTitle:{ru:'Готово ✓ — процесс настроен',en:'Done ✓ — process configured'},
+  cfgOkBody:{ru:'Агент понял запрос и заполнил конфиг:\n\n',en:'The agent understood your request and filled the config:\n\n'},
+  cfgFail:{ru:'Не удалось: ',en:'Failed: '},
+  shTitle:{ru:'Опубликовать в магазин',en:'Publish to the store'},
+  shHint:{ru:'Соберём Process Pack (репозиторий + карточка) и опубликуем в раздел «AI Автоматизации» витрины. Продолжить?',en:'We\'ll build a Process Pack (repository + card) and publish it to the "AI Automations" section of the store. Continue?'},
+  shBusy:{ru:'Публикую в магазин — генерю пак и карточку…',en:'Publishing to the store — generating the pack and card…'},
+  shToast:{ru:'✓ Опубликовано в магазин',en:'✓ Published to the store'}, shOkTitle:{ru:'Опубликовано ✓',en:'Published ✓'},
+  shOkCard:{ru:'Карточка появилась в витрине → «AI Автоматизации».\n',en:'The card appeared in the store → "AI Automations".\n'},
+  shRepo:{ru:'Репозиторий: ',en:'Repository: '}, shLocal:{ru:'Пак собран локально.',en:'Pack built locally.'},
+  shFail:{ru:'Ошибка публикации: ',en:'Publish error: '}, noAnswer:{ru:'нет ответа',en:'no response'},
+  connHdr:{ru:'🔌 Подключения',en:'🔌 Connections'},
+  connSub:{ru:'Подключаешь один раз — статус виден здесь. В процессах ниже просто выбираешь из подключённого.',en:'Connect once — status stays here. In the processes below you just pick from what\'s connected.'},
+  connOut:{ru:'Каналы вывода',en:'Output channels'}, connIn:{ru:'Источники данных',en:'Data sources'},
+  chipTest:{ru:'тест',en:'test'}, chipConnect:{ru:'подключить',en:'connect'},
+  monHdr:{ru:'Мониторинг',en:'Monitoring'}, monProc:{ru:'процессов',en:'processes'}, monRefresh:{ru:'обновить',en:'refresh'},
+  monScheduled:{ru:'по расписанию',en:'scheduled'}, monOverdue:{ru:'просрочено',en:'overdue'}, monNone:{ru:'нет расписания/прогонов',en:'no schedule / runs'}, monRun:{ru:'прогон',en:'run'}
+};
+function _wt(k){ var o = WT[k]; return o ? (o[WLANG] || o.ru || '') : k; }
+function applyWLang(){
+  try {
+    var m={navWizard:'navWizard',navAuto:'navAuto',navCore:'navCore',autoKicker:'kicker',autoH1:'h1',autoLede:'lede',wNewSess:'newSess',chatToggle:'assistant'};
+    Object.keys(m).forEach(function(id){ var e=document.getElementById(id); if(e) e.textContent=_wt(m[id]); });
+    var lb=document.getElementById('wLangBtn'); if(lb) lb.textContent=(WLANG==='ru'?'EN':'RU');
+    document.documentElement.setAttribute('lang', WLANG);
+  } catch(e) {}
+}
+function toggleWLang(){ WLANG=(WLANG==='ru'?'en':'ru'); try{ localStorage.setItem('wz_lang',WLANG); }catch(e){} applyWLang(); if(typeof renderAutomations==='function') renderAutomations(); }
+
 function ask(title, hint, def, cb){
   resetModInput();
   el("modTitle").textContent = title;
@@ -446,6 +541,7 @@ async function loadSession(sid){
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
   S.sessionId = sid;
+  await loadChatHistory(sid);                 // подтянуть стенограмму разговора этой сессии
   S.session = await jget("/x/session?id="+encodeURIComponent(sid));
   S.blueprint = null; S.spec = null;
   try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(bp && bp.blueprint) S.blueprint = bp; }catch(e){}
@@ -479,16 +575,185 @@ function flowHTML(stages){
 /* ================= режим: Мастер / Автоматизации ================= */
 function setMode(m){
   S.mode = m;
+  el("navComposer").classList.toggle("on", m==="composer");
+  var nm=el("navMy"); if(nm) nm.classList.toggle("on", m==="my");
   el("navWizard").classList.toggle("on", m==="wizard");
   el("navAuto").classList.toggle("on", m==="automations");
   el("navCore").classList.toggle("on", m==="core");
-  const auto = m==="automations", core = m==="core";
+  const auto = m==="automations", core = m==="core", comp = m==="composer", my = m==="my";
   el("mainAuto").style.display = auto?"block":"none";
   el("mainCore").style.display = core?"block":"none";
-  el("main").style.display = (auto||core)?"none":"block";
-  el("stepper").style.display = (auto||core)?"none":"flex";
+  el("mainComposer").style.display = comp?"block":"none";
+  var mm=el("mainMy"); if(mm) mm.style.display = my?"block":"none";
+  el("main").style.display = (auto||core||comp||my)?"none":"block";
+  el("stepper").style.display = (auto||core||comp||my)?"none":"flex";
   if(auto) renderAutomations();
   if(core) renderProcessCore();
+  if(my) loadMyLibrary();
+}
+function composerFill(el2){ el("composerInput").value = el2.textContent; el("composerInput").focus(); }
+// известные русские сообщения композитора -> English для US-аудитории (WLANG==='en')
+var CMP_ERR_MAP=[
+  [/^опиши задачу/i,'describe your task in a sentence'],
+  [/^нет api_token/i,'no API token configured'],
+  [/каталог блоков повреждён/i,'the block catalog is corrupted (not JSON)'],
+  [/не прочитал каталог/i,"couldn't read the block catalog (network/KV)"],
+  [/composer:catalog пуст/i,'the block catalog is empty — seed it first'],
+  [/композиция не разобралась/i,"couldn't parse the composition — try rephrasing"],
+  [/план без валидных шагов/i,'no valid steps could be composed for this task'],
+  [/не записал план/i,"couldn't save the composed plan"],
+  [/карточка не записана/i,"couldn't register the automation card"],
+  [/run failed|compose failed/i,'the run failed']
+];
+function _cmpErr(msg){
+  msg=String(msg||'');
+  if(WLANG!=='en') return msg;
+  for(var i=0;i<CMP_ERR_MAP.length;i++){ if(CMP_ERR_MAP[i][0].test(msg)) return CMP_ERR_MAP[i][1]; }
+  return msg;
+}
+var _composing=false;
+async function composeNow(){
+  if(_composing) return;                       // гард от двойного сабмита (double-click / зажатый Enter)
+  const task = (el("composerInput").value||"").trim();
+  if(!task){ el("composerInput").focus(); return; }
+  const out = el("composerOut");
+  const cbtn = el("composeBtn");
+  _composing=true; if(cbtn) cbtn.disabled=true;
+  out.innerHTML = '<div class="cmp-step"><span class="spin"></span> <b>Understanding your task…</b> picking tools, models and skills from your library</div>';
+  let r;
+  try{ r = await jpost("/x/compose",{task:task}); }
+  finally{ _composing=false; if(cbtn) cbtn.disabled=false; }
+  if(!r || r.status!=="success"){ out.innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'; return; }
+  // показываем ЧТО собрал: шаги, установки, чего не хватило
+  var steps = (r.steps||[]).map(function(s){ return '<div class="cmp-step"><span class="cmp-dot"></span> <b>'+esc(s.expert)+'</b> <span style="color:var(--silver,#889)">'+esc(JSON.stringify(s.params).slice(0,70))+'</span></div>'; }).join('');
+  var inst = (r.installed||[]).filter(function(x){return x.status!=='already';}).map(function(x){ return '<div class="cmp-step" style="border-color:var(--gold,#c60)">⬇ installing <b>'+esc(x.model)+'</b> ('+esc(x.status)+')</div>'; }).join('');
+  var missReal = (r.missing||[]).filter(function(m){return !/^unknown block:|params не объект|ссылается на|не установилась/i.test(String(m));});
+  window._composerCapQ = missReal.length ? missReal.join(', ') : task;
+  var miss = (r.missing&&r.missing.length)
+    ? '<div class="cmp-step" style="border-color:#c93;flex-wrap:wrap">🔎 не в твоей библиотеке: '+esc(r.missing.join(', '))+
+      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px;margin-left:auto" onclick="capSearch(window._composerCapQ||\'\',\'composerCapOut\')">🌐 Найти в интернете</button></div>'
+    : '';
+  var card = r.card||{};
+  // запоминаем личность автоматизации, чтобы бриф-модалка носила её имя и её блоки (а не дефолт «Competitor Intelligence»)
+  var comps = (card.components && card.components.length) ? card.components : (r.steps||[]).map(function(s){return s.expert;});
+  COMPOSED[r.flow_id] = {
+    kicker: 'Extella · Composed automation',
+    title: card.name || task,
+    subtitle: card.description || task,
+    chips: comps.map(compChip)
+  };
+  out.innerHTML =
+    '<div class="cmp-step" style="border-color:var(--ok,#2a2)"><b>✓ Assembled:</b> '+esc(card.name||task)+'</div>'+
+    '<div style="font-size:12px;color:var(--silver,#889);margin:10px 0 4px">Steps it composed:</div>'+ steps + inst + miss +
+    '<div style="margin-top:14px"><button class="btn gold" style="padding:10px 22px;font-size:15px" onclick="runComposed(\''+esc(r.flow_id)+'\',this)">▶ Run it now</button>'+
+    '<span id="cmp_run_msg" style="margin-left:12px;color:var(--silver,#889)"></span></div>'+
+    '<div id="composerCapOut" style="margin-top:12px"></div>';
+}
+async function runComposed(flowId, btn){
+  if(btn){ if(btn.disabled) return; btn.disabled = true; }   // гард от повторного клика
+  var msg = el("cmp_run_msg");
+  if(msg) msg.innerHTML = '<span class="spin"></span> running — gathering data & synthesizing on your local Qwen…';
+  let r;
+  try{ r = await jpost("/x/run_flow",{flow_id:flowId}); }
+  finally{ if(btn) btn.disabled = false; }
+  if(r && r.status==="success" && r.digest){
+    var warns = r.warnings||[];
+    var degraded = r.degraded || (r.run_status && r.run_status!=="success");
+    if(msg) msg.innerHTML = degraded
+      ? '<span style="color:#c93">⚠ done with '+warns.length+' warning'+(warns.length===1?'':'s')+'</span>'
+      : '✓ done — opening result';
+    var opts = Object.assign({}, COMPOSED[flowId]||{}, {warnings: warns});
+    showBrief(r.digest, opts);
+  } else {
+    if(msg) msg.innerHTML = '<span style="color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"run failed"))+'</span>';
+  }
+}
+
+/* ============ поиск способностей ВНЕ каталога + установка + «Мои» ============ */
+var CAP_RESULTS={};
+var CAP_KIND_LABEL={model:'модель',mcp:'MCP-сервер',cli:'CLI',skill:'навык',service:'сервис',api:'API'};
+var CAP_SRC={huggingface:'HuggingFace',npm:'npm',github:'GitHub',smithery:'Smithery',ollama:'Ollama',mcp:'MCP'};
+async function capSearch(query, mountId){
+  query=(query||'').trim(); var mount=el(mountId); if(!mount) return;
+  if(!query){ mount.innerHTML=''; return; }
+  mount.innerHTML='<div class="cmp-step"><span class="spin"></span> ищу по HuggingFace · npm · GitHub · Smithery…</div>';
+  var r=await jpost('/x/cap_search',{query:query});
+  if(!r || r.status!=='success'){ mount.innerHTML='<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc((r&&r.message)||'search failed')+'</div>'; return; }
+  var cands=(r.candidates||[]).filter(function(c){return c&&c.id;});
+  CAP_RESULTS[mountId]=cands;
+  if(!cands.length){ mount.innerHTML='<div class="cmp-step" style="border-color:#c93">Ничего подходящего не нашлось. Уточни запрос.</div>'; return; }
+  mount.innerHTML='<div style="font-size:12px;color:var(--silver,#889);margin:4px 0 8px">Нашёл '+cands.length+' — установка по клику (внешнее ставится после подтверждения):</div>'+
+    cands.map(function(c,i){return capCardHTML(c,mountId,i);}).join('');
+}
+function capCardHTML(c,mountId,i){
+  var kl=CAP_KIND_LABEL[c.kind]||c.kind, src=CAP_SRC[c.source]||c.source;
+  var title = c.url ? '<a class="cap-src" href="'+esc(c.url)+'" target="_blank" rel="noopener noreferrer">'+esc(c.title)+'</a>' : esc(c.title);
+  return '<div class="cap-card" id="capc-'+mountId+'-'+i+'"><div class="cc-body">'+
+    '<div><span class="cap-kind">'+esc(kl)+'</span><span class="cap-title">'+title+'</span></div>'+
+    (c.desc?'<div class="cap-desc">'+esc(c.desc)+'</div>':'')+
+    '<div class="cap-meta">'+esc(src)+(c.trust?' · '+esc(c.trust):'')+'</div>'+
+    '</div><div style="flex:0 0 auto"><button class="btn gold" style="padding:7px 14px;font-size:13px" onclick="capInstall(\''+mountId+'\','+i+',this)">Установить</button></div></div>';
+}
+async function capInstall(mountId,i,btn){
+  var c=(CAP_RESULTS[mountId]||[])[i]; if(!c) return;
+  if(btn && btn.disabled) return;
+  var runs = (c.install&&(c.install.method==='ollama'||c.install.method==='mcp_connect'||c.install.method==='brew'));
+  var warn = runs ? '\n\nЭто скачает и запустит код на вашем устройстве ('+(CAP_SRC[c.source]||c.source)+').' : '';
+  if(!confirm('Установить «'+c.title+'» ('+(CAP_KIND_LABEL[c.kind]||c.kind)+')?'+warn)) return;
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin"></span> ставлю…'; }
+  var inst=c.install||{};
+  var r=await jpost('/x/cap_install',{kind:c.kind,install_ref:inst.ref||c.id,method:inst.method||'',
+        pkg_type:inst.pkg_type||'',title:c.title||'',desc:c.desc||'',url:c.url||'',source:c.source||''});
+  var card=el('capc-'+mountId+'-'+i);
+  if(r && r.status!=='error'){
+    var st=r.install_status||'linked';
+    var lbl = st==='installed' ? '✓ установлено · в «Мои»' : (st==='installing' ? '⏳ ставится… · в «Мои»' : '✓ добавлено в «Мои»');
+    if(card){ var slot=card.querySelector('div[style*="flex:0 0 auto"]'); if(slot) slot.innerHTML='<span style="color:var(--ok,#2a2);font-size:13px;font-weight:600">'+lbl+'</span>'; card.style.borderColor='var(--ok,#2a2)'; }
+  } else {
+    if(btn){ btn.disabled=false; btn.innerHTML='Повторить'; }
+    if(card){ var m=document.createElement('div'); m.className='cap-desc'; m.style.color='var(--bad,#c33)'; m.textContent='⚠ '+((r&&r.message)||'не установилось'); card.querySelector('.cc-body').appendChild(m); }
+  }
+}
+async function loadMyLibrary(){
+  var mount=el('myLibOut'); if(!mount) return;
+  mount.innerHTML='<div class="cmp-step"><span class="spin"></span> загружаю…</div>';
+  var r=await jpost('/x/my_library',{});
+  var items=(r&&r.items)||[];
+  if(!items.length){ mount.innerHTML='<div class="cmp-step">Пока пусто. Найди способность выше и установи — она появится здесь.</div>'; return; }
+  var groups={}; items.forEach(function(it){ (groups[it.kind]=groups[it.kind]||[]).push(it); });
+  var order=['model','mcp','skill','cli','service','api'];
+  var rank=function(k){var i=order.indexOf(k);return i<0?99:i;};
+  var html=Object.keys(groups).sort(function(a,b){return rank(a)-rank(b);}).map(function(k){
+    return '<div style="font-size:12px;color:var(--silver,#889);margin:12px 0 4px;text-transform:uppercase;letter-spacing:.4px">'+esc(CAP_KIND_LABEL[k]||k)+' · '+groups[k].length+'</div>'+
+      groups[k].map(function(it){
+        var badge = it.status==='installed' ? '<span style="color:var(--ok,#2a2);font-size:11.5px;font-weight:600">● установлено</span>' : (it.status==='installing' ? '<span style="color:var(--gold,#C67E34);font-size:11.5px;font-weight:600">◐ ставится…</span>' : '<span style="color:var(--gold,#C67E34);font-size:11.5px;font-weight:600">● подключено</span>');
+        var t = it.url ? '<a class="cap-src" href="'+esc(it.url)+'" target="_blank" rel="noopener noreferrer">'+esc(it.title||it.id)+'</a>' : esc(it.title||it.id);
+        // Удалить = по-настоящему с устройства: модель — из Ollama (освобождает гигабайты),
+        // MCP — из аллоулиста, brew — brew uninstall; запись из «Мои» трётся только после успеха
+        var rm = '<button class="btn ghost" style="padding:4px 11px;font-size:12px;flex:0 0 auto;align-self:center" onclick="capRemove(\''+esc(it.kind)+'\',\''+esc(it.id)+'\',\''+esc(it.method||'')+'\',this)">Удалить</button>';
+        return '<div class="cap-card"><div class="cc-body"><div><span class="cap-title">'+t+'</span>  '+badge+'</div>'+
+          (it.how?'<div class="cap-desc">'+esc(it.how)+'</div>':'')+
+          '<div class="cap-meta">'+esc(CAP_SRC[it.source]||it.source||'')+'</div></div>'+rm+'</div>';
+      }).join('');
+  }).join('');
+  mount.innerHTML=html;
+}
+async function capRemove(kind, id, method, btn){
+  if(btn && btn.disabled) return;
+  var what = kind==='model' ? 'Модель будет удалена с устройства (освободит место; скачать можно заново).'
+    : kind==='mcp' ? 'MCP-сервер будет отключён (вычищен из аллоулиста устройства).'
+    : method==='brew' ? 'Инструмент будет удалён с устройства (brew uninstall).'
+    : 'Запись будет убрана из «Мои».';
+  if(!confirm('Удалить «'+id+'»?\n\n'+what)) return;
+  if(btn){ btn.disabled=true; btn.textContent='…'; }
+  var r=await jpost('/x/cap_remove',{kind:kind,id:id,method:method||''});
+  if(r && r.status==='success'){
+    if(r.freed){ try{ console.log('freed '+r.freed); }catch(e){} }
+    loadMyLibrary();
+  } else {
+    if(btn){ btn.disabled=false; btn.textContent='Повторить'; btn.title=(r&&r.message)||'не удалилось'; }
+    alert('Не удалилось: '+((r&&r.message)||'ошибка')+'\nЗапись оставлена в списке (честно).');
+  }
 }
 
 /* ================= render ================= */
@@ -1269,6 +1534,18 @@ function pushMsg(cls, text){
   log.appendChild(d); log.scrollTop = log.scrollHeight;
   return d;
 }
+const GREETING_HTML = '<div class="msg bot">Здравствуйте! Я помогу спроектировать ваш ИИ-процесс на Extella. Расскажите своими словами, какая задача или боль привела вас сюда — остальное я спрошу сам, а конспект слева буду заполнять по ходу разговора. Руками его править не нужно (но можно — если хотите уточнить).</div>';
+async function loadChatHistory(sid){
+  // Один непрерывный чат на сессию: подгружаем сохранённую стенограмму (память держит мост, не платформа).
+  const log = el("chatLog");
+  S.chatRespId = null;
+  log.innerHTML = GREETING_HTML;               // всегда начинаем с приветствия
+  if(!sid) return;
+  try{
+    const r = await jget("/x/chat_history?session_id="+encodeURIComponent(sid));
+    (r.turns||[]).forEach(t => pushMsg(t.role==="user" ? "user" : "bot", t.text||""));
+  }catch(e){}
+}
 async function sendChatSilent(text){
   // служебное сообщение помощнику (о файлах) — без пузыря пользователя
   const wait = pushMsg("bot","…");
@@ -1334,14 +1611,14 @@ async function renderConnections(){
   try{ const sc=await jget("/x/secrets"); window.CONN=(sc.secrets||[]).map(x=>x.connector); }catch(e){ window.CONN=[]; }
   const conn = window.CONN;
   const chip = (key,label,fn,isSrc)=> conn.includes(key)
-    ? `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:rgba(45,160,95,.15);color:#2fa86a;border-radius:8px;padding:5px 11px">${esc(label)} ✓ <a href="#" onclick="testConn('${key}',${isSrc?1:0});return false" style="color:#2fa86a">тест</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33" title="отключить">×</a></span>`
-    : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid rgba(128,128,128,.3);color:var(--silver,#889);border-radius:8px;padding:5px 11px">${esc(label)} · <a href="#" onclick="${fn}();return false" style="color:#c60">подключить</a></span>`;
+    ? `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:rgba(45,160,95,.15);color:#2fa86a;border-radius:8px;padding:5px 11px">${esc(label)} ✓ <a href="#" onclick="testConn('${key}',${isSrc?1:0});return false" style="color:#2fa86a">${_wt('chipTest')}</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33" title="off">×</a></span>`
+    : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid rgba(128,128,128,.3);color:var(--silver,#889);border-radius:8px;padding:5px 11px">${esc(label)} · <a href="#" onclick="${fn}();return false" style="color:#c60">${_wt('chipConnect')}</a></span>`;
   bar.innerHTML = `<div style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:12px 14px;margin:0 0 16px">
-    <div style="font-size:14px;font-weight:600">🔌 Подключения</div>
-    <div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 10px">Подключаешь один раз — статус виден здесь. В процессах ниже просто выбираешь из подключённого.</div>
-    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">Каналы вывода</div>
+    <div style="font-size:14px;font-weight:600">${_wt('connHdr')}</div>
+    <div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 10px">${_wt('connSub')}</div>
+    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connOut')}</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${OUT_CH.map(c=>chip(c[0],c[1],c[2],false)).join("")}</div>
-    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">Источники данных</div>
+    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connIn')}</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px">${IN_SRC.map(c=>chip(c[0],c[1],c[2],true)).join("")}</div>
   </div>`;
 }
@@ -1369,12 +1646,12 @@ async function renderMonitor(){
   const dot = h => h==="error"?"🔴":(h==="warn"?"🟡":"🟢");
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n||"");
   const tm = t => t ? esc(String(t).slice(0,16).replace("T"," ")) : "—";
-  const head = `<div style="font-size:13px;margin-bottom:8px">🩺 <b>Мониторинг</b>: ${su.total||0} процессов &nbsp; 🟢 ${su.healthy||0} &nbsp; 🟡 ${su.warn||0} &nbsp; 🔴 ${su.error||0}${su.overdue?(" &nbsp; ⏰ просрочено "+su.overdue):""} &nbsp; <a href="#" onclick="renderMonitor();return false" style="color:#c60;font-size:12px">обновить</a></div>`;
+  const head = `<div style="font-size:13px;margin-bottom:8px">🩺 <b>${_wt('monHdr')}</b>: ${su.total||0} ${_wt('monProc')} &nbsp; 🟢 ${su.healthy||0} &nbsp; 🟡 ${su.warn||0} &nbsp; 🔴 ${su.error||0}${su.overdue?(" &nbsp; ⏰ "+_wt('monOverdue')+" "+su.overdue):""} &nbsp; <a href="#" onclick="renderMonitor();return false" style="color:#c60;font-size:12px">${_wt('monRefresh')}</a></div>`;
   const rows = ps.map(p=>{
     const s=p.schedule, lr=p.last_run, bits=[];
-    if(s) bits.push("⏱ "+esc(s.period||"по расписанию")+(s.overdue?" · <span style='color:var(--bad,#c33)'>просрочено</span>":(s.next_due?(" · след. "+tm(s.next_due)):"")));
-    if(lr) bits.push("прогон "+tm(lr.at)+" · "+esc(lr.status||"")+(lr.total_sum!=null?(" · "+fmt(lr.total_sum)+" ₸"):""));
-    else if(!s) bits.push("<span style='color:#999'>нет расписания/прогонов</span>");
+    if(s) bits.push("⏱ "+esc(s.period||_wt('monScheduled'))+(s.overdue?" · <span style='color:var(--bad,#c33)'>"+_wt('monOverdue')+"</span>":(s.next_due?(" · "+tm(s.next_due)):"")));
+    if(lr) bits.push(_wt('monRun')+" "+tm(lr.at)+" · "+esc(lr.status||"")+(lr.total_sum!=null?(" · "+fmt(lr.total_sum)):""));
+    else if(!s) bits.push("<span style='color:#999'>"+_wt('monNone')+"</span>");
     if(p.source) bits.push("🔌 "+esc(String(p.source.kind||"").replace("src_","")));
     if(p.deliver) bits.push("→ "+esc(p.deliver)+(p.delivery?(p.delivery.ok?" ✓":" ✗"):""));
     if(p.inbound&&p.inbound.mode) bits.push("📥 "+esc(p.inbound.mode));
@@ -1414,28 +1691,123 @@ async function renderAutomations(){
       </div>`:""}
       ${bd.map(([k,v])=>`<div style="font-size:12.5px"><b>${esc(k.slice(3))}:</b> ${Object.entries(v).map(([kk,vv])=>esc(kk)+" — "+fmt(vv)).join(" · ")}</div>`).join("")}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0">
-        ${tile("Источник", a.source&&a.source.kind?SRCNAME(a.source.kind):"— файл —", !!(a.source&&a.source.kind), `sourceProcess(${i})`)}
-        ${tile("Расписание", (a.schedule&&a.schedule.period)?esc(a.schedule.period):"— вручную —", !!(a.schedule&&a.schedule.period), `scheduleProcess(${i})`)}
-        ${tile("Куда слать результат", (a.schedule&&a.schedule.deliver)?CHNAME(a.schedule.deliver):"— не слать —", !!(a.schedule&&a.schedule.deliver), `scheduleProcess(${i})`)}
-        ${tile("Входящие", (a.inbound&&a.inbound.mode)?(a.inbound.mode==="poll"?"опрос":esc(a.inbound.mode)):"— выкл —", !!(a.inbound&&a.inbound.mode), `inboundProcess(${i})`)}
+        ${tile(_wt('tSource'), a.source&&a.source.kind?SRCNAME(a.source.kind):"—", !!(a.source&&a.source.kind), `sourceProcess(${i})`)}
+        ${tile(_wt('tSchedule'), (a.schedule&&a.schedule.period)?esc(a.schedule.period):"—", !!(a.schedule&&a.schedule.period), `scheduleProcess(${i})`)}
+        ${tile(_wt('tDeliver'), (a.schedule&&a.schedule.deliver)?CHNAME(a.schedule.deliver):"—", !!(a.schedule&&a.schedule.deliver), `scheduleProcess(${i})`)}
+        ${tile(_wt('tInbound'), (a.inbound&&a.inbound.mode)?(a.inbound.mode==="poll"?(WLANG==='en'?"poll":"опрос"):esc(a.inbound.mode)):"—", !!(a.inbound&&a.inbound.mode), `inboundProcess(${i})`)}
       </div>
       <div class="auto-actions">
-        <button class="btn gold sm" onclick="runProcess(${i})">▶ Запустить сейчас</button>
-        <button class="btn ghost sm" onclick="deployAgentPrompt(${i})">🤖 ${a.production_agent?"Обновить агента":"Развернуть агента"}</button>
-        <button class="btn ghost sm" onclick="shareProcess(${i})">🔗 Поделиться</button>
-        <button class="btn ghost sm" onclick="openInWizard('${a.session_id}')">✎ Изменить</button>
+        <button class="btn gold sm" onclick="runProcess(${i})">${_wt('run')}</button>
+        <button class="btn ghost sm" onclick="configureProcess(${i})">${_wt('configure')}</button>
+        <button class="btn ghost sm" onclick="deployAgentPrompt(${i})">${a.production_agent?_wt('updateAg'):_wt('deployAg')}</button>
+        <button class="btn ghost sm" onclick="shareProcess(${i})">${_wt('share')}</button>
+        <button class="btn ghost sm" onclick="openInWizard('${a.session_id}')">${_wt('edit')}</button>
       </div>
       <div id="autoRun-${i}" style="margin-top:8px"></div>
       <div class="run-row" id="runrow-${i}">${lr?`Последний прогон: ${esc((lr.at||"").slice(0,16).replace("T"," "))} · ${esc(lr.status)} · сумма ${fmt(lr.total_sum)}${lr.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(lr.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:""}`:""}</div>
     </div>`;
   }).join("");
 }
+function _mdInline(s){
+  // экранируем И кавычку: URL из недоверенных источников идёт в href="$2" (иначе атрибут-инъекция/XSS)
+  s=String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  // нежадно: имена мерчантов содержат '*' (Adobe *Creative), поэтому [^*]+ ломал **жирный**
+  s=s.replace(/\*\*([\s\S]+?)\*\*/g,'<strong>$1</strong>');
+  s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
+  // разэкранируем оставшуюся markdown-пунктуацию: "Adobe \*Creative" -> "Adobe *Creative"
+  s=s.replace(/\\([*_`~\[\]()#.+\-!\\])/g,'$1');
+  return s;
+}
+function mdToHtml(md){
+  var lines=String(md).split("\n"),out=[],i=0;
+  while(i<lines.length){
+    var ln=lines[i].replace(/\s+$/,'');
+    if(!ln.trim()){i++;continue;}
+    if(ln.indexOf("### ")===0){out.push("<h3>"+_mdInline(ln.slice(4))+"</h3>");i++;continue;}
+    if(ln.indexOf("## ")===0){out.push("<h2>"+_mdInline(ln.slice(3))+"</h2>");i++;continue;}
+    if(ln.indexOf("# ")===0){out.push("<h1>"+_mdInline(ln.slice(2))+"</h1>");i++;continue;}
+    if(ln.trim()==="---"){out.push("<hr>");i++;continue;}
+    if(ln.trim().indexOf("|")===0 && i+1<lines.length && /^[\s|:\-]+$/.test(lines[i+1])){
+      var head=ln.trim().replace(/^\||\|$/g,'').split("|").map(function(c){return c.trim();});
+      i+=2;var rows=[];
+      while(i<lines.length && lines[i].trim().indexOf("|")===0){ rows.push(lines[i].trim().replace(/^\||\|$/g,'').split("|").map(function(c){return c.trim();})); i++; }
+      var t="<table><thead><tr>"+head.map(function(h){return "<th>"+_mdInline(h)+"</th>";}).join("")+"</tr></thead><tbody>";
+      t+=rows.map(function(r){return "<tr>"+r.map(function(c){return "<td>"+_mdInline(c)+"</td>";}).join("")+"</tr>";}).join("");
+      out.push(t+"</tbody></table>");continue;
+    }
+    if(/^[-*]\s/.test(ln.trim())){
+      var items=[];
+      while(i<lines.length && /^[-*]\s/.test(lines[i].trim())){ items.push("<li>"+_mdInline(lines[i].trim().replace(/^[-*]\s+/,''))+"</li>"); i++; }
+      out.push("<ul>"+items.join("")+"</ul>");continue;
+    }
+    if(/^\d+\.\s/.test(ln.trim())){
+      var oitems=[];
+      while(i<lines.length && /^\d+\.\s/.test(lines[i].trim())){ oitems.push("<li>"+_mdInline(lines[i].trim().replace(/^\d+\.\s+/,''))+"</li>"); i++; }
+      out.push("<ol>"+oitems.join("")+"</ol>");continue;
+    }
+    out.push("<p>"+_mdInline(ln)+"</p>");i++;
+  }
+  return out.join("\n");
+}
+function closeBrief(){ var m=el("briefModal"); if(m) m.style.display="none"; }
+// человекочитаемые чипы блоков автоматизации (id эксперта -> эмодзи + имя)
+var COMPONENT_LABELS={
+  fin_scan_statements:'💳 Bank statements', svc_github_releases:'🐙 GitHub monitor',
+  svc_rss:'📡 RSS blogs', svc_reddit:'👽 Reddit', svc_hackernews:'📰 Hacker News',
+  svc_currency:'💱 Currency', svc_weather:'🌤 Weather', kp_ingest:'📥 Knowledge ingest',
+  kp_ask:'📚 Knowledge base', cap_pdftotext_to_txt_batch:'📄 PDF→text',
+  cap_ghostscript_compress_pdf_batch:'🗜 PDF compress', cap_ocr_searchable_batch:'🔎 OCR',
+  cap_local_ask:'🧠 Local Qwen'
+};
+function compChip(id){ return COMPONENT_LABELS[id] || ('⚙️ '+id); }
+// stash личности собранных композитором автоматизаций: flow_id -> {kicker,title,subtitle,chips}
+var COMPOSED={};
+function showBrief(md, opts){
+  var m=el("briefModal");
+  if(!m){
+    m=document.createElement("div"); m.id="briefModal";
+    m.style.cssText="position:fixed;inset:0;background:rgba(20,18,15,.55);z-index:99999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:28px 16px";
+    m.addEventListener("click",function(e){ if(e.target===m) m.style.display="none"; });
+    document.body.appendChild(m);
+  }
+  var custom = opts && typeof opts==='object';
+  var kicker  = custom ? (opts.kicker  || 'Extella · Composed automation') : 'Extella · Competitor Intelligence';
+  var title   = custom ? (opts.title   || 'Composed automation') : 'Competitor Intelligence Brief';
+  var subtitle= custom ? (opts.subtitle|| 'Composed from your library — the agent picked the tools, installed what was missing and ran it on your Qwen, in your contour.') : 'Composed from your plugins — the agent gathered, classified and cited it. Runs on your Qwen, in your contour.';
+  var chipList= (custom && opts.chips && opts.chips.length) ? opts.chips : ['🐙 GitHub monitor','👽 Reddit','📰 Hacker News','📡 RSS blogs','📚 Positioning KB','🧠 Qwen'];
+  var chips=chipList.map(function(c){
+    return '<span style="background:#faf7f2;border:1px solid #e4ded5;border-radius:999px;padding:4px 11px;font-size:12px;color:#48423a">'+esc(c)+'</span>';}).join("");
+  var warns=(custom && opts.warnings && opts.warnings.length) ? opts.warnings : [];
+  var warnBox = warns.length
+    ? '<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:10px;padding:10px 14px;margin:0 0 16px;font-size:12.5px;color:#7a5b1a">'+
+      '<b>⚠ Ran with '+warns.length+' warning'+(warns.length===1?'':'s')+':</b><ul style="margin:6px 0 0;padding-left:18px">'+
+      warns.map(function(w){return '<li>'+esc(String(w))+'</li>';}).join("")+'</ul></div>'
+    : '';
+  m.innerHTML='<style>#briefModal .bb h2{font-size:18px;margin:22px 0 8px;color:#1c1a17}#briefModal .bb h3{font-size:15px;margin:16px 0 6px;color:#1c1a17}#briefModal .bb ol{padding-left:20px}#briefModal .bb ol li{margin:5px 0}#briefModal .bb table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}#briefModal .bb th{text-align:left;background:#faf7f2;border-bottom:2px solid #ece4d7;padding:8px 9px;color:#7a7264;font-size:11px;text-transform:uppercase;letter-spacing:.3px}#briefModal .bb td{border-bottom:1px solid #f0eae0;padding:8px 9px;vertical-align:top}#briefModal .bb a{color:#C67E34;text-decoration:none}#briefModal .bb ul{padding-left:18px}#briefModal .bb li{margin:5px 0}#briefModal .bb code{background:#f2ede4;border-radius:4px;padding:1px 4px;font-size:12.5px}#briefModal .bb hr{border:none;border-top:1px solid #eee6da;margin:18px 0}#briefModal .bb p{margin:8px 0}</style>'+
+    '<div style="max-width:920px;width:100%;background:#fff;border-radius:16px;padding:26px 30px;box-shadow:0 14px 50px rgba(0,0,0,.28);color:#1c1a17;font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif">'+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px"><div>'+
+    '<div style="color:#C67E34;font-weight:800;font-size:12.5px;letter-spacing:.5px;text-transform:uppercase">'+esc(kicker)+'</div>'+
+    '<div style="font-size:26px;font-weight:800;margin:4px 0 2px">'+esc(title)+'</div>'+
+    '<div style="color:#6b665f;font-size:13.5px">'+esc(subtitle)+'</div></div>'+
+    '<button onclick="closeBrief()" style="border:none;background:#f2ede4;border-radius:8px;width:34px;height:34px;font-size:19px;cursor:pointer;flex:0 0 auto">×</button></div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 18px">'+chips+'</div>'+
+    warnBox+
+    '<div class="bb">'+mdToHtml(md)+'</div></div>';
+  m.style.display="flex";
+}
 async function runProcess(i){
   const a = AUTOS[i]; if(!a) return;
   const out = el("autoRun-"+i);
-  out.innerHTML = `<span class="spin"></span> запускаю процесс на данных…`;
+  out.innerHTML = `<span class="spin"></span> ${WLANG==='en'?'running the process…':'запускаю процесс…'}`;
   const r = await jpost("/x/run_process",{session_id:a.session_id});
-  if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">Ошибка: ${esc(r.message||"")}</span>`; return; }
+  if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">${WLANG==='en'?'Error':'Ошибка'}: ${esc(r.message||"")}</span>`; return; }
+  if(r.digest){
+    out.innerHTML = `<span style="color:var(--ok,#2a2)">✓ ${WLANG==='en'?'Done — '+(r.findings||0)+' signals. Opening brief…':'Готово — '+(r.findings||0)+' находок. Открываю бриф…'}</span>`;
+    showBrief(r.digest, r.findings);
+    const rr=el("runrow-"+i); if(rr) rr.innerHTML = (WLANG==='en'?'Last run: ':'Последний прогон: ')+esc(((r.run&&r.run.at)||"").slice(0,16).replace("T"," "))+' · '+(r.findings||0)+(WLANG==='en'?' signals':' находок');
+    return;
+  }
   const run = r.run||{}; const fmt=n=>(typeof n==="number")?n.toLocaleString("ru-RU"):esc(n);
   const dl = run.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(run.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:"";
   const dlv = r.delivered ? (r.delivered.ok?` · <span style="color:var(--ok,#2a2)">→ отправлено в ${esc(r.delivered.channel)} ✓</span>`:` · <span style="color:var(--bad,#c33)">→ доставка в ${esc(r.delivered.channel)} не прошла: ${esc(r.delivered.err||"")}</span>`) : "";
@@ -1882,12 +2254,43 @@ function deployAgentPrompt(i){
     else toast("Ошибка: "+(r.message||""),"err");
   });
 }
+function configureProcess(i){
+  const a = AUTOS[i]; if(!a) return;
+  ask(_wt('cfgTitle'), _wt('cfgHint'), "", async (txt)=>{
+    if(!txt || !txt.trim()) return;
+    busy(_wt('cfgBusy'));
+    const r = await jpost("/x/configure", {session_id: a.session_id, text: txt.trim()});
+    busyOff();
+    if(r && r.status==="success"){
+      const c = r.config || {};
+      const lines = [];
+      if(c.repos) lines.push((WLANG==='en'?"Repos: ":"Репозитории: ")+c.repos);
+      if(c.subreddits) lines.push("Reddit: "+c.subreddits);
+      if(c.feeds) lines.push((WLANG==='en'?"Feeds: ":"Ленты: ")+c.feeds.split(",").filter(Boolean).length);
+      if(c.deliver && c.deliver!=="none") lines.push((WLANG==='en'?"Deliver: ":"Доставка: ")+c.deliver);
+      toast(_wt('cfgToast'),"ok");
+      ask(_wt('cfgOkTitle'), _wt('cfgOkBody')+(lines.join("\n")||"—"), "", ()=>{});
+    } else {
+      toast(_wt('cfgFail')+((r&&r.message)||_wt('noAnswer')),"err");
+    }
+  });
+}
 function shareProcess(i){
   const a = AUTOS[i]; if(!a) return;
-  const link = location.origin + "/?session=" + encodeURIComponent(a.session_id);
-  ask("Поделиться автоматизацией", "Ссылка на процесс (в этом контуре). Публикация в общий каталог — на следующем этапе.", link, ()=>{
-    try{ navigator.clipboard && navigator.clipboard.writeText(link); }catch(e){}
-    toast("Ссылка скопирована","ok");
+  ask(_wt('shTitle'), _wt('shHint'), "publish", async ()=>{
+    busy(_wt('shBusy'));
+    const r = await jpost("/x/publish", {session_id: a.session_id, push: true});
+    busyOff();
+    if(r && r.status==="success"){
+      toast(_wt('shToast'),"ok");
+      const url = (r.repo_url && /^https?:/.test(r.repo_url)) ? r.repo_url : "";
+      ask(_wt('shOkTitle'), _wt('shOkCard')+(url?(_wt('shRepo')+url):_wt('shLocal')), url||"", ()=>{
+        if(url){ try{ navigator.clipboard && navigator.clipboard.writeText(url); }catch(e){} }
+      });
+      renderAutomations();
+    } else {
+      toast(_wt('shFail')+((r&&r.message)||_wt('noAnswer')),"err");
+    }
   });
 }
 async function openInWizard(sid){
@@ -1899,6 +2302,7 @@ async function openInWizard(sid){
 /* ================= misc ================= */
 function setStatus(id, html){ el(id).innerHTML = html; }
 (async function init(){
+  applyWLang();
   try{ CATALOG = await jget("/x/catalog"); }catch(e){}
   const deep = new URLSearchParams(location.search).get("session");
   await refreshSessions(deep || undefined);

@@ -1,7 +1,3 @@
-# expert: wz_cli_capability_factory
-# description: Эксперт wz_cli_capability_factory (Adoption Wizard).
-# params: 
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -429,12 +425,16 @@ def gen_manifest(spec):
             "created_by": "wz_cli_capability_factory"}
 
 def gen_concept(spec):
+    card = spec.get("card", {})
+    ops_phrases = ", ".join(op["display"] for op in spec["operations"])
     btns = "; ".join("cap_%s_%s (%s)" % (spec["tool"], op["op"], op["display"]) for op in spec["operations"])
-    return ("[EXTELLA:CAP] cap:%s — Способность: %s (локально/офлайн). Бизнес-кнопки: %s + пакетные *_batch. "
-            "Агент ВЫБИРАЕТ способность и зовёт эксперт с бизнес-параметрами, НЕ пишет команду. "
-            "Установка/проверка бинаря: cap_%s_resolver (confirm_install='yes'). "
-            "Честные границы: версия бинаря не пиннится; принуждение прав — код обёртки, не песочница (L2C-P1)."
-            % (spec["tool"], spec["display_name"], btns, spec["tool"]))
+    # Фразы задачи ВПЕРЁД (title/one_liner/операции) — чтобы семантический поиск нашёл
+    # способность по запросу пользователя; технические детали — в конце.
+    return ("[EXTELLA:CAP] %s. %s Задачи: %s. Это УЖЕ УСТАНОВЛЕННАЯ способность cap:%s (локально/офлайн). "
+            "Когда пользователь просит: %s — зови готовый эксперт этой способности, НЕ строй нового эксперта и НЕ пиши shell-команду. "
+            "Бизнес-кнопки: %s + пакетные *_batch. Установка/проверка бинаря: cap_%s_resolver (confirm_install='yes')."
+            % (card.get("title", spec["display_name"]), card.get("one_liner", ""), ops_phrases,
+               spec["tool"], ops_phrases.lower(), btns, spec["tool"]))
 
 def gen_pack(spec):
     experts = ["cap_%s_resolver" % spec["tool"]]
@@ -456,18 +456,35 @@ def build_capability(spec):
                    "cap_%s_pack" % spec["tool"]: gen_pack(spec)},
             "concept": gen_concept(spec)}
 
+def _expert_desc(spec, name):
+    # БОГАТОЕ русское описание — чтобы агент нашёл способность по смыслу задачи
+    # (а не видел бесполезное «CLI Capability oxipng» и строил свою с нуля).
+    tool = spec["tool"]
+    card = spec.get("card", {})
+    title = card.get("title", spec.get("display_name", tool))
+    one = card.get("one_liner", "")
+    if name.endswith("_resolver"):
+        return "Установка и проверка инструмента «%s» (brew). Зови ПЕРЕД первым использованием этой способности." % spec.get("display_name", tool)
+    for op in spec["operations"]:
+        if name == "cap_%s_%s" % (tool, op["op"]):
+            return "%s — %s Операция «%s», один файл. Локально/офлайн. Зови ЭТОТ эксперт, НЕ пиши shell-команду." % (title, one, op["display"])
+        if name == "cap_%s_%s_batch" % (tool, op["op"]):
+            return "%s — %s Пакетно: операция «%s» ко всем подходящим файлам в папке. Локально/офлайн." % (title, one, op["display"])
+    return "%s — %s" % (title, one or ("CLI capability " + tool))
+
+
 def register(spec, verbose=True):
     art = build_capability(spec)
     log = []
     for name, code in art["experts"].items():
-        st = _post('/api/expert/save', {"name": name, "description": "CLI Capability %s — %s" % (spec["tool"], name),
-                                        "code": code, "kwargs": {}, "cspl": "fython"}).get("status", "?")
+        st = _post('/api/expert/save', {"name": name, "description": _expert_desc(spec, name),
+                                        "code": code, "kwargs": {}, "cspl": "fython", "global": True}).get("status", "?")
         log.append("expert %s -> %s" % (name, st))
     for k, v in art["kv"].items():
         st = _post('/api/kv/set', {"key": k, "value": json.dumps(v, ensure_ascii=False),
                                    "description": "CLI capability %s" % spec["tool"], "global": True}).get("status", "?")
         log.append("kv %s -> %s" % (k, st))
-    st = _post('/api/concept/add', {"text": art["concept"]}).get("status", "?")
+    st = _post('/api/concept/add', {"text": art["concept"], "global": True}).get("status", "?")
     log.append("concept cap:%s -> %s" % (spec["tool"], st))
     if verbose:
         for l in log: print("   " + l)

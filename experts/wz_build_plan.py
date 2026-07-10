@@ -149,8 +149,10 @@ def wz_build_plan(
                 headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
                          "X-Profile-Id": "default", "X-Agent-Id": agent_id},
                 json={"agent_id": agent_id,
-                      "input": SYSTEM + "\n\n" + user_msg + "\n\nВерни СТРОГО валидный JSON (Build Plan) без markdown и пояснений.",
-                      "run_timeout": 600, "store": False},
+                      "input": SYSTEM + "\n\n" + user_msg + "\n\nВерни ТОЛЬКО валидный JSON-объект (Build Plan): "
+                               "без markdown, без пояснений, без обучающих подсказок. Первый символ — '{', последний — '}'.",
+                      # большой план обрезался на дефолтном лимите вывода → задаём щедрый потолок
+                      "run_timeout": 600, "store": False, "max_output_tokens": 16000},
                 timeout=660).json()
         except Exception as e:
             return {"status": "error", "message": "platform LLM request failed: " + str(e)[:200]}

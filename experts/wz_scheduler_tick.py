@@ -1,7 +1,3 @@
-# expert: wz_scheduler_tick
-# description: Тик планировщика: читает расписания из KV (ключи sched:*), для каждого, у которого подошёл срок, запускает оркестратор процесса, пишет лог прогона обр
-# params: api_token, api_base
-
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 
@@ -175,6 +171,35 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             kv("set", {"key": ikey, "value": json.dumps(ic, ensure_ascii=False), "description": "inbound " + sid})
             processed = 0
             for ev in fresh:
+                # УМНЫЙ ОТВЕТ (опционально, обратносовместимо): если в inbound-конфиге задан reply_expert,
+                # обработчик получает ТЕКСТ сообщения и сам формирует reply (ветка «Согласовано»/«статус»).
+                # Процессы БЕЗ reply_expert идут прежним путём (полный прогон оркестратора).
+                rexp = ic.get("reply_expert")
+                if rexp:
+                    rp = {"api_token": api_token, "message_text": str(ev.get("text") or "")[:2000],
+                          "chat_id": str(ev.get("chat_id") or ""), "client": client}
+                    rb = {"expert_name": rexp, "params": rp, "global": True}
+                    if tgt:
+                        rb["target"] = tgt
+                    try:
+                        rr = requests.post(base + "/api/expert/run", headers=headers, json=rb, timeout=300).json()
+                        rr = rr.get("result", rr)
+                        if isinstance(rr, str):
+                            rr = _j(rr, {})
+                    except Exception:
+                        rr = {}
+                    reply = str((rr or {}).get("reply") or "Готово ✅")[:3800]
+                    dbody = {"expert_name": "wz_connector_" + channel, "global": True,
+                             "params": {"api_token": api_token, "client": client, "mode": "send",
+                                        "text": reply, "chat_id": ev.get("chat_id")}}
+                    if tgt:
+                        dbody["target"] = tgt
+                    try:
+                        requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
+                    except Exception:
+                        pass
+                    processed += 1
+                    continue
                 run_params = {"api_token": api_token, "source_file": src}
                 if tgt:
                     run_params["target"] = tgt

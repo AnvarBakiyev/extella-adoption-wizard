@@ -1,18 +1,15 @@
-# expert: wz_connector_telegram
-# description: Коннектор Telegram (вывод результата процесса). Исполняется на устройстве-ХОСТИНГЕ: читает шифротекст секрета sec:<client>:telegram из общего KV, расш
-# params: api_token, client, mode, text, api_base, offset, chat_id
-
 $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
 def wz_connector_telegram(api_token: str = "", client: str = "default", mode: str = "validate",
                           text: str = "", api_base: str = "https://api.extella.ai", offset: int = 0,
-                          chat_id: str = "") -> dict:
+                          chat_id: str = "", file_path: str = "") -> dict:
     """Коннектор Telegram (вывод результата процесса). Исполняется на устройстве-ХОСТИНГЕ:
     читает шифротекст секрета sec:<client>:telegram из общего KV, расшифровывает ЛОКАЛЬНЫМ vault.key,
     проверяет привязку конверта, достаёт {token, chat_id} и вызывает Telegram Bot API.
-    mode='validate' → getMe (проверка связи); mode='send' → sendMessage(text).
+    mode='validate' → getMe; mode='send' → sendMessage(text);
+    mode='send_document' → sendDocument(file_path, caption=text) — файл должен быть ЛОКАЛЬНЫМ на устройстве исполнения.
     Токен НИКОГДА не возвращается/не логируется. Шаблон для остальных коннекторов."""
     import json
     import socket
@@ -139,6 +136,36 @@ def wz_connector_telegram(api_token: str = "", client: str = "default", mode: st
             if r.get("ok"):
                 return {"ok": True, "bot": r.get("result", {}).get("username"), "host": socket.gethostname()}
             return {"ok": False, "err": "telegram: " + str(r.get("description", "invalid token"))}
+        if mode == "send_document":
+            # отправка файла (реестр рисков/протокол): файл ЛОКАЛЬНЫЙ на устройстве исполнения коннектора
+            from pathlib import Path as _P
+            fp = _P(str(file_path)).expanduser()
+            if not str(file_path) or not fp.is_file():
+                return {"ok": False, "err": "file_path не найден на устройстве исполнения: " + str(file_path)[:120]}
+            if fp.stat().st_size > 45 * 1024 * 1024:
+                return {"ok": False, "err": "файл больше лимита Telegram (50 МБ)"}
+            chat = str(chat_id).strip() or chat
+            if not chat:
+                return {"ok": False, "err": "в секрете нет chat_id для отправки"}
+            with open(fp, "rb") as fh:
+                r = requests.post(base + "/sendDocument",
+                                  data={"chat_id": chat, "caption": (text or "")[:1000]},
+                                  files={"document": (fp.name, fh)}, timeout=90).json()
+            if r.get("ok"):
+                res = {"ok": True, "message_id": r.get("result", {}).get("message_id"),
+                       "file": fp.name, "host": socket.gethostname()}
+            else:
+                res = {"ok": False, "err": "telegram: " + str(r.get("description", ""))}
+            try:
+                from datetime import datetime, timezone
+                requests.post(api_base.rstrip("/") + "/api/kv/set", headers=headers,
+                              json={"key": "connlog:" + ns(client) + ":telegram",
+                                    "value": json.dumps({"at": datetime.now(timezone.utc).isoformat(),
+                                                         "mode": "send_document", "ok": res.get("ok"), "err": res.get("err")}),
+                                    "description": "connlog"}, timeout=30)
+            except Exception:
+                pass
+            return res
         chat = str(chat_id).strip() or chat   # для входящих (B2) отвечаем в чат отправителя, иначе — chat_id из секрета
         if not chat:
             return {"ok": False, "err": "в секрете нет chat_id для отправки"}
