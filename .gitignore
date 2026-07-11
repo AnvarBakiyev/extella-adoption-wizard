@@ -18,3 +18,7 @@ published/
 # Питон-кэш
 __pycache__/
 *.pyc
+
+# macOS / iCloud
+.DS_Store
+*.icloud
