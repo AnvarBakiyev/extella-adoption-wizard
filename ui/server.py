@@ -101,6 +101,51 @@ def qwen_agent():
     return CONFIG.get("llm_agent_id") or CONFIG.get("agent_id", "")
 
 
+def _gen_identity(name, description, experts):
+    """Личность агента для витрины: Qwen по имени/описанию/экспертам → emoji/accent/tagline/caps/category.
+    Каждый агент индивидуален (разные цвет/эмодзи/слоган). Фолбэк {} — publish возьмёт эвристику."""
+    import re as _re, json as _json
+    ag = qwen_agent()
+    if not ag:
+        return {}
+    prompt = ("Придумай ИНДИВИДУАЛЬНУЮ личность агента для витрины. Верни ТОЛЬКО JSON:\n"
+              '{"emoji":"<один эмодзи по роли>","accent":"#RRGGBB","tagline":"<живой слоган 4-7 слов от лица пользы>",'
+              '"capabilities":["<3-5 коротких умений>"],"category":"Документы|Продажи и клиенты|Контент|Автоматизация"}\n'
+              "Эмодзи и цвет — РАЗНЫЕ у разных ролей, отражают суть. Только JSON.\n\n"
+              "Агент: %s\nОписание: %s\nПод-эксперты: %s" % (name, description or name, ", ".join(experts) if experts else "—"))
+    try:
+        res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 120, "store": True}, timeout=140)
+        text = ""
+        for item in (res or {}).get("output", []):
+            if item.get("type") == "message":
+                for c in item.get("content", []):
+                    if c.get("type") == "output_text":
+                        text += c.get("text", "")
+        m = _re.search(r"\{.*\}", text, _re.S)
+        idv = _json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+    out = {}
+    if idv.get("emoji"):
+        out["emoji"] = str(idv["emoji"])[:4]
+    if idv.get("accent") and _re.match(r"^#[0-9a-fA-F]{6}$", str(idv["accent"])):
+        out["accent"] = idv["accent"]
+    if idv.get("tagline"):
+        out["tagline"] = str(idv["tagline"])[:80]
+    if idv.get("category"):
+        out["category"] = str(idv["category"])[:40]
+    if idv.get("capabilities"):
+        def _trim(s, n=32):
+            s = str(s).strip()
+            if len(s) <= n:
+                return s
+            cut = s[:n]
+            sp = cut.rfind(" ")
+            return (cut[:sp] if sp > 12 else cut).rstrip(" ,.")
+        out["capabilities"] = ",".join(_trim(c) for c in idv["capabilities"][:5])
+    return out
+
+
 def design_agent():
     """Модель для ПРОЕКТИРОВАНИЯ (blueprint/план стройки): большой JSON, нужен ЁМКИЙ вывод.
     Fine-tune (кодоген-мозг) ОБРЕЗАЕТ большой план (жёсткий потолок ~6K токенов), а БАЗОВЫЙ qwen3.7-max тянет
@@ -787,6 +832,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     from datetime import datetime, timezone
 
     STAGES = %(STAGES)s
+    KP_STAGES = %(KP_STAGES)s
     if not api_token:
         cfg = Path.home() / "extella_wizard" / "app" / "config.json"
         try:
@@ -857,7 +903,11 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     prev, last_out = source_file, None
     for i, name in enumerate(STAGES):
         outp = str(wd / ("stage%%d.json" %% i))
-        body = {"expert_name": name, "params": {"input_path": prev, "output_path": outp}, "global": True}
+        _params = {"input_path": prev, "output_path": outp}
+        if name in KP_STAGES:   # knowledge-стадия реюзает kp_ask — нужен target (где лежит база) и токен
+            _params["target"] = target
+            _params["api_token"] = api_token
+        body = {"expert_name": name, "params": _params, "global": True}
         if target:
             body["target"] = target
         r = requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers, json=body, timeout=600)
@@ -927,12 +977,99 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
 '''
 
 
-def _make_orchestrator(ns, stage_names, work_dir, session_id=""):
+# Детерминированная обёртка knowledge-стадии: РЕЮЗ готового kp_ask (retrieval-движок не переписываем).
+# Читает вход, формирует запрос, зовёт kp_ask(pack, question) на нужном устройстве (target), кладёт
+# найденные нормы в legal_context для следующей стадии. Мягкая деградация: если базы/сети нет
+# (build-срез без target) — проводит вход дальше с пустым контекстом, не роняя пайплайн.
+_KP_STAGE_TEMPLATE = '''$extens("include.py")
+include("import urllib.request", [])
+
+def %(NAME)s(input_path="", output_path="", target="", api_token="", api_base="https://api.extella.ai") -> dict:
+    import json
+    from pathlib import Path
+
+    def _b(v):
+        return (not v) or str(v).startswith("{{")
+
+    if _b(api_token):
+        try:
+            api_token = json.loads((Path.home() / "extella_wizard" / "app" / "config.json").read_text(encoding="utf-8")).get("auth_token", "")
+        except Exception:
+            api_token = ""
+
+    data = {}
+    try:
+        if input_path and Path(input_path).exists():
+            data = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+
+    q = ""
+    if isinstance(data, dict):
+        q = str(data.get("request") or data.get("event_type") or data.get("question") or data.get("_query") or "")
+    if not q:
+        q = "Найди релевантные нормы и статьи по документу: " + json.dumps(data, ensure_ascii=False)[:400]
+
+    ctx = ""
+    if api_token:
+        try:
+            body = {"name": "kp_ask", "params": {"name": "%(PACK)s", "question": q}, "global": True}
+            if not _b(target):
+                body["target"] = target
+            req = urllib.request.Request(api_base.rstrip("/") + "/api/expert/run",
+                                         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                         headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
+                                                  "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"},
+                                         method="POST")
+            rr = json.loads(urllib.request.urlopen(req, timeout=180).read().decode("utf-8"))
+            ctx = rr.get("result") or rr.get("output") or ""
+            if isinstance(ctx, (dict, list)):
+                ctx = json.dumps(ctx, ensure_ascii=False)
+        except Exception as e:
+            ctx = "[knowledge lookup unavailable: %%s]" %% str(e)[:120]
+
+    out = dict(data) if isinstance(data, dict) else {"input": data}
+    out["legal_context"] = ctx
+    out["knowledge_pack"] = "%(PACK)s"
+    if output_path:
+        Path(output_path).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"status": "success", "legal_context_len": len(str(ctx)), "pack": "%(PACK)s"}
+'''
+
+
+def _build_kp_stage(name, pack_id):
+    """РЕЮЗ kp_ask: сохраняет тонкую обёртку-стадию (не кодоген). Возвращает (name|None, sv)."""
+    code = _KP_STAGE_TEMPLATE % {"NAME": name, "PACK": pack_id}
+    sv = api("/api/expert/save", {"name": name,
+                                  "description": "Knowledge grounding stage (reuses kp_ask on pack '" + pack_id + "'): "
+                                                 "finds relevant articles and adds legal_context for the next stage.",
+                                  "code": code,
+                                  "kwargs": {"input_path": "", "output_path": "", "target": "",
+                                             "api_token": "", "api_base": "https://api.extella.ai"},
+                                  "cspl": "fython", "global": True})
+    ok = sv.get("status") == "success" or sv.get("id") is not None
+    return (name if ok else None), sv
+
+
+def _kp_install_on(pack_id, target):
+    """Авто-установка базы знаний на устройство прогона (best-effort, не роняет сборку)."""
+    try:
+        body = {"name": "kp_install_pack", "params": {"pack_id": pack_id}, "global": True}
+        if target:
+            body["target"] = target
+        return api("/api/expert/run", body, timeout=600)
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:150]}
+
+
+def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None):
     """Создаёт (external save → persist) вызываемый оркестратор процесса с вшитыми стадиями.
-    session_id вшивается (%(SID)s) для резолвера файла из общего стора на хостинге."""
+    session_id вшивается (%(SID)s) для резолвера файла из общего стора на хостинге.
+    kp_stages — имена knowledge-стадий, которым оркестратор пробрасывает target+api_token (реюз kp_ask)."""
     name = ns + "_run_pipeline"
     code = _ORCH_TEMPLATE % {"NAME": name, "WORKDIR": work_dir,
                              "STAGES": json.dumps(stage_names, ensure_ascii=False),
+                             "KP_STAGES": json.dumps(kp_stages or [], ensure_ascii=False),
                              "SID": session_id}
     sv = api("/api/expert/save", {"name": name,
                                   "description": "Auto-generated process orchestrator: runs the contract pipeline ("
@@ -1008,6 +1145,35 @@ def _run_build(session_id, build_id):
 
         schema_hint, sample_file = _inspect_sample(session_id)
 
+        # KNOWLEDGE-СТАДИЯ: из blueprint берём базу знаний (knowledge_pack) и какие стадии на неё опираются.
+        # Такие стадии НЕ кодогеним — реюзаем готовый kp_ask (тонкая обёртка). Базу авто-ставим на target прогона.
+        kp_pack = ""
+        kp_stage_ids = set()
+        try:
+            _bp = json.loads((SESS_DIR / (session_id + "_blueprint.json")).read_text(encoding="utf-8")).get("blueprint", {})
+            kp_pack = ((_bp.get("knowledge_pack") or {}).get("pack_id")) or ""
+            for _st in _bp.get("stages", []):
+                if "knowledge_grounding" in (_st.get("capability_ids") or []):
+                    kp_stage_ids.add(_st.get("id"))
+        except Exception:
+            pass
+        _KP_KW = ("норм", "кодекс", "статьи", "законодат", "knowledge", "kp_ask", "grounding", "правов", "trud", "grazhd", "nalog")
+
+        def is_kp_task(t):
+            if not kp_pack:
+                return False
+            if t.get("stage_id") in kp_stage_ids:
+                return True
+            blob = (str(t.get("expert_name", "")) + " " + str(t.get("purpose", "")) + " " + str(t.get("title", ""))).lower()
+            return any(k in blob for k in _KP_KW)
+
+        kp_stage_names = []
+        if kp_pack:
+            stage("kp_install", "Ставлю базу знаний: " + kp_pack, "running")
+            _ki = _kp_install_on(kp_pack, HOST_TARGET)
+            _kis = _ki.get("status", "?") if isinstance(_ki, dict) else "?"
+            stage("kp_install", "База знаний " + kp_pack + " (" + str(_kis) + ")", "success", pack=kp_pack)  # best-effort
+
         # ДАТА-СТАДИИ конвейера (парсинг/анализ/отчёт) — строим ВСЕ заново под единый контракт
         # (реюз старых экспертов не по контракту рвёт цепочку). Не-дата задачи (расписание) — вне среза.
         def is_data_stage(t):
@@ -1035,9 +1201,31 @@ def _run_build(session_id, build_id):
                       detail="нет входа для стадии (не приложен файл-образец?)")
                 slice_ok = False
                 break
-            ok, outp, detail = _build_one(nm, t, schema_hint, is_first=(idx == 0),
-                                          is_last=(idx == len(data_tasks) - 1),
-                                          accept_input=current_input, llm=llm)
+            if is_kp_task(t):
+                # РЕЮЗ kp_ask: сохраняем тонкую обёртку и прогоняем на входе. На build-срезе без target
+                # обёртка мягко деградирует (пустой legal_context) — на run-time оркестратор даёт target.
+                kp_stage_names.append(nm)
+                nm2, sv = _build_kp_stage(nm, kp_pack)
+                outp = str(bdir / (nm + "_out.json"))
+                if not nm2:
+                    ok, detail = False, "kp-обёртка не сохранилась: " + str(sv)[:120]
+                else:
+                    try:
+                        api("/api/expert/run", {"name": nm, "params": {"input_path": current_input, "output_path": outp},
+                                                "global": True}, timeout=200)
+                    except Exception:
+                        pass
+                    if not Path(outp).exists():
+                        try:
+                            import shutil as _sh
+                            _sh.copy(current_input, outp)  # passthrough: срез продолжается, retrieval — на run-time
+                        except Exception:
+                            outp = current_input
+                    ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
+            else:
+                ok, outp, detail = _build_one(nm, t, schema_hint, is_first=(idx == 0),
+                                              is_last=(idx == len(data_tasks) - 1),
+                                              accept_input=current_input, llm=llm)
             if ok:
                 built_names.append(nm)
                 current_input = outp  # выход стадии = вход следующей (это и есть срез)
@@ -1072,7 +1260,8 @@ def _run_build(session_id, build_id):
         stage_experts = [n for n in stage_experts if n in built_ok]
         if stage_experts:
             stage("orchestrator", "Собираю оркестратор процесса", "running")
-            orchestrator, _sv = _make_orchestrator(ns, stage_experts, "/tmp/" + ns + "_run", session_id)
+            orchestrator, _sv = _make_orchestrator(ns, stage_experts, "/tmp/" + ns + "_run", session_id,
+                                                   kp_stages=[n for n in kp_stage_names if n in built_ok])
             stage("orchestrator", "Оркестратор процесса: " + (orchestrator or "ошибка"),
                   "success" if orchestrator else "error", expert=orchestrator)
             if orchestrator:
@@ -1263,6 +1452,18 @@ class Handler(BaseHTTPRequestHandler):
             out = []
             _amap = _sched_kv_batch([pp.stem for pp in SESS_DIR.glob("wz_*.json")
                                      if not pp.name.endswith(("_blueprint.json", "_build_plan.json"))])
+            # личность карточек (emoji/accent/tagline) из общей витрины — по sessionId (её пишет /x/publish)
+            _ident = {}
+            try:
+                _mc = api("/api/kv/get", {"key": "_mkt_automations", "global": True})
+                _mcv = _mc.get("value") if isinstance(_mc, dict) else None
+                for _c in (json.loads(_mcv).get("items", []) if _mcv else []):
+                    _sid = _c.get("sessionId")
+                    if _sid:
+                        _ident[_sid] = {k: _c.get(k) for k in
+                                        ("emoji", "accent", "tagline", "capabilities", "category", "status")}
+            except Exception:
+                _ident = {}
             for p in sorted(SESS_DIR.glob("wz_*.json"), reverse=True):
                 if p.name.endswith(("_blueprint.json", "_build_plan.json")):
                     continue
@@ -1299,6 +1500,10 @@ class Handler(BaseHTTPRequestHandler):
                     "production_agent": s.get("production_agent"),
                     "runs_count": len(runs),
                     "last_run": runs[-1] if runs else None,
+                    "runs": runs[-40:][::-1],   # полная история (свежие сверху) — для вкладки «Запуски» кабинета
+                    "identity": _ident.get(s.get("session_id", "")) or {},   # личность карточки (обложка)
+                    "knowledge_pack": (bp or {}).get("knowledge_pack") or None,
+                    "goal": (bp or {}).get("goal") or (bp or {}).get("summary"),
                     "stages_meta": [{"title": st.get("title"), "inputs": st.get("inputs"),
                                      "outputs": st.get("outputs"), "capability_ids": st.get("capability_ids")}
                                     for st in ((bp or {}).get("stages") or [])],
@@ -2274,11 +2479,22 @@ class Handler(BaseHTTPRequestHandler):
             agent_id = ((s.get("production_agent") or {}).get("agent_id")) or CONFIG.get("agent_id", "")
             owner = str(body.get("github_owner", "") or CONFIG.get("github_owner", "") or "AnvarBakiyev")
             # publish бежит ЛОКАЛЬНО в процессе моста (Mac Анвара: тут gh/git/файлы), НЕ на VPS HOST_TARGET
+            # Личность агента для витрины (Qwen по блупринту) — индивидуальные emoji/цвет/слоган/умения.
+            # Мягкий фолбэк: при пустом ответе publish возьмёт свою эвристику.
+            _idv = {}
+            try:
+                _idv = _gen_identity(pname, pdesc, experts) or {}
+            except Exception:
+                _idv = {}
             try:
                 _pub = _load_expert_fn("wz_publish_pack")
                 r = _pub(pack_id=pack_id, name=pname, description=pdesc, experts=",".join(experts),
                          orchestrator=orch, agent_id=agent_id, github_owner=owner,
-                         push=bool(body.get("push", True)), api_token=CONFIG.get("auth_token", ""))
+                         push=bool(body.get("push", True)), api_token=CONFIG.get("auth_token", ""),
+                         session_id=sid,
+                         emoji=_idv.get("emoji", ""), accent=_idv.get("accent", ""),
+                         category=_idv.get("category", ""), capabilities=_idv.get("capabilities", ""),
+                         tagline=_idv.get("tagline", ""))
             except Exception as _e:
                 self._send({"status": "error", "message": "publish exec: " + str(_e)[:200]})
                 return

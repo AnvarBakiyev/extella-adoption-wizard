@@ -71,6 +71,10 @@ def wz_generate_blueprint(
             asset_names.add(a)
     pack_ids = set(p.get("id") for p in catalog.get("packs", []))
     archetype_ids = set(a.get("id") for a in catalog.get("process_archetypes", []))
+    # Базы знаний (кодексы/регламенты) для knowledge_grounding — передаём в промпт явно
+    knowledge_packs = catalog.get("knowledge_packs", [])
+    kpack_ids = set(p.get("id") for p in knowledge_packs)
+    kpacks_payload = json.dumps(knowledge_packs, ensure_ascii=False)
 
     answers_payload = json.dumps(
         {qid: {"question": a.get("question", ""), "answer": a.get("answer", "")}
@@ -93,6 +97,7 @@ def wz_generate_blueprint(
 2б. Активно ищи СКРЫТЫЕ технические разрывы в ответах клиента: сканы/фотографии документов → нужно распознавание (OCR); звонки/аудио/видео → нужна расшифровка речи; данные только в закрытой системе → нужен доступ/выгрузка. Такие вещи честно клади в gaps, даже если клиент о них не спросил.
 2г. Если разрыв закрывается известным расширением из catalog.delivery_extensions — укажи в элементе gap поле extension_id (точный id из каталога) и в proposal перескажи его effort_hint; если подходящего расширения нет — extension_id: null.
 2а. Сначала подбери ближайший АРХЕТИП процесса из catalog.process_archetypes (типовую форму) и строй стадии по его capability_flow, адаптируя под ответы клиента; если ни один архетип не подходит — archetype.id = null и собирай стадии из возможностей напрямую. Процесс может относиться к ЛЮБОМУ департаменту (финансы, HR, юристы, закупки, операции, маркетинг) — не своди всё к контакт-центру.
+2д. БАЗА ЗНАНИЙ: если процесс опирается на закон/кодекс/регламент/стандарт/политику (ответ knowledge_base не пуст ИЛИ по смыслу нужны правовые нормы — кадровые документы, договоры, налоги и т.п.) — ОБЯЗАТЕЛЬНО добавь стадию с capability_ids=["knowledge_grounding"] (asset_names=["kp_ask"]), которая находит релевантные статьи в базе и подставляет их в работу (агент опирается на актуальный документ, а не память модели). Выбери подходящую базу из ПЕРЕДАННОГО СПИСКА knowledge_packs по домену (HR→trud_rk, договоры→grazhd_rk, налоги→nalog_rk и т.д.) и запиши её id в поле knowledge_pack.pack_id. Если нужной базы в списке нет — knowledge_pack.pack_id=null и добавь элемент в gaps «нужна база знаний: …». НЕ вшивай статьи закона в другие стадии статикой — только через стадию knowledge_grounding.
 3. Суитабилити считай по рубрике каталога: self_serve_allowed=true только для процессов класса {json.dumps(rubric.get("self_serve_allowed", []), ensure_ascii=False)}; процессы с записью во внешние системы или действиями от имени компании — self_serve_allowed=false и risk_level минимум medium.
 4. Не выдумывай числа и факты о клиенте: опирайся только на ответы интервью. Если данных мало — пиши меньше стадий и больше open_questions.
 5. Учитывай открытые комментарии команды (переданы отдельно) — это уточнения к ответам.
@@ -111,6 +116,7 @@ def wz_generate_blueprint(
       "inputs": "что на входе", "outputs": "что на выходе"}}
   ],
   "pack_recommendation": {{"pack_id": "id из каталога или null", "fit": "почему подходит / чего не хватает", "adaptation_needed": ["что настроить под клиента"]}},
+  "knowledge_pack": {{"pack_id": "id из knowledge_packs или null", "why": "почему эта база нужна процессу"}},
   "gaps": [{{"title": "...", "description": "чего нет в каталоге", "proposal": "как закрыть (разработка/поставка/ручной шаг)", "extension_id": "id из catalog.delivery_extensions или null"}}],
   "sample_test_plan": {{"data_needed": "какие данные нужны для теста", "steps": ["шаг 1", "..."], "success_criteria": ["критерий 1", "..."]}},
   "open_questions": ["вопрос клиенту 1", "..."]
@@ -124,6 +130,9 @@ def wz_generate_blueprint(
 
 КАТАЛОГ ВОЗМОЖНОСТЕЙ EXTELLA (JSON):
 {catalog_payload}
+
+ДОСТУПНЫЕ БАЗЫ ЗНАНИЙ (knowledge_packs — для стадии knowledge_grounding, выбери по домену):
+{kpacks_payload}
 
 Составь Process Blueprint по правилам."""
 
@@ -204,6 +213,17 @@ def wz_generate_blueprint(
         ar["id"] = None
         bp["archetype"] = ar
 
+    # knowledge_pack: id должен быть из knowledge_packs, иначе null + gap
+    kp = bp.get("knowledge_pack") or {}
+    if kp.get("pack_id") and kp["pack_id"] not in kpack_ids:
+        warnings.append("knowledge_pack: unknown pack_id '" + str(kp["pack_id"]) + "' -> null")
+        bp.setdefault("gaps", []).append({
+            "title": "База знаний вне каталога",
+            "description": "Модель выбрала базу '" + str(kp["pack_id"]) + "', которой нет в knowledge_packs",
+            "proposal": "Собрать/загрузить нужную базу знаний (kp_install_pack) или уточнить домен", "extension_id": None})
+        kp["pack_id"] = None
+        bp["knowledge_pack"] = kp
+
     ext_ids = set(e.get("id") for e in catalog.get("delivery_extensions", []))
     for g in bp.get("gaps") or []:
         if isinstance(g, dict) and g.get("extension_id") and g["extension_id"] not in ext_ids:
@@ -246,6 +266,7 @@ def wz_generate_blueprint(
             "risk_level": sut.get("risk_level"),
             "self_serve_allowed": sut.get("self_serve_allowed"),
             "stages_count": len(bp.get("stages", [])),
+            "knowledge_pack": (bp.get("knowledge_pack") or {}).get("pack_id"),
             "gaps_count": len(bp.get("gaps", [])),
             "open_questions_count": len(bp.get("open_questions", [])),
             "warnings": warnings[:5]}

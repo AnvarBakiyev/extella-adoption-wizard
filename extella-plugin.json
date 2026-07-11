@@ -2,7 +2,7 @@
   "id": "extella_adoption_wizard",
   "name": "Визард внедрения",
   "tagline": "От бизнес-боли к работающему ИИ-процессу — интервью, план, стройка, запуск 24/7",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "github",
   "install": "INSTALL.md",
   "model": "qwen-3.7-platform",

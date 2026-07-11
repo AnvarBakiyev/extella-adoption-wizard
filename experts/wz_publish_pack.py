@@ -5,8 +5,9 @@ def wz_publish_pack(pack_id="", name="", description="", experts="", orchestrato
                     agent_id="", agent_role_md="", concept_md="", readme="",
                     config_kv="ci:config", github_owner="AnvarBakiyev", push=False, private=False,
                     api_token="", api_base="https://api.extella.ai",
-                    registry_dir="", build_root="") -> dict:
-    import json, os, subprocess, urllib.request
+                    registry_dir="", build_root="",
+                    emoji="", accent="", category="", capabilities="", session_id="", tagline="") -> dict:
+    import json, os, subprocess, urllib.request, re as _re2
     from pathlib import Path
 
     def _b(v):
@@ -76,12 +77,76 @@ def wz_publish_pack(pack_id="", name="", description="", experts="", orchestrato
         (root / "concepts").mkdir(exist_ok=True)
         (root / "concepts" / (pack_id + ".md")).write_text(concept_md, encoding="utf-8")
 
+    # 2.5. Обогащение манифеста для кабинета агента в тулбаре: emoji/accent/category/capabilities/status.
+    #      Авто-вывод из имени+описания+экспертов, если явно не передано (аддитивно, безопасно).
+    _text = ((name or "") + " " + (description or "")).lower()
+    _RULES = [
+        (["договор", "юрид", "закон", "гк рк", "претенз", "правов", "неустойк"], "⚖️", "Документы"),
+        (["дебитор", "финанс", "бюджет", "счёт", "оплат", "платеж", "бухгал", "выручк"], "\U0001F4CA", "Автоматизация"),
+        (["заявк", "лид ", "клиент", "прода", "crm", "сделк", "закупк", "поставщик"], "\U0001F91D", "Продажи и клиенты"),
+        (["контент", "пост ", "письм", "email", "рассыл", "новост", "статьи"], "✍️", "Контент"),
+        (["отчёт", "отчет", "сводк", "монитор", "аудит", "дашборд"], "\U0001F4C8", "Автоматизация"),
+        (["документ", "pdf", "скан", "ocr", "накладн"], "\U0001F4C4", "Документы"),
+    ]
+    _emoji = "" if _b(emoji) else str(emoji)
+    _category = "" if _b(category) else str(category)
+    # если в имени уже есть ведущий эмодзи — переиспользуем его (без дубля)
+    _nm = (name or "").strip()
+    if not _emoji and _nm and ord(_nm[0]) >= 0x2600:
+        _emoji = _nm[0]
+    if not _emoji or not _category:
+        for _kws, _em, _cat in _RULES:
+            if any(_k in _text for _k in _kws):
+                _emoji = _emoji or _em
+                _category = _category or _cat
+                break
+    _emoji = _emoji or "⚙️"
+    _category = _category or "Автоматизация"
+    _PAL = ["#3A6EA5", "#8F4E1E", "#57A773", "#8E4AA8", "#C67E34", "#2E7D5B", "#D65CA8", "#4E8FDB"]
+    if _b(accent):
+        _h = 0
+        for _c in str(pack_id):
+            _h = (_h * 31 + ord(_c)) & 0xffffffff
+        _accent = _PAL[_h % len(_PAL)]
+    else:
+        _accent = str(accent)
+    _STAGE_MAP = {
+        "reader": "Чтение источника", "read": "Чтение источника",
+        "fetch": "Сбор данных", "aggregate": "Сведение данных", "agg": "Сведение данных",
+        "summary": "Сводка", "summarize": "Сводка", "xlsx": "Excel-отчёт", "excel": "Excel-отчёт",
+        "report": "Отчёт", "pdf": "PDF-отчёт", "docx": "Word-документ",
+        "email": "Отправка почты", "mail": "Отправка почты",
+        "telegram": "Telegram", "tg": "Telegram", "notify": "Уведомление",
+        "parse": "Разбор", "classify": "Классификация", "score": "Оценка",
+        "draft": "Черновик", "write": "Подготовка текста",
+        "review": "Проверка", "negotiate": "Переписка",
+    }
+    if not _b(capabilities):
+        _caps = [c.strip() for c in (capabilities if isinstance(capabilities, list) else str(capabilities).split(",")) if str(c).strip()]
+    else:
+        _caps = []
+        for _en in written:
+            if _en == (orchestrator or ""):
+                continue
+            _parts = str(_en).split('_')
+            _seg = _parts[-1].lower() if _parts else ''
+            _lbl = _STAGE_MAP.get(_seg)
+            if not _lbl and _seg and not _re2.fullmatch(r'[0-9a-f]{4,}', _seg):
+                _lbl = _seg.capitalize()
+            if _lbl and _lbl not in _caps:
+                _caps.append(_lbl)
+        _caps = _caps[:5]
+
     # 3. Карточка витрины (type:process)
     card = {"id": pack_id, "name": name, "type": "process", "version": "1.0.0",
             "description": description or name, "experts": written, "orchestrator": orchestrator or "",
             "synthAgentId": agent_id or "", "runtimeConfigKey": config_kv,
             "source": "https://github.com/%s/%s" % (github_owner, pack_id) if push else "local",
-            "installed": True, "publishedBy": github_owner}
+            "installed": True, "publishedBy": github_owner,
+            "emoji": _emoji, "accent": _accent, "category": _category,
+            "capabilities": _caps, "status": "active",
+            "tagline": ("" if _b(tagline) else str(tagline)[:80]),
+            "sessionId": ("" if _b(session_id) else str(session_id))}
     (root / "_registry" / (pack_id + ".json")).write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 4. README + install.py (генерённые)
@@ -139,15 +204,28 @@ def wz_publish_pack(pack_id="", name="", description="", experts="", orchestrato
     except Exception as e:
         log["registry_err"] = str(e)[:100]
 
-    # 8. KV-каталог витрины _mkt_automations — его читает вкладка «AI Автоматизации» (карточка появляется в магазине)
+    # 8. KV-каталог витрины _mkt_automations — его читает вкладка «AI Автоматизации».
+    #    ВАЖНО (устройство платформы): global-ключ ПРИВЯЗАН к агенту-создателю. Тулбар читает
+    #    витрину под agent_extella_default, поэтому и ПИСАТЬ каталог надо под ним — иначе запись
+    #    под агентом пака уходит в его агент-тень, и карточка в магазине не появляется.
+    _cat_hdr = {"X-Auth-Token": api_token, "Content-Type": "application/json",
+                "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"}
+
+    def _cat_post(path, body, t=60):
+        req = urllib.request.Request(api_base.rstrip("/") + path,
+                                     data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                     headers=_cat_hdr, method="POST")
+        with urllib.request.urlopen(req, timeout=t) as r:
+            return json.loads(r.read().decode("utf-8"))
+
     try:
-        _cur = post("/api/kv/get", {"key": "_mkt_automations"}).get("value")
+        _cur = _cat_post("/api/kv/get", {"key": "_mkt_automations", "global": True}).get("value")
         _cat = json.loads(_cur) if _cur else {"items": []}
         _items = [it for it in _cat.get("items", []) if it.get("id") != pack_id]
         _items.insert(0, card)
         _cat["items"] = _items
-        post("/api/kv/set", {"key": "_mkt_automations", "value": json.dumps(_cat, ensure_ascii=False),
-                             "description": "automations catalog (витрина)"})
+        _cat_post("/api/kv/set", {"key": "_mkt_automations", "value": json.dumps(_cat, ensure_ascii=False),
+                                  "description": "automations catalog (витрина)", "global": True})
         log["catalog_items"] = len(_items)
     except Exception as e:
         log["catalog_err"] = str(e)[:100]

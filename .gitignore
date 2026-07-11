@@ -1,0 +1,20 @@
+# Секреты и локальные данные — НИКОГДА в репозиторий
+config.json
+vault.key
+secrets.json
+*.key
+*.pem
+*_ed25519*
+.env
+
+# Клиентские данные / рантайм
+sessions/
+runs/
+published/
+*.bak
+*.bak_*
+*.prev
+
+# Питон-кэш
+__pycache__/
+*.pyc
