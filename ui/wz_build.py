@@ -13,7 +13,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
-from wz_llm import run_llm_expert, design_agent
+from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
 
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
@@ -722,6 +722,17 @@ def _run_build(session_id, build_id):
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
                                                "source_file": sample_file})
+            # §7bis ступень 3: автопанель — новая автоматизация выходит из Строителя с готовой формой
+            # настроек (best-effort; если Qwen моргнул — владелец соберёт кнопкой в кабинете).
+            if not s.get("panel_manifest"):
+                try:
+                    _bpf = SESS_DIR / (session_id + "_blueprint.json")
+                    _bpm = json.loads(_bpf.read_text(encoding="utf-8")).get("blueprint", {}) if _bpf.exists() else {}
+                    _mani = gen_panel_manifest(_bpm.get("goal") or _bpm.get("summary") or "", _bpm.get("stages") or [])
+                    if _mani:
+                        s["panel_manifest"] = dict(_mani, generated_at=now())
+                except Exception:
+                    pass
             s["updated_at"] = now()
             sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:

@@ -12,6 +12,66 @@ import time
 from wz_platform import CONFIG, api, run_expert, qwen_agent, qwen_agents
 
 
+def gen_panel_manifest(goal, stages):
+    """§7bis ступень 3: Qwen по blueprint (goal + stages) → доменные ПОЛЯ настроек владельца.
+    Возвращает {"fields":[{key,label,type,hint,options?,default?}]} или None. Чистый (без I/O сессии):
+    вызывают и эндпоинт /x/gen_panel, и стройка (авто-панель у новых автоматизаций). Клиентский LLM — Qwen."""
+    import re as _re
+    import json as _json
+    ag = qwen_agent()
+    if not ag:
+        return None
+    st_txt = "\n".join("- " + str(st.get("title", "")) + ": вход " + str(st.get("inputs", ""))[:120]
+                       for st in (stages or [])[:8])
+    prompt = ("Ты проектируешь настройки бизнес-процесса для его владельца. По описанию процесса выдели "
+              "3–6 НАСТРОЕК, которые владелец должен задать или сможет менять (пороги, лимиты, имена/роли, "
+              "период, тон, валюта). НЕ технические параметры. Верни ТОЛЬКО JSON:\n"
+              '{"fields":[{"key":"<латиница_snake>","label":"<по-русски>","type":"text|number|select",'
+              '"hint":"<кратко>","options":["..."]?,"default":"<если есть>"}]}\n'
+              "type=select только если у настройки явно перечислимые значения (тогда options обязательны).\n\n"
+              "Процесс: " + str(goal or "")[:600] + "\nШаги:\n" + st_txt)
+    try:
+        res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 90,
+                                     "store": False, "temperature": 0}, timeout=100)
+        text = ""
+        for it in (res or {}).get("output", []):
+            if isinstance(it, dict) and it.get("type") == "message":
+                for c in it.get("content", []):
+                    if isinstance(c, dict) and c.get("type") == "output_text":
+                        text += c.get("text", "")
+        text = text or (res or {}).get("output_text", "")
+        m = _re.search(r"\{.*\}", text, _re.S)
+        raw = _json.loads(m.group(0)) if m else {}
+    except Exception:
+        return None
+    _rf = raw.get("fields")
+    if not isinstance(_rf, list):            # Qwen мог вернуть не-список → не падаем
+        return None
+    clean, used = [], set()
+    for f in _rf[:6]:
+        if not isinstance(f, dict):
+            continue
+        key = _re.sub(r"[^a-z0-9_]", "_", str(f.get("key", "")).strip().lower())[:40].strip("_")
+        label = str(f.get("label", "")).strip()[:80]
+        typ = f.get("type") if f.get("type") in ("text", "number", "select") else "text"
+        if not key or not label or key in used:
+            continue
+        used.add(key)
+        fld = {"key": key, "label": label, "type": typ, "hint": str(f.get("hint", ""))[:120]}
+        if typ == "select":
+            _o = f.get("options")
+            _o = _o if isinstance(_o, list) else []       # строка options НЕ режем посимвольно
+            opts = [str(o).strip()[:40] for o in _o if str(o).strip()][:8]
+            if len(opts) < 2:
+                fld["type"] = "text"
+            else:
+                fld["options"] = opts
+        if f.get("default"):
+            fld["default"] = str(f.get("default"))[:120]
+        clean.append(fld)
+    return {"fields": clean} if clean else None
+
+
 def _llm_backend_down(res):
     """Ошибка похожа на «бэкенд Qwen-агента недоступен» (флап ngrok-туннеля / пустой вывод LLM)?"""
     if not isinstance(res, dict) or res.get("status") != "error":
