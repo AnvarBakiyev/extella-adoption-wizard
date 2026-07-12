@@ -537,8 +537,10 @@ function toast(text, kind){
 async function refreshSessions(keep){
   const d = await jget("/x/sessions");
   const sel = el("sessSelect");
+  // мусор не показываем: битые записи без имени/ид («· null · ответов 0») захламляли селектор
+  const list = (d.sessions||[]).filter(s=>s && s.session_id && s.session_id!=="null" && s.client_name && s.client_name!=="null");
   sel.innerHTML = '<option value="">— выбрать сессию —</option>' +
-    (d.sessions||[]).map(s=>`<option value="${s.session_id}">${esc(s.client_name)} · ${s.stage} · ответов ${s.answers_count}</option>`).join("");
+    list.map(s=>`<option value="${s.session_id}">${esc(s.client_name)} · ${s.stage} · ответов ${s.answers_count}</option>`).join("");
   if(keep) sel.value = keep;
 }
 function newSession(){
@@ -2578,8 +2580,9 @@ function setStatus(id, html){ el(id).innerHTML = html; }
   const deep = new URLSearchParams(location.search).get("session");
   await refreshSessions(deep || undefined);
   if(deep){ await loadSession(deep); } else { setMode('composer'); }
-  // chat-first: помощник открыт по умолчанию
-  if(!el("chat").classList.contains("open")) toggleChat();
+  // Помощник (интервью-чат) — только когда работаем над сессией в Мастере;
+  // на экране «Создать» он не к месту (там свой вход) — не открываем.
+  if(deep && !el("chat").classList.contains("open")) toggleChat();
 })();
 </script>
 </body>
