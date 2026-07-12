@@ -147,6 +147,19 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 
 /* ---------- автоматизации ---------- */
 .auto-card{background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+/* витрина автоматизаций: сетка компактных плиток, вся плитка = вход в кабинет */
+.auto-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.auto-tile{background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:14px 16px;overflow:hidden;cursor:pointer;transition:transform .12s ease,box-shadow .12s ease;display:flex;flex-direction:column}
+.auto-tile:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(0,0,0,.09)}
+.auto-tile .wz-hero{margin:-14px -16px 12px;padding:14px 16px 12px}
+.auto-tile .wz-hero-nm{font-size:15px}
+.tile-badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.tile-badge{font-size:11px;border-radius:999px;padding:3px 9px;background:rgba(128,128,128,.10);color:var(--nav)}
+.tile-badge.ok{background:rgba(47,158,86,.12);color:#2f9e56}
+.tile-badge.warn{background:rgba(197,126,51,.13);color:#C57E33}
+.tile-run{font-size:12px;color:var(--silver);margin-bottom:10px;min-height:16px}
+.tile-foot{display:flex;align-items:center;gap:8px;margin-top:auto}
+.tile-open{margin-left:auto;font-size:12.5px;color:var(--gold,#c60);font-weight:600}
 .wz-hero{position:relative;margin:-18px -20px 14px;padding:16px 20px 14px;overflow:hidden}
 .wz-hero-wm{position:absolute;right:12px;top:-6px;font-size:60px;line-height:1;opacity:.2;pointer-events:none}
 .wz-hero-row{position:relative}
@@ -1750,7 +1763,13 @@ async function renderMonitor(){
   const dot = h => h==="error"?"🔴":(h==="warn"?"🟡":"🟢");
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n||"");
   const tm = t => t ? esc(String(t).slice(0,16).replace("T"," ")) : "—";
-  const head = `<div style="font-size:13px;margin-bottom:8px">🩺 <b>${_wt('monHdr')}</b>: ${su.total||0} ${_wt('monProc')} &nbsp; 🟢 ${su.healthy||0} &nbsp; 🟡 ${su.warn||0} &nbsp; 🔴 ${su.error||0}${su.overdue?(" &nbsp; ⏰ "+_wt('monOverdue')+" "+su.overdue):""} &nbsp; <a href="#" onclick="renderMonitor();return false" style="color:#c60;font-size:12px">${_wt('monRefresh')}</a></div>`;
+  // тонкая полоса-сводка: одна строка «всё работает / N бед»; детали — по клику (details)
+  const allOk = !(su.warn||0) && !(su.error||0) && !(su.overdue||0);
+  const headDot = (su.error||su.overdue) ? "🔴" : (su.warn ? "🟡" : "🟢");
+  const headTxt = allOk
+    ? `${headDot} <b>${_wt('monHdr')}</b>: ${WLANG==='en'?'all running':'все работают'} · ${su.healthy||0}/${su.total||0}`
+    : `${headDot} <b>${_wt('monHdr')}</b>: 🟢 ${su.healthy||0} · 🟡 ${su.warn||0} · 🔴 ${su.error||0}${su.overdue?(" · ⏰ "+_wt('monOverdue')+" "+su.overdue):""}`;
+  const head = `<summary style="cursor:pointer;list-style:none;font-size:13px;display:flex;align-items:center;gap:8px">${headTxt}<a href="#" onclick="event.preventDefault();event.stopPropagation();renderMonitor()" style="color:#c60;font-size:12px;margin-left:auto">${_wt('monRefresh')}</a></summary>`;
   const rows = ps.map(p=>{
     const s=p.schedule, lr=p.last_run, bits=[];
     if(s) bits.push("⏱ "+esc(s.period||_wt('monScheduled'))+(s.overdue?" · <span style='color:var(--bad,#c33)'>"+_wt('monOverdue')+"</span>":(s.next_due?(" · "+tm(s.next_due)):"")));
@@ -1762,7 +1781,7 @@ async function renderMonitor(){
     const why=(p.reasons&&p.reasons.length)?`<div style="font-size:11.5px;color:var(--bad,#c33);margin-top:2px">${p.reasons.map(esc).join(" · ")}</div>`:"";
     return `<div style="display:flex;gap:8px;padding:6px 0;border-top:1px solid rgba(128,128,128,.15)"><span>${dot(p.health)}</span><div style="flex:1;min-width:0"><b style="font-size:13px">${esc(p.process_name||p.session_id)}</b><div style="font-size:12px;color:var(--silver,#889)">${bits.join(" &nbsp;·&nbsp; ")}</div>${why}</div></div>`;
   }).join("");
-  bar.innerHTML = `<div style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:12px 14px;margin:0 0 16px">${head}${rows}</div>`;
+  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px 14px;margin:0 0 16px"${allOk?"":" open"}>${head}<div style="margin-top:8px">${rows}</div></details>`;
 }
 /* ── Личность агента (обложка) + Кабинет — самодостаточный вид Визарда ── */
 var _WZ_PAL=['#3A6EA5','#8F4E1E','#57A773','#8E4AA8','#C57E33','#2E7D5B','#D65CA8','#4E8FDB'];
@@ -1997,43 +2016,29 @@ async function renderAutomations(){
   const SRCNAME = k=>({src_gsheets:"Google Sheets",src_bitrix24:"Bitrix24",src_postgres:"PostgreSQL",src_mysql:"MySQL",src_amocrm:"amoCRM",src_1c_file:"1С (файл)",src_1c_winrm:"1С (сервер)"}[k]||k);
   const CHNAME = k=>({telegram:"Telegram",email:"Email",slack:"Slack",whatsapp:"WhatsApp",sms:"SMS"}[k]||k);
   const tile = (lbl,val,ok,fn)=>`<div style="background:rgba(128,128,128,.08);border-radius:8px;padding:7px 10px;min-width:0"><div style="font-size:11px;color:var(--silver,#889)">${lbl}</div><div style="font-size:12.5px;display:flex;align-items:center;gap:5px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${val}${ok?' <span style="color:#2fa86a">✓</span>':''}</span><a href="#" onclick="${fn};return false" style="margin-left:auto;color:#c60;font-size:11.5px;flex:none">изменить</a></div></div>`;
-  box.innerHTML = AUTOS.map((a,i)=>{
-    const sm = a.slice_summary||{};
+  // ВИТРИНА: сетка компактных плиток; вся плитка — вход в кабинет (там запуск/настройка/шаблон/прогоны).
+  box.innerHTML = '<div class="auto-grid">' + AUTOS.map((a,i)=>{
     const lr = a.last_run;
-    const bd = Object.entries(sm).filter(([k,v])=>k.startsWith("by_")&&v&&typeof v==="object"&&Object.keys(v).length<=6).slice(0,2);
-    return `<div class="auto-card">
+    const rc = a.recipients||[];
+    const runLine = lr
+      ? `${esc((lr.at||"").slice(5,16).replace("T"," "))} · ${esc(lr.status||"")}${lr.total_sum!=null?(" · "+fmt(lr.total_sum)):""}`
+      : (WLANG==='en'?"no runs yet":"запусков ещё не было");
+    return `<div class="auto-tile" onclick="openWzCabinet(${i})">
       ${_wzHeroHTML(a)}
-      <div class="auto-head">
-        <h3>${esc(a.process_name||a.client_name||"Процесс")}</h3>
-        <span class="badge ${a.audit==="allow"?"ok":"warn"}">${a.audit==="allow"?"проверен":"с замечаниями"}</span>
-        ${a.schedule?`<span class="badge">🕐 ${esc(a.schedule.period)}</span>`:""}
-        ${a.production_agent?`<span class="badge ok">🤖 агент</span>`:""}
-        <span class="auto-meta">· ${esc(a.client_name||"")} · компонентов ${(a.components||[]).length} · прогонов ${a.runs_count||0}</span>
+      <div class="tile-badges">
+        <span class="tile-badge ${a.audit==="allow"?"ok":"warn"}">${a.audit==="allow"?"✓ проверен":"! с замечаниями"}</span>
+        ${(a.schedule&&a.schedule.period)?`<span class="tile-badge ok">⏰ ${esc(a.schedule.period)}</span>`:""}
+        ${a.production_agent?`<span class="tile-badge ok">🤖 агент 24/7</span>`:""}
+        ${(a.source&&a.source.kind)?`<span class="tile-badge">🔗 ${esc(SRCNAME(a.source.kind))}</span>`:""}
+        ${rc.length?`<span class="tile-badge">📤 ${rc.map(CHNAME).join(", ")}</span>`:""}
       </div>
-      ${(a.stages_meta&&a.stages_meta.length)?flowHTML(a.stages_meta):""}
-      ${(sm.total_count!=null||sm.total_sum!=null)?`<div class="auto-kpis">
-        ${sm.total_count!=null?`<div><b>${fmt(sm.total_count)}</b><div style="font-size:12px;color:var(--silver)">позиций</div></div>`:""}
-        ${sm.total_sum!=null?`<div><b style="color:var(--gold)">${fmt(sm.total_sum)}</b><div style="font-size:12px;color:var(--silver)">сумма</div></div>`:""}
-      </div>`:""}
-      ${bd.map(([k,v])=>`<div style="font-size:12.5px"><b>${esc(k.slice(3))}:</b> ${Object.entries(v).map(([kk,vv])=>esc(kk)+" — "+fmt(vv)).join(" · ")}</div>`).join("")}
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0">
-        ${tile(_wt('tSource'), a.source&&a.source.kind?SRCNAME(a.source.kind):"—", !!(a.source&&a.source.kind), `sourceProcess(${i})`)}
-        ${tile(_wt('tSchedule'), (a.schedule&&a.schedule.period)?esc(a.schedule.period):"—", !!(a.schedule&&a.schedule.period), `scheduleProcess(${i})`)}
-        ${tile(_wt('tDeliver'), (a.recipients&&a.recipients.length)?a.recipients.map(CHNAME).join(", "):"—", !!(a.recipients&&a.recipients.length), `openWzCabinet(${i});wzCabTab('settings')`)}
-        ${tile(_wt('tInbound'), (a.inbound&&a.inbound.mode)?(a.inbound.mode==="poll"?(WLANG==='en'?"poll":"опрос"):esc(a.inbound.mode)):"—", !!(a.inbound&&a.inbound.mode), `inboundProcess(${i})`)}
+      <div class="tile-run" id="runrow-${i}">${runLine}</div>
+      <div class="tile-foot">
+        <button class="btn gold sm" onclick="event.stopPropagation();openWzCabinet(${i});runProcess(${i})">${_wt('run')}</button>
+        <span class="tile-open">${WLANG==='en'?'Open →':'Открыть →'}</span>
       </div>
-      <div class="auto-actions">
-        <button class="btn ghost sm" onclick="openWzCabinet(${i})">⚙ Кабинет</button>
-        <button class="btn gold sm" onclick="runProcess(${i})">${_wt('run')}</button>
-        <button class="btn ghost sm" onclick="configureProcess(${i})">${_wt('configure')}</button>
-        <button class="btn ghost sm" onclick="deployAgentPrompt(${i})">${a.production_agent?_wt('updateAg'):_wt('deployAg')}</button>
-        <button class="btn ghost sm" onclick="shareProcess(${i})">${_wt('share')}</button>
-        <button class="btn ghost sm" onclick="openInWizard('${a.session_id}')">${_wt('edit')}</button>
-      </div>
-      <div id="autoRun-${i}" style="margin-top:8px"></div>
-      <div class="run-row" id="runrow-${i}">${lr?`Последний прогон: ${esc((lr.at||"").slice(0,16).replace("T"," "))} · ${esc(lr.status)} · сумма ${fmt(lr.total_sum)}${lr.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(lr.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:""}`:""}</div>
     </div>`;
-  }).join("");
+  }).join("") + '</div>';
 }
 function _mdInline(s){
   // экранируем И кавычку: URL из недоверенных источников идёт в href="$2" (иначе атрибут-инъекция/XSS)
