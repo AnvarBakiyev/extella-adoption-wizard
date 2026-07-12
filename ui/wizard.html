@@ -209,9 +209,9 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 <div class="topbar">
   <div class="wordmark">EXTELLA<span class="dot">.</span></div>
   <div class="nav-toggle">
-    <button id="navComposer" onclick="setMode('composer')">✨ Composer</button>
+    <button id="navComposer" class="on" onclick="setMode('composer')">＋ Создать</button>
     <button id="navMy" onclick="setMode('my')">📦 Мои</button>
-    <button id="navWizard" class="on" onclick="setMode('wizard')">Мастер</button>
+    <button id="navWizard" onclick="setMode('wizard')" style="display:none">Мастер</button>
     <button id="navAuto" onclick="setMode('automations')">🗂 Автоматизации</button>
     <button id="navCore" onclick="setMode('core')" style="display:none">🧬 Процессное ядро</button>
   </div>
@@ -234,20 +234,21 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 </div>
 
 <div class="main" id="mainComposer" style="display:none">
-  <div class="kicker">✨ AI Composer</div>
-  <h1>Describe it. Extella builds it.</h1>
-  <p class="lede">Type what you need in one sentence. The Composer picks the right tools, models and skills from your library, installs what's missing, and assembles a working automation — then runs it.</p>
+  <div class="kicker">Создать автоматизацию</div>
+  <h1>Опишите задачу — Extella соберёт</h1>
+  <p class="lede">Напишите одной фразой, что нужно. Композитор подберёт из вашей библиотеки готовые блоки, доустановит недостающее и соберёт рабочую автоматизацию — и сразу запустит.</p>
   <div style="display:flex;gap:8px;margin:14px 0 6px">
-    <input id="composerInput" placeholder="e.g. Find subscriptions I forgot about in my bank statements and tell me what to cancel"
+    <input id="composerInput" placeholder="напр.: собери из выписок подписки, о которых я забыл, и подскажи, что отменить"
       style="flex:1;padding:14px 16px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:12px;background:#fff;color:var(--ink,#0a0a0a);font-size:15px"
       onkeydown="if(event.key==='Enter')composeNow()">
-    <button id="composeBtn" class="btn gold" style="padding:0 22px;font-size:15px" onclick="composeNow()">✨ Compose</button>
+    <button id="composeBtn" class="btn gold" style="padding:0 22px;font-size:15px" onclick="composeNow()">Собрать</button>
   </div>
-  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
-    <span class="chip-ex" onclick="composerFill(this)">Find forgotten subscriptions in my bank statements</span>
-    <span class="chip-ex" onclick="composerFill(this)">Watch OpenAI, Anthropic, LangChain and give me a daily competitor digest</span>
-    <span class="chip-ex" onclick="composerFill(this)">Turn my folder of PDFs into a searchable private knowledge base</span>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+    <span class="chip-ex" onclick="composerFill(this)">найти забытые подписки в банковских выписках</span>
+    <span class="chip-ex" onclick="composerFill(this)">следить за OpenAI, Anthropic, LangChain и слать дайджест конкурентов</span>
+    <span class="chip-ex" onclick="composerFill(this)">превратить папку PDF в поисковую базу знаний</span>
   </div>
+  <div style="font-size:13px;color:var(--silver,#889);margin-bottom:16px">Сложный или новый процесс, которого ещё нет в библиотеке? <a href="#" onclick="setMode('wizard');newSession();return false" style="color:var(--gold,#c60);font-weight:600">Пройдите интервью с Мастером →</a></div>
   <div id="composerOut"></div>
 </div>
 
@@ -430,7 +431,7 @@ const QUESTIONS = [
 ];
 const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch"};
 const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
-let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"wizard"};
+let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
 
 const jget = (u)=>fetch(u).then(r=>r.json());
 const jpost = (u,b)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()).then(r=>{
@@ -545,6 +546,8 @@ function newSession(){
 }
 async function loadSession(sid){
   if(!sid){ S.sessionId=null; render(); return; }
+  // открыть сессию = работать над процессом → уводим в Мастер (кнопка навигации свёрнута)
+  if(S.mode==="composer"||S.mode==="my"||S.mode==="core") setMode("wizard");
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
   S.sessionId = sid;
@@ -2529,7 +2532,7 @@ function setStatus(id, html){ el(id).innerHTML = html; }
   try{ CATALOG = await jget("/x/catalog"); }catch(e){}
   const deep = new URLSearchParams(location.search).get("session");
   await refreshSessions(deep || undefined);
-  if(deep){ await loadSession(deep); } else { render(); }
+  if(deep){ await loadSession(deep); } else { setMode('composer'); }
   // chat-first: помощник открыт по умолчанию
   if(!el("chat").classList.contains("open")) toggleChat();
 })();
