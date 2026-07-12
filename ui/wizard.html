@@ -1902,7 +1902,8 @@ function _wzHeroHTML(a){
 }
 // ── Кабинет агента (оверлей с вкладками) ──
 var _wzCabI=-1, _wzCabTab='overview';
-function openWzCabinet(i){ _wzCabI=i; _wzCabTab=(AUTOS[i]&&AUTOS[i].panel_url)?'panel':'overview'; _wzCabRender(); }
+function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : (a&&a.stages_meta&&a.stages_meta.length ? 'process' : 'overview'); }
+function openWzCabinet(i){ _wzCabI=i; _wzCabTab=_wzDomainTab(AUTOS[i]); _wzCabRender(); }
 function closeWzCabinet(){ _wzCabI=-1; var o=el('wz_cab'); if(o)o.remove(); }
 function wzCabTab(t){ _wzCabTab=t; _wzCabRender(); }
 function _wzCabRender(){
@@ -1910,8 +1911,9 @@ function _wzCabRender(){
   var o=el('wz_cab'); if(!o){ o=document.createElement('div'); o.id='wz_cab'; o.style.cssText='position:fixed;inset:0;background:var(--cream);z-index:99998;display:flex;flex-direction:column;overflow:hidden'; document.body.appendChild(o); }
   var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс'), st=_wzStatus(a);
   var stBadge={active:['● активен','#2f9e56'],paused:['⏸ пауза','#C57E33'],frozen:['🔒 заморожен','#3A6EA5']}[st]||['● активен','#2f9e56'];
-  // доменная работа пака (Travel: лиды/подборки/рассылки) — ПЕРВОЙ вкладкой внутри кабинета, не отдельным окном
-  var tabs=(a.panel_url?[['panel','🧳 Работа']]:[]).concat([['overview','Запуск'],['settings','Настройка'],['rules','Правила'],['template','Шаблон'],['runs','Прогоны']]);
+  // доменная вкладка ПЕРВОЙ: ручная панель пака (Travel «🧳 Работа») ИЛИ генерируемый вид процесса из blueprint
+  var domainTab = a.panel_url ? [['panel','🧳 Работа']] : ((a.stages_meta&&a.stages_meta.length) ? [['process','🧭 Процесс']] : []);
+  var tabs=domainTab.concat([['overview','Запуск'],['settings','Настройка'],['rules','Правила'],['template','Шаблон'],['runs','Прогоны']]);
   var tabBar=tabs.map(function(t){var on=_wzCabTab===t[0];return '<button onclick="wzCabTab(\''+t[0]+'\')" style="border:none;background:'+(on?'var(--gold-bg)':'transparent')+';color:'+(on?'var(--gold)':'var(--nav)')+';font:600 13px var(--sans);padding:8px 16px;border-radius:8px;cursor:pointer">'+t[1]+'</button>';}).join('');
   o.innerHTML=
     '<div style="'+_wzHeroStyle(acc)+';padding:20px 26px 18px;position:relative;flex-shrink:0">'+
@@ -1937,6 +1939,7 @@ function _wzCabBody(a){
       '<div style="font-size:12px;color:var(--silver);margin:-8px 0 8px;display:flex;align-items:center;gap:10px">Доменная работа этого пака — лиды, подборки, рассылки, договоры.'+
       '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
       '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
+  if(_wzCabTab==='process' && a.stages_meta && a.stages_meta.length) return _wzCabProcess(a);
   if(_wzCabTab==='overview') return _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _wzCabRuns(a);
   if(_wzCabTab==='settings') return _wzCabSettings(a);
@@ -1949,6 +1952,34 @@ function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;co
 function _wzReadyChip(state, label){
   var c = state==='ok' ? ['#2f9e56','rgba(47,158,86,.10)','✓'] : (state==='warn'?['#C57E33','rgba(197,126,51,.12)','!']:['#7a7a7a','rgba(128,128,128,.10)','·']);
   return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:'+c[0]+';background:'+c[1]+';border-radius:999px;padding:5px 11px;margin:0 6px 6px 0">'+c[2]+' '+esc(label)+'</span>';
+}
+// ── вкладка «🧭 Процесс» (§7bis ступень 3, срез 1): доменный вид, СГЕНЕРированный из blueprint ──
+function _wzCabProcess(a){
+  var i=_wzCabI, sm=a.stages_meta||[], lr=a.last_run;
+  var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(String(n));};
+  var stageCards = sm.map(function(st,si){
+    var ins=st.inputs? '<div style="font-size:12px;color:var(--silver);margin-top:4px"><b>нужно:</b> '+esc(String(st.inputs).slice(0,140))+'</div>':'';
+    var outs=st.outputs? '<div style="font-size:12px;color:var(--ink-soft);margin-top:2px"><b>даёт:</b> '+esc(String(st.outputs).slice(0,140))+'</div>':'';
+    var isLast=si===sm.length-1;
+    return '<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--cream-dark)">'+
+      '<div style="flex:0 0 26px;height:26px;border-radius:50%;background:'+(isLast?'var(--gold,#c60)':_wzAcc(a))+';color:#fff;display:flex;align-items:center;justify-content:center;font:700 13px var(--sans)">'+(si+1)+'</div>'+
+      '<div style="flex:1;min-width:0"><div style="font:600 14px var(--sans)">'+esc(st.title||('Шаг '+(si+1)))+(isLast?' <span style="font-size:11px;color:var(--gold,#c60)">· результат</span>':'')+'</div>'+ins+outs+'</div></div>';
+  }).join('');
+  var resultCard = lr ? _wzCard(
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('Последний результат')+'<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
+      ((lr.total_count!=null||lr.total_sum!=null)?'<div style="display:flex;gap:24px">'+
+        (lr.total_count!=null?'<div><div style="font:700 22px var(--sans)">'+fmt(lr.total_count)+'</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>':'')+
+        (lr.total_sum!=null?'<div><div style="font:700 22px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+'</div>'
+        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')) : '';
+  return _wzCard(
+      _wzH('Что делает')+
+      '<div style="font-size:14px;line-height:1.6;color:var(--ink-soft);margin-bottom:6px">'+esc(a.goal||a.process_name||'Собранный процесс.')+'</div>'+
+      '<div style="margin-top:12px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
+      '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
+    + resultCard
+    + _wzCard(_wzH('Как проходит процесс')+
+      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:4px">Шаги собраны Мастером под вашу задачу. Правки данных/получателей — во вкладках; переделать шаги — «Открыть в Мастере».</div>'+
+      stageCards);
 }
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
