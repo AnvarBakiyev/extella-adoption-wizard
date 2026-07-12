@@ -602,6 +602,24 @@ function setMode(m){
   if(my) loadMyLibrary();
 }
 function composerFill(el2){ el("composerInput").value = el2.textContent; el("composerInput").focus(); }
+// Handoff «Достроить Мастером»: пробел компоновки → интервью по недостающему блоку → кодоген → в библиотеку → пересборка.
+async function buildGapWithWizard(){
+  var task = window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
+  var gaps = window._composerCapQ || "";
+  setMode("wizard");
+  var nm = (task||"Новый процесс").slice(0,40);
+  busy("Создаю проект «"+nm+"»…");
+  var r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"create",client_name:nm}});
+  var sid = r.session && r.session.session_id;
+  busyOff();
+  if(!sid){ toast("Не удалось создать проект: "+((r&&r.message)||""),"err"); return; }
+  await refreshSessions(sid);
+  await loadSession(sid);
+  if(!el("chat").classList.contains("open")) toggleChat();
+  var seed = "Хочу автоматизацию: "+task+".\nКомпозитор собрал почти всё из библиотеки, но не хватает: "+gaps+". Помоги достроить именно недостающую часть — расспроси по ней и соберём её как новый блок.";
+  var ci=el("chatInput"); if(ci){ ci.value=seed; ci.focus(); }
+  toast("Проект создан — отправьте сообщение Помощнику, чтобы начать интервью по пробелу","ok");
+}
 // известные русские сообщения композитора -> English для US-аудитории (WLANG==='en')
 var CMP_ERR_MAP=[
   [/^опиши задачу/i,'describe your task in a sentence'],
@@ -639,9 +657,11 @@ async function composeNow(){
   var inst = (r.installed||[]).filter(function(x){return x.status!=='already';}).map(function(x){ return '<div class="cmp-step" style="border-color:var(--gold,#c60)">⬇ installing <b>'+esc(x.model)+'</b> ('+esc(x.status)+')</div>'; }).join('');
   var missReal = (r.missing||[]).filter(function(m){return !/^unknown block:|params не объект|ссылается на|не установилась/i.test(String(m));});
   window._composerCapQ = missReal.length ? missReal.join(', ') : task;
+  window._composerTask = task;   // для handoff «Достроить Мастером» (кодоген недостающего блока → в библиотеку)
   var miss = (r.missing&&r.missing.length)
-    ? '<div class="cmp-step" style="border-color:#c93;flex-wrap:wrap">🔎 не в твоей библиотеке: '+esc(r.missing.join(', '))+
-      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px;margin-left:auto" onclick="capSearch(window._composerCapQ||\'\',\'composerCapOut\')">🌐 Найти в интернете</button></div>'
+    ? '<div class="cmp-step" style="border-color:#c93;flex-wrap:wrap;gap:8px">🔎 не в твоей библиотеке: '+esc(r.missing.join(', '))+
+      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px;margin-left:auto" onclick="capSearch(window._composerCapQ||\'\',\'composerCapOut\')">🌐 Найти в интернете</button>'+
+      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="buildGapWithWizard()">🧩 Достроить Мастером</button></div>'
     : '';
   var card = r.card||{};
   // запоминаем личность автоматизации, чтобы бриф-модалка носила её имя и её блоки (а не дефолт «Competitor Intelligence»)
