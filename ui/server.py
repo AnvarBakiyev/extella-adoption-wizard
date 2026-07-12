@@ -113,7 +113,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "3.54"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "3.55"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -1682,25 +1682,37 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 fl = man.get("files", {})
-                srv_new = _release_download("server.py", (fl.get("server.py") or {}).get("sha256", ""), (fl.get("server.py") or {}).get("chunks", 0))
-                html_new = _release_download("wizard.html", (fl.get("wizard.html") or {}).get("sha256", ""), (fl.get("wizard.html") or {}).get("chunks", 0))
-                if not srv_new or not html_new:
-                    self._send({"status": "error", "applied": False, "message": "download/sha256 mismatch"}, 502)
+                if "server.py" not in fl:
+                    self._send({"status": "error", "applied": False, "message": "манифест без server.py"}, 502)
                     return
-                stg_srv = APP_DIR / "server.py.new"; stg_html = APP_DIR / "wizard.html.new"
-                stg_srv.write_bytes(srv_new); stg_html.write_bytes(html_new)
-                try:
-                    _pc.compile(str(stg_srv), doraise=True)   # синтаксис
-                except Exception as e:
-                    stg_srv.unlink(missing_ok=True); stg_html.unlink(missing_ok=True)
-                    self._send({"status": "error", "applied": False, "message": "compile failed: " + str(e)[:150]}, 500)
-                    return
-                # РЕАЛЬНЫЙ smoke: новый код+UI в temp-каталоге на эфемерном порту → health(новая версия)+GET/ 200 HTML
+                # МНОГОФАЙЛ (Фаза 1): скачать ВСЕ файлы манифеста (server.py + модули bridge + wizard.html),
+                # а не 2 хардкод — иначе после разреза монолита релиз слал бы server.py без wz_platform.py → кирпич.
+                staged = {}
+                for _name, _meta in fl.items():
+                    _raw = _release_download(_name, (_meta or {}).get("sha256", ""), (_meta or {}).get("chunks", 0))
+                    if not _raw:
+                        for _x in staged.values():
+                            _x.unlink(missing_ok=True)
+                        self._send({"status": "error", "applied": False, "message": "download/sha256 mismatch: " + _name}, 502)
+                        return
+                    _stp = APP_DIR / (_name + ".new")
+                    _stp.write_bytes(_raw)
+                    staged[_name] = _stp
+                for _name, _stp in staged.items():   # синтаксис всех .py
+                    if _name.endswith(".py"):
+                        try:
+                            _pc.compile(str(_stp), doraise=True)
+                        except Exception as e:
+                            for _x in staged.values():
+                                _x.unlink(missing_ok=True)
+                            self._send({"status": "error", "applied": False, "message": "compile failed (%s): %s" % (_name, str(e)[:120])}, 500)
+                            return
+                # РЕАЛЬНЫЙ smoke: ВСЕ новые файлы + config.json в temp-каталоге на эфемерном порту → health(новая версия)+GET/ 200 HTML
                 smoke_ok, smoke_err, proc = False, "", None
                 tmp = _tf.mkdtemp(prefix="wzsmoke_")
                 try:
-                    _sh.copy2(str(stg_srv), str(Path(tmp) / "server.py"))
-                    _sh.copy2(str(stg_html), str(Path(tmp) / "wizard.html"))
+                    for _name, _stp in staged.items():
+                        _sh.copy2(str(_stp), str(Path(tmp) / _name))
                     _sh.copy2(str(APP_DIR / "config.json"), str(Path(tmp) / "config.json"))
                     _s = _sock.socket(); _s.bind(("127.0.0.1", 0)); sport = _s.getsockname()[1]; _s.close()
                     proc = _sp.Popen([_sys.executable, str(Path(tmp) / "server.py"), "--smoke", str(sport)],
@@ -1737,16 +1749,20 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception: pass
                     _sh.rmtree(tmp, ignore_errors=True)
                 if not smoke_ok:
-                    stg_srv.unlink(missing_ok=True); stg_html.unlink(missing_ok=True)
+                    for _x in staged.values():
+                        _x.unlink(missing_ok=True)
                     self._send({"status": "error", "applied": False, "message": "smoke-тест не пройден: " + smoke_err[:200]}, 500)
                     return
                 # маркер ДО необратимого свопа; бэкап; атомарный своп (server.py — ПОСЛЕДНИМ, он триггерит рестарт)
                 (APP_DIR / ".update_state").write_text(json.dumps({"to": latest, "from": BRIDGE_VERSION, "attempts": 0,
                                                                    "state": "swapping", "at": datetime.now(timezone.utc).isoformat()}))
-                _sh.copy2(str(APP_DIR / "server.py"), str(APP_DIR / "server.py.prev"))
-                _sh.copy2(str(APP_DIR / "wizard.html"), str(APP_DIR / "wizard.html.prev"))
-                _os.replace(str(stg_html), str(APP_DIR / "wizard.html"))
-                _os.replace(str(stg_srv), str(APP_DIR / "server.py"))
+                for _name in staged:   # бэкап всех живых → .prev
+                    _live = APP_DIR / _name
+                    if _live.exists():
+                        _sh.copy2(str(_live), str(APP_DIR / (_name + ".prev")))
+                for _name in [n for n in staged if n != "server.py"]:   # модули и html — раньше
+                    _os.replace(str(staged[_name]), str(APP_DIR / _name))
+                _os.replace(str(staged["server.py"]), str(APP_DIR / "server.py"))   # server.py — ПОСЛЕДНИМ (триггерит рестарт)
                 self._send({"status": "success", "applied": True, "from": BRIDGE_VERSION, "to": latest,
                             "message": "обновление применено (подпись+smoke ок), перезапуск..."})
                 def _restart():
@@ -2836,10 +2852,8 @@ if __name__ == "__main__":
         if _st["attempts"] > MAX_UPDATE_ATTEMPTS:
             _bad = _st.get("to")
             try:
-                if (APP_DIR / "server.py.prev").exists():
-                    shutil.copy2(str(APP_DIR / "server.py.prev"), str(APP_DIR / "server.py"))
-                if (APP_DIR / "wizard.html.prev").exists():
-                    shutil.copy2(str(APP_DIR / "wizard.html.prev"), str(APP_DIR / "wizard.html"))
+                for _pv in APP_DIR.glob("*.prev"):   # многофайл: восстановить ВСЕ файлы прошлой версии
+                    shutil.copy2(str(_pv), str(APP_DIR / _pv.name[:-5]))   # отрезаем ".prev"
             except Exception:
                 pass
             try:

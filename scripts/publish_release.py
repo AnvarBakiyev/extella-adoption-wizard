@@ -40,7 +40,10 @@ def publish():
     html = (APP / "wizard.html").read_bytes()
     version = re.search(rb'BRIDGE_VERSION = "([^"]+)"', srv).group(1).decode()
     files = {}
-    for name, raw in [("server.py", srv), ("wizard.html", html)]:
+    # многофайл (Фаза 1): все .py моста (server.py + wz_platform.py + будущие модули) + wizard.html.
+    # config.json НЕ шлём (секрет; не .py). Мост применяет и откатывает весь набор из манифеста.
+    bundle = [(p.name, p.read_bytes()) for p in sorted(APP.glob("*.py"))] + [("wizard.html", html)]
+    for name, raw in bundle:
         b64 = base64.b64encode(raw).decode()
         parts = [b64[i:i + CHUNK] for i in range(0, len(b64), CHUNK)]
         try:
