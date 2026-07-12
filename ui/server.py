@@ -28,7 +28,39 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 # Фаза 1, шов #1: платформенный слой вынесен в wz_platform.py (тот же каталог, деплоится рядом)
-from wz_platform import CONFIG, BASE, HEADERS, _scrub, api, parse_expert_result, run_expert, qwen_agent
+from wz_platform import CONFIG, BASE, HEADERS, _scrub, api, parse_expert_result, run_expert, qwen_agent, qwen_agents
+
+
+def _llm_backend_down(res):
+    """Ошибка похожа на «бэкенд Qwen-агента недоступен» (флап ngrok-туннеля / пустой вывод LLM)?"""
+    if not isinstance(res, dict) or res.get("status") != "error":
+        return False
+    m = str(res.get("message", "")).lower()
+    return any(k in m for k in ("llm empty output", "endpoint", "ngrok", "offline", "err_ngrok", "platform llm"))
+
+
+def run_llm_expert(expert_name, params, wait=660, agents=None):
+    """LLM-эксперт с ретраем и ФОЛБЭКОМ по цепочке Qwen-агентов (config.llm_agents): основной моргнул →
+    следующий. Делает keyless-путь устойчивым к падению бэкенда одного агента. Возвращает первый НЕ-LLM-ошибочный
+    результат либо последнюю ошибку. agents — явная цепочка (напр. design-агент первым), иначе qwen_agents()."""
+    _raw = (agents or []) + qwen_agents() if agents else qwen_agents()
+    seen, agents = set(), []
+    for a in (_raw or [""]):
+        if a and a not in seen:
+            seen.add(a)
+            agents.append(a)
+    agents = agents or [""]
+    last = None
+    for aid in agents:
+        p = dict(params)
+        p["agent_id"] = aid
+        for attempt in range(2):   # флап обычно отпускает за секунды → короткий ретрай
+            r = run_expert(expert_name, p, wait=wait, glob=True)
+            if not _llm_backend_down(r):
+                return r
+            last = r
+            time.sleep(2)
+    return last or {"status": "error", "message": "все Qwen-агенты недоступны (бэкенд не отвечает)"}
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
 _CAT_DIR = Path.home() / "extella_wizard" / "catalog"
@@ -1053,7 +1085,9 @@ def _run_build(session_id, build_id):
         # 1. План стройки
         stage("plan", "Составляю план стройки", "running")
         # ПЛАН строит ёмкая design-модель (fine-tune обрезает большой план); КОДОГЕН ниже — на fine-tune (llm).
-        r = run_expert("wz_build_plan", dict(session_id=session_id, namespace=ns, **{**llm, "agent_id": design_agent()}), wait=900)
+        # план строит design-агент первым; при флапе — фолбэк по цепочке Qwen (run_llm_expert)
+        r = run_llm_expert("wz_build_plan", dict(session_id=session_id, namespace=ns, **llm), wait=900,
+                           agents=[design_agent()])
         if not isinstance(r, dict) or r.get("status") == "error":
             stage("plan", "Составляю план стройки", "error", error=str(r)[:300])
             prog["status"] = "error"; save(); return
@@ -2044,8 +2078,10 @@ class Handler(BaseHTTPRequestHandler):
                 params.setdefault("base_url", CONFIG.get("llm_base_url", ""))
                 params.setdefault("model", CONFIG.get("llm_model", ""))
                 params.setdefault("api_token", CONFIG.get("auth_token", ""))            # платформенная модель, если api_key пуст (клиенту OpenAI-ключ не нужен)
-                params.setdefault("agent_id", qwen_agent())  # канонический Qwen, НЕ Claude-дефолт
-            self._send(run_expert(expert, params, glob=True))   # эксперты визарда — global; без флага платформа их не находит ("Expert not found")
+                # LLM-эксперт: ретрай + фолбэк по цепочке Qwen-агентов (устойчивость к флапу бэкенда)
+                self._send(run_llm_expert(expert, params))
+            else:
+                self._send(run_expert(expert, params, glob=True))   # эксперты визарда — global; без флага платформа их не находит ("Expert not found")
 
         elif self.path == "/x/demo_run":
             sid = str(body.get("session_id", ""))

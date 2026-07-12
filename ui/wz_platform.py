@@ -19,10 +19,26 @@ HEADERS = {"X-Auth-Token": CONFIG["auth_token"], "Content-Type": "application/js
            "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"}
 
 
+def qwen_agents():
+    """Цепочка Qwen-агентов для keyless-LLM: основной → фолбэки. Источник — config.llm_agents (список)
+    ИЛИ [llm_agent_id, agent_id]. Порядок = приоритет (первый = основной; это и есть выбор пользователя).
+    НИКОГДА не включаем agent_extella_default (это Claude, платно). Устойчивость к флапу бэкенда агента:
+    если основной не отвечает (ngrok-туннель лёг) — берём следующего."""
+    chain = CONFIG.get("llm_agents")
+    if not isinstance(chain, list) or not chain:
+        chain = [CONFIG.get("llm_agent_id"), CONFIG.get("agent_id")]
+    seen, out = set(), []
+    for a in chain:
+        if a and a != "agent_extella_default" and a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out or [CONFIG.get("agent_id", "")]
+
+
 def qwen_agent():
-    """Qwen-агент для keyless-LLM: явный override (llm_agent_id) → СОБСТВЕННЫЙ Qwen-Визард клиента (config.agent_id).
-    Никогда Claude (agent_extella_default) и никогда чужой агент (иначе 'Agent does not belong to this user')."""
-    return CONFIG.get("llm_agent_id") or CONFIG.get("agent_id", "")
+    """Основной Qwen-агент (первый в цепочке). Для мест, где фолбэк не нужен."""
+    ch = qwen_agents()
+    return ch[0] if ch else CONFIG.get("agent_id", "")
 
 
 def _scrub(s):
