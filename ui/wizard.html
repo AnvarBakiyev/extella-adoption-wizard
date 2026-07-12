@@ -213,7 +213,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <button id="navMy" onclick="setMode('my')">📦 Мои</button>
     <button id="navWizard" class="on" onclick="setMode('wizard')">Мастер</button>
     <button id="navAuto" onclick="setMode('automations')">🗂 Автоматизации</button>
-    <button id="navCore" onclick="setMode('core')">🧬 Процессное ядро</button>
+    <button id="navCore" onclick="setMode('core')" style="display:none">🧬 Процессное ядро</button>
   </div>
   <div class="spacer"></div>
   <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
@@ -1620,14 +1620,20 @@ async function renderConnections(){
   const chip = (key,label,fn,isSrc)=> conn.includes(key)
     ? `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:rgba(45,160,95,.15);color:#2fa86a;border-radius:8px;padding:5px 11px">${esc(label)} ✓ <a href="#" onclick="testConn('${key}',${isSrc?1:0});return false" style="color:#2fa86a">${_wt('chipTest')}</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33" title="off">×</a></span>`
     : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid rgba(128,128,128,.3);color:var(--silver,#889);border-radius:8px;padding:5px 11px">${esc(label)} · <a href="#" onclick="${fn}();return false" style="color:#c60">${_wt('chipConnect')}</a></span>`;
-  bar.innerHTML = `<div style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:12px 14px;margin:0 0 16px">
-    <div style="font-size:14px;font-weight:600">${_wt('connHdr')}</div>
-    <div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 10px">${_wt('connSub')}</div>
-    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connOut')}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${OUT_CH.map(c=>chip(c[0],c[1],c[2],false)).join("")}</div>
-    <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connIn')}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px">${IN_SRC.map(c=>chip(c[0],c[1],c[2],true)).join("")}</div>
-  </div>`;
+  const outN = OUT_CH.filter(c=>conn.includes(c[0])).length;
+  const srcN = IN_SRC.filter(c=>conn.includes(c[0])).length;
+  const _chW = WLANG==='en'?'channels':'каналов', _srcW = WLANG==='en'?'sources':'источников';
+  // Свёрнуто по умолчанию: подключил один раз — не мешает; наверху доминируют сами автоматизации.
+  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:10px 14px;margin:0 0 16px">
+    <summary style="cursor:pointer;list-style:none;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px">${_wt('connHdr')} <span style="font-weight:400;font-size:12.5px;color:var(--silver,#889)">— ${outN} ${_chW}, ${srcN} ${_srcW}</span></summary>
+    <div style="margin-top:10px">
+      <div style="font-size:11.5px;color:var(--silver,#889);margin:0 0 10px">${_wt('connSub')}</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connOut')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${OUT_CH.map(c=>chip(c[0],c[1],c[2],false)).join("")}</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connIn')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${IN_SRC.map(c=>chip(c[0],c[1],c[2],true)).join("")}</div>
+    </div>
+  </details>`;
 }
 async function disconnectConn(key){
   busy("Отключаю…");
