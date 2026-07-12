@@ -428,7 +428,21 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         if fid:
             run["digest_source"] = "flow"
             run["flow_id"] = fid
-        runs = (cfg.get("runs") or [])
+        # Перед записью — ПЕРЕЧИТАТЬ свежий KV: мост мог во время прогона (минуты) поменять поля-владельца
+        # (rules/fields/recipients/deliver/message_template). Пишем поверх свежего cfg, не поверх стейл-снимка,
+        # иначе тик затрёт правку владельца (lost-update). Прогонные поля (runs/…ts) берём свои.
+        try:
+            _fresh_raw = kv("get", {"key": key}).get("value")
+            _fresh = json.loads(_fresh_raw) if _fresh_raw else None
+        except Exception:
+            _fresh = None
+        if isinstance(_fresh, dict):
+            for _own in ("rules", "fields", "recipients", "deliver", "message_template", "active", "interval_min", "period", "source"):
+                if _own in _fresh:
+                    cfg[_own] = _fresh[_own]
+            runs = (_fresh.get("runs") or cfg.get("runs") or [])   # прогоны — из свежего (могли дописаться ручным запуском)
+        else:
+            runs = (cfg.get("runs") or [])
         runs.append(run)
         cfg["runs"] = runs[-10:]
         cfg["last_run_ts"] = run["at"]
