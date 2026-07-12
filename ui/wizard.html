@@ -235,20 +235,31 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 
 <div class="main" id="mainComposer" style="display:none">
   <div class="kicker">Создать автоматизацию</div>
-  <h1>Опишите задачу — Extella соберёт</h1>
-  <p class="lede">Напишите одной фразой, что нужно. Композитор подберёт из вашей библиотеки готовые блоки, доустановит недостающее и соберёт рабочую автоматизацию — и сразу запустит.</p>
-  <div style="display:flex;gap:8px;margin:14px 0 6px">
-    <input id="composerInput" placeholder="напр.: собери из выписок подписки, о которых я забыл, и подскажи, что отменить"
-      style="flex:1;padding:14px 16px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:12px;background:#fff;color:var(--ink,#0a0a0a);font-size:15px"
-      onkeydown="if(event.key==='Enter')composeNow()">
-    <button id="composeBtn" class="btn gold" style="padding:0 22px;font-size:15px" onclick="composeNow()">Собрать</button>
+  <h1>Что хотите поручить Extella?</h1>
+  <!-- Две РАВНОПРАВНЫЕ двери (не fallback): задача → Композитор, бизнес-процесс → Мастер. Кадр Анвара 12.07. -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin:16px 0">
+    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff)">
+      <div style="font:700 15px var(--sans);margin-bottom:4px">⚡ Собрать задачу из готовых блоков</div>
+      <div style="font-size:13px;color:var(--silver,#889);margin-bottom:12px">Разбор файлов, дайджесты, поиск, отчёты. Композитор подберёт блоки из вашей библиотеки, доустановит недостающее — и сразу запустит.</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input id="composerInput" placeholder="напр.: собери из выписок подписки, о которых я забыл"
+          style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
+          onkeydown="if(event.key==='Enter')composeNow()">
+        <button id="composeBtn" class="btn gold" style="padding:0 18px;font-size:14px" onclick="composeNow()">Собрать</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <span class="chip-ex" onclick="composerFill(this)">найти забытые подписки в банковских выписках</span>
+        <span class="chip-ex" onclick="composerFill(this)">следить за конкурентами и слать дайджест</span>
+        <span class="chip-ex" onclick="composerFill(this)">превратить папку PDF в базу знаний</span>
+      </div>
+    </div>
+    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff);display:flex;flex-direction:column">
+      <div style="font:700 15px var(--sans);margin-bottom:4px">🏢 Спроектировать бизнес-процесс</div>
+      <div style="font-size:13px;color:var(--silver,#889);margin-bottom:10px;flex:1">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
+      <div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">напр.: дебиторка 28 филиалов каждый понедельник директору · сводка заявок на закуп из 1С</div>
+      <button class="btn ghost" style="align-self:flex-start;padding:10px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
+    </div>
   </div>
-  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-    <span class="chip-ex" onclick="composerFill(this)">найти забытые подписки в банковских выписках</span>
-    <span class="chip-ex" onclick="composerFill(this)">следить за OpenAI, Anthropic, LangChain и слать дайджест конкурентов</span>
-    <span class="chip-ex" onclick="composerFill(this)">превратить папку PDF в поисковую базу знаний</span>
-  </div>
-  <div style="font-size:13px;color:var(--silver,#889);margin-bottom:16px">Сложный или новый процесс, которого ещё нет в библиотеке? <a href="#" onclick="setMode('wizard');newSession();return false" style="color:var(--gold,#c60);font-weight:600">Пройдите интервью с Мастером →</a></div>
   <div id="composerOut"></div>
 </div>
 
