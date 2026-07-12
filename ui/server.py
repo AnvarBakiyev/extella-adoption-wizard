@@ -1824,7 +1824,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             clean = []
             used = set()
-            for f in (raw.get("fields") or [])[:6]:
+            _raw_fields = raw.get("fields")
+            if not isinstance(_raw_fields, list):   # Qwen мог вернуть не-список (объект/строку) → не падаем
+                _raw_fields = []
+            for f in _raw_fields[:6]:
                 if not isinstance(f, dict):
                     continue
                 key = re.sub(r"[^a-z0-9_]", "_", str(f.get("key", "")).strip().lower())[:40].strip("_")
@@ -1835,7 +1838,9 @@ class Handler(BaseHTTPRequestHandler):
                 used.add(key)
                 fld = {"key": key, "label": label, "type": typ, "hint": str(f.get("hint", ""))[:120]}
                 if typ == "select":
-                    opts = [str(o).strip()[:40] for o in (f.get("options") or []) if str(o).strip()][:8]
+                    _opts_raw = f.get("options")
+                    _opts_raw = _opts_raw if isinstance(_opts_raw, list) else []   # строка options НЕ режем посимвольно
+                    opts = [str(o).strip()[:40] for o in _opts_raw if str(o).strip()][:8]
                     if len(opts) < 2:
                         fld["type"] = "text"
                     else:
