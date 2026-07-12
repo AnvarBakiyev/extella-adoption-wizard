@@ -15,9 +15,9 @@
 
 Выход 0 — всё зелёно; 1 — есть провал. Пер-проверка печатает PASS/FAIL.
 """
-import sys, json, time, io, base64, urllib.request
+import sys, os, json, time, io, base64, urllib.request
 
-BR = "http://127.0.0.1:8765"
+BR = os.environ.get("SMOKE_BRIDGE", "http://127.0.0.1:8765")  # SMOKE_BRIDGE=http://127.0.0.1:8766 для тест-моста
 FAILS = []
 
 
