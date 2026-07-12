@@ -236,28 +236,35 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 <div class="main" id="mainComposer" style="display:none">
   <div class="kicker">Создать автоматизацию</div>
   <h1>Что хотите поручить Extella?</h1>
-  <!-- Две РАВНОПРАВНЫЕ двери (не fallback): задача → Композитор, бизнес-процесс → Мастер. Кадр Анвара 12.07. -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin:16px 0">
-    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff)">
-      <div style="font:700 15px var(--sans);margin-bottom:4px">⚡ Собрать задачу из готовых блоков</div>
-      <div style="font-size:13px;color:var(--silver,#889);margin-bottom:12px">Разбор файлов, дайджесты, поиск, отчёты. Композитор подберёт блоки из вашей библиотеки, доустановит недостающее — и сразу запустит.</div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="composerInput" placeholder="напр.: собери из выписок подписки, о которых я забыл"
-          style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
-          onkeydown="if(event.key==='Enter')composeNow()">
-        <button id="composeBtn" class="btn gold" style="padding:0 18px;font-size:14px" onclick="composeNow()">Собрать</button>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
+  <!-- Две РАВНОПРАВНЫЕ двери (не fallback): задача → Композитор, бизнес-процесс → Мастер. Кадр Анвара 12.07.
+       Единый шаблон карточки: заголовок → описание → примеры-чипы (растяжимая зона) → действие ВНИЗУ на одном уровне. -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin:16px 0;align-items:stretch">
+    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff);display:flex;flex-direction:column">
+      <div style="font:700 15px var(--sans);margin-bottom:6px">⚡ Собрать задачу из готовых блоков</div>
+      <div style="font-size:13px;color:var(--silver,#889);line-height:1.5;margin-bottom:12px">Разбор файлов, дайджесты, поиск, отчёты. Композитор подберёт блоки из вашей библиотеки, доустановит недостающее — и сразу запустит.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;flex:1;margin-bottom:14px">
         <span class="chip-ex" onclick="composerFill(this)">найти забытые подписки в банковских выписках</span>
         <span class="chip-ex" onclick="composerFill(this)">следить за конкурентами и слать дайджест</span>
         <span class="chip-ex" onclick="composerFill(this)">превратить папку PDF в базу знаний</span>
       </div>
+      <div style="display:flex;gap:8px;margin-top:auto">
+        <input id="composerInput" placeholder="опишите задачу одной фразой…"
+          style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
+          onkeydown="if(event.key==='Enter')composeNow()">
+        <button id="composeBtn" class="btn gold" style="padding:0 18px;font-size:14px" onclick="composeNow()">Собрать</button>
+      </div>
     </div>
     <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff);display:flex;flex-direction:column">
-      <div style="font:700 15px var(--sans);margin-bottom:4px">🏢 Спроектировать бизнес-процесс</div>
-      <div style="font-size:13px;color:var(--silver,#889);margin-bottom:10px;flex:1">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
-      <div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">напр.: дебиторка 28 филиалов каждый понедельник директору · сводка заявок на закуп из 1С</div>
-      <button class="btn ghost" style="align-self:flex-start;padding:10px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
+      <div style="font:700 15px var(--sans);margin-bottom:6px">🏢 Спроектировать бизнес-процесс</div>
+      <div style="font-size:13px;color:var(--silver,#889);line-height:1.5;margin-bottom:12px">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;flex:1;margin-bottom:14px">
+        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">дебиторка 28 филиалов каждый понедельник директору</span>
+        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">сводка заявок на закуп из 1С</span>
+        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">отвечать клиентам в Telegram 24/7</span>
+      </div>
+      <div style="display:flex;margin-top:auto">
+        <button class="btn gold" style="padding:12px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
+      </div>
     </div>
   </div>
   <div id="composerOut"></div>
@@ -668,9 +675,10 @@ function _procHintHTML(task, hits){
   return '<div class="cmp-step" style="border-color:var(--gold,#c60);flex-wrap:wrap;gap:8px">🏢 Похоже на бизнес-процесс ('+esc(hits.join(', '))+') — такие надёжнее строить через интервью с Мастером.'+
     ' <button class="btn ghost" style="padding:5px 12px;font-size:12px;margin-left:auto" onclick="buildProcessFromTask()">Пройти интервью →</button></div>';
 }
-// Хэндофф «процессная фраза → Мастер»: проект с именем задачи + засеянный чат (как buildGapWithWizard, без пробела)
-async function buildProcessFromTask(){
-  var task = window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
+// Хэндофф «процессная фраза → Мастер»: проект с именем задачи + засеянный чат (как buildGapWithWizard, без пробела).
+// taskArg — из клика по чипу-примеру; иначе фраза из поля/последней компоновки.
+async function buildProcessFromTask(taskArg){
+  var task = (typeof taskArg==="string" && taskArg.trim()) || window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
   setMode("wizard");
   var nm=(task||"Новый процесс").slice(0,40);
   busy("Создаю проект «"+nm+"»…");
