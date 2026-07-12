@@ -1853,11 +1853,25 @@ function _wzCabOverview(a){
 }
 function _wzCabRuns(a){
   var runs=a.runs||[];
+  var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(String(n));};
   var list=runs.length?runs.map(function(r){
     var ok=r.status; var ic=ok==='success'?'<span style="color:#2f9e56">✓</span>':(/error|fail/i.test(ok||'')?'<span style="color:#c0392b">✕</span>':'<span style="color:#C57E33">•</span>');
     var when=esc((r.at||'').slice(0,16).replace('T',' '));
-    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--cream-dark)"><span style="font-size:14px">'+ic+'</span><span style="font-size:13px;color:var(--ink-soft);min-width:120px">'+when+'</span><span style="font-size:13px;color:var(--nav)">'+esc(ok||'')+(r.total_sum!=null?' · сумма '+esc(r.total_sum):'')+'</span></div>';
-  }).join(''):'<div style="color:var(--silver);font-size:13px;padding:12px 0">Запусков пока нет.</div>';
+    // итог прогона словами: позиции/сумма (процессы), находки (дайджесты), либо статус
+    var bits=[];
+    if(r.total_count!=null) bits.push('позиций '+fmt(r.total_count));
+    if(r.total_sum!=null) bits.push('<b>'+fmt(r.total_sum)+'</b>');
+    if(r.findings!=null) bits.push('находок '+fmt(r.findings));
+    if(r.digest_source==='flow') bits.push('бриф в приложении');
+    var files=[];
+    if(r.report_xlsx) files.push('<a href="/x/download?path='+encodeURIComponent(r.report_xlsx)+'" target="_blank" style="color:#c60">отчёт .xlsx</a>');
+    return '<div style="display:flex;align-items:baseline;gap:10px;padding:10px 0;border-top:1px solid var(--cream-dark);flex-wrap:wrap">'+
+      '<span style="font-size:14px">'+ic+'</span>'+
+      '<span style="font-size:13px;color:var(--ink-soft);min-width:120px">'+when+'</span>'+
+      '<span style="font-size:13px;color:var(--nav)">'+esc(ok||'')+(bits.length?' · '+bits.join(' · '):'')+'</span>'+
+      (files.length?'<span style="font-size:12.5px;margin-left:auto">'+files.join(' · ')+'</span>':'')+
+      '</div>';
+  }).join(''):'<div style="color:var(--silver);font-size:13px;padding:12px 0">Запусков пока нет. Нажмите «▶ Запустить сейчас» — история появится здесь.</div>';
   return _wzCard('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('История запусков')+'<button class="btn gold sm" onclick="runProcess('+_wzCabI+')">▶ Запустить сейчас</button></div>'+list+'<div id="autoRun-'+_wzCabI+'" style="margin-top:10px"></div>');
 }
 function _wzCabSchedule(a){
