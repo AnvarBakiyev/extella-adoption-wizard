@@ -12,7 +12,16 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
     if _b(task):
         return json.dumps({"status": "error", "message": "опиши задачу словами (task)"}, ensure_ascii=False)
     if _b(agent_id):
-        agent_id = "agent_iVWWFbzjmNwxgZNB5chIr"   # Qwen fine-tune
+        # дефолт — свой Qwen клиента из конфига Визарда (прежний хардкод agent_iVWW… удалён с платформы → 404)
+        _cfgp = Path.home() / "extella_wizard" / "app" / "config.json"
+        try:
+            _c = json.loads(_cfgp.read_text(encoding="utf-8")) if _cfgp.exists() else {}
+        except Exception:
+            _c = {}
+        _ch = _c.get("llm_agents") or []
+        agent_id = ((_ch[0] if isinstance(_ch, list) and _ch else "") or _c.get("llm_agent_id") or _c.get("agent_id") or "")
+    if _b(agent_id):
+        return json.dumps({"status": "error", "message": "нет agent_id (Qwen): передай параметром или заполни config.json Визарда"}, ensure_ascii=False)
     if _b(api_base):
         api_base = "https://api.extella.ai"
     if _b(api_token):

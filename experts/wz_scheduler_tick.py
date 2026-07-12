@@ -279,7 +279,8 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         interval = int(cfg.get("interval_min", 0) or 0)
         orch = cfg.get("orchestrator")
         src = cfg.get("source_file")
-        if not orch or not src:
+        fid = cfg.get("flow_id")   # composed-задача (Композитор): вместо файла — план flow:<id> в KV
+        if not orch or (not src and not fid):
             continue
         # срок?
         nd = cfg.get("next_due_ts")
@@ -329,11 +330,17 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             if not _pull_ok:
                 fired.append({"key": key, "status": "source_pull_failed", "err": str((_po or {}).get("err", ""))[:120]})
                 continue   # источник не отдал данные — не гоняем оркестратор на устаревших/пустых данных
-        run_params = {"api_token": api_token, "source_file": src}
+        if fid:
+            # composed-задача: раннер flow читает план из KV; agent_id (Qwen клиента) кладёт мост при schedule
+            run_params = {"api_token": api_token, "flow_id": fid}
+            if cfg.get("agent_id"):
+                run_params["agent_id"] = cfg["agent_id"]
+        else:
+            run_params = {"api_token": api_token, "source_file": src}
+            if skey:
+                run_params["source_key"] = skey     # резолвер материализует файл из общего стора
         if tgt:
             run_params["target"] = tgt          # оркестратор пинит свои стадии на то же устройство
-        if skey:
-            run_params["source_key"] = skey     # резолвер материализует файл из общего стора
         run_body = {"expert_name": orch, "params": run_params, "global": True}
         if tgt:
             run_body["target"] = tgt            # сам оркестратор исполняется на хостинге
@@ -359,9 +366,30 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             return {"status": "unknown"}
 
         out = as_dict(out)
+        # composed-задача (flow): deferred-запуск отдаёт task_id → поллим /api/tasks/check (не lastrun)
+        if fid and out.get("status") != "success":
+            _tid = resp.get("task_id") if isinstance(resp, dict) else None
+            if _tid:
+                import time as _t2
+                _w = 0
+                while _w < 240:
+                    _t2.sleep(6); _w += 6
+                    try:
+                        st = requests.post(base + "/api/tasks/check", headers=headers,
+                                           json={"task_id": _tid}, timeout=30).json()
+                    except Exception:
+                        continue
+                    _st = str(st.get("status", "")).lower()
+                    _r2 = st.get("result")
+                    if _r2 not in (None, "") and not (isinstance(_r2, str) and "deferred" in _r2.lower()):
+                        out = as_dict(_r2)
+                        break
+                    if _st.startswith(("error", "failed", "cancel", "timeout")):
+                        out = {"status": "error", "message": _st}
+                        break
         # отложенная задача возвращает "deferred" без task_id → оркестратор кладёт итог в
         # KV lastrun:<ns> (межустройственно). Ждём свежую запись новее старта тика.
-        if out.get("status") != "success":
+        if (not fid) and out.get("status") != "success":
             import time as _t
             ns = orch.replace("_run_pipeline", "")
             lk = "lastrun:" + ns
@@ -386,10 +414,16 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                            "total_sum": rec.get("total_sum"), "report_xlsx": rec.get("report_xlsx"),
                            "host": rec.get("host")}
                     break
-        run = {"at": now().isoformat(), "status": (out or {}).get("status", "unknown"),
+        _stat = (out or {}).get("status", "unknown")
+        if fid:
+            _stat = (out or {}).get("run_status") or _stat   # flow честно помечает деградацию (partial)
+        run = {"at": now().isoformat(), "status": _stat,
                "total_count": (out or {}).get("total_count"), "total_sum": (out or {}).get("total_sum"),
                "report_xlsx": (out or {}).get("report_xlsx"), "host": (out or {}).get("host"),
                "trigger": "schedule"}
+        if fid:
+            run["digest_source"] = "flow"
+            run["flow_id"] = fid
         runs = (cfg.get("runs") or [])
         runs.append(run)
         cfg["runs"] = runs[-10:]
@@ -406,7 +440,9 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             _d = str(cfg.get("deliver") or "").strip().lower()
             recips = [_d] if _d else []
         recips = [c for c in recips if c.replace("_", "").isalnum()]
-        if recips and run.get("status") == "success":
+        # flow: partial = дайджест есть, но с деградацией — доставляем честно (с пометкой в тексте)
+        _deliver_ok = run.get("status") == "success" or (fid and run.get("status") == "partial")
+        if recips and _deliver_ok:
             tc = run.get("total_count"); ts = run.get("total_sum")
             # шаблон сообщения per-automation (кабина «Шаблон»): {name}{count}{sum}{date}; пустой → дефолт
             _tpl = cfg.get("message_template")
@@ -423,6 +459,12 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                 if ts is not None:
                     msg += "\nСумма: " + format(ts, ",").replace(",", " ") + " ₸"
                 msg += "\n" + run["at"][:16].replace("T", " ") + " UTC"
+            # composed-задача: главная ценность — сам дайджест → шлём его начало в канал
+            _dg = (out or {}).get("digest_md") or (out or {}).get("digest") or ""
+            if fid and _dg:
+                if run.get("status") == "partial":
+                    msg += "\n⚠ прогон с деградацией (часть шагов не отработала)"
+                msg += "\n\n" + str(_dg)[:600]
             for deliver in recips:
                 dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
                          "params": {"api_token": api_token, "client": cfg.get("client", "default"),
