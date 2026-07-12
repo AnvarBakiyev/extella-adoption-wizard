@@ -1716,28 +1716,69 @@ async function ensureConn(){
   if(!window.CONN){ try{ const sc=await jget("/x/secrets"); window.CONN=(sc.secrets||[]).map(x=>x.connector); }catch(e){ window.CONN=[]; } }
   return window.CONN;
 }
+// человеческое описание каждого подключения: что даёт бизнесу + что понадобится для подключения
+const CONN_META = {
+  telegram:    {e:'✈️', what:'Сводки и ответы приходят в чат Telegram', need:'токен бота (создаётся у @BotFather за минуту)'},
+  email:       {e:'✉️', what:'Отчёты приходят письмом на почту',        need:'SMTP-доступ почты: хост, логин, пароль приложения'},
+  slack:       {e:'💬', what:'Сообщения в канал вашей команды',          need:'Incoming Webhook URL из настроек Slack'},
+  whatsapp:    {e:'🟢', what:'Сообщения клиентам в WhatsApp',            need:'GreenAPI: idInstance + apiToken (кабинет green-api.com)'},
+  sms:         {e:'📱', what:'SMS-уведомления на телефон',               need:'ключ SMS-провайдера'},
+  src_gsheets: {e:'📊', what:'Берёт данные из ваших Google-таблиц',      need:'JSON-ключ сервис-аккаунта Google'},
+  src_bitrix24:{e:'🄱',  what:'Сделки и контакты из Битрикс24',           need:'входящий вебхук Битрикс24'},
+  src_postgres:{e:'🐘', what:'Данные напрямую из PostgreSQL',            need:'строка подключения к базе'},
+  src_mysql:   {e:'🐬', what:'Данные напрямую из MySQL',                 need:'строка подключения к базе'},
+  src_amocrm:  {e:'🄰',  what:'Лиды и сделки из amoCRM / Kommo',          need:'домен и долгосрочный токен'},
+  src_1c_file: {e:'🗄', what:'Читает выгрузку из 1С (файл)',             need:'путь к файлу выгрузки'},
+  src_1c_winrm:{e:'🖥', what:'Прямо из 1С на вашем сервере',             need:'адрес сервера и логин WinRM'}
+};
 async function renderConnections(){
-  // Блок «Подключения»: подключаешь ОДИН раз, статус виден всегда. В процессах — выбор из подключённого.
+  // «Подключения»: подключаешь ОДИН раз — дальше во всех автоматизациях просто выбираешь из подключённого.
   const bar = el("connBar"); if(!bar) return;
-  try{ const sc=await jget("/x/secrets"); window.CONN=(sc.secrets||[]).map(x=>x.connector); }catch(e){ window.CONN=[]; }
-  const conn = window.CONN;
-  const chip = (key,label,fn,isSrc)=> conn.includes(key)
-    ? `<span style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:rgba(45,160,95,.15);color:#2fa86a;border-radius:8px;padding:5px 11px">${esc(label)} ✓ <a href="#" onclick="testConn('${key}',${isSrc?1:0});return false" style="color:#2fa86a">${_wt('chipTest')}</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33" title="off">×</a></span>`
-    : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid rgba(128,128,128,.3);color:var(--silver,#889);border-radius:8px;padding:5px 11px">${esc(label)} · <a href="#" onclick="${fn}();return false" style="color:#c60">${_wt('chipConnect')}</a></span>`;
-  const outN = OUT_CH.filter(c=>conn.includes(c[0])).length;
-  const srcN = IN_SRC.filter(c=>conn.includes(c[0])).length;
-  const _chW = WLANG==='en'?'channels':'каналов', _srcW = WLANG==='en'?'sources':'источников';
-  // Свёрнуто по умолчанию: подключил один раз — не мешает; наверху доминируют сами автоматизации.
-  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:10px 14px;margin:0 0 16px">
-    <summary style="cursor:pointer;list-style:none;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px">${_wt('connHdr')} <span style="font-weight:400;font-size:12.5px;color:var(--silver,#889)">— ${outN} ${_chW}, ${srcN} ${_srcW}</span></summary>
-    <div style="margin-top:10px">
-      <div style="font-size:11.5px;color:var(--silver,#889);margin:0 0 10px">${_wt('connSub')}</div>
-      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connOut')}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${OUT_CH.map(c=>chip(c[0],c[1],c[2],false)).join("")}</div>
-      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:5px">${_wt('connIn')}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">${IN_SRC.map(c=>chip(c[0],c[1],c[2],true)).join("")}</div>
+  let secrets=[]; try{ const sc=await jget("/x/secrets"); secrets=sc.secrets||[]; }catch(e){}
+  const vaulted = secrets.filter(x=>!x.external).map(x=>x.connector);
+  const found   = secrets.filter(x=>x.external).map(x=>x.connector);   // напр. WhatsApp из Travel-пака
+  window.CONN = vaulted;
+  const card = (key,label,fn)=>{
+    const m = CONN_META[key]||{e:'🔌',what:'',need:''};
+    const on = vaulted.includes(key), ext = found.includes(key);
+    const status = on
+      ? '<span style="font-size:11.5px;color:#2f9e56;background:rgba(47,158,86,.12);border-radius:999px;padding:3px 9px">✓ подключено</span>'
+      : (ext ? '<span style="font-size:11.5px;color:#C57E33;background:rgba(197,126,51,.13);border-radius:999px;padding:3px 9px">найдено в Travel-паке</span>' : '');
+    const act = on
+      ? `<a href="#" onclick="testConn('${key}',${key.startsWith('src_')?1:0});return false" style="color:#2f9e56;font-size:12.5px">проверить</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33;font-size:12.5px;margin-left:8px" title="отключить">отключить</a>`
+      : (ext
+        ? `<button class="btn gold sm" style="font-size:12px;padding:5px 12px" onclick="adoptConn('${key}')">Сделать общим</button>`
+        : `<button class="btn ghost sm" style="font-size:12px;padding:5px 12px" onclick="${fn}()">Подключить</button>`);
+    return `<div style="background:var(--paper);border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px">${m.e}</span><b style="font-size:13.5px;flex:1">${esc(label)}</b>${status}</div>
+      <div style="font-size:12px;color:var(--silver,#889);line-height:1.45;flex:1">${esc(m.what)}${(!on&&!ext&&m.need)?'<br><span style="opacity:.8">Понадобится: '+esc(m.need)+'</span>':''}</div>
+      <div style="margin-top:2px">${act}</div>
+    </div>`;
+  };
+  const onNames = [...OUT_CH,...IN_SRC].filter(c=>vaulted.includes(c[0])).map(c=>c[1]);
+  const sumTxt = onNames.length
+    ? `${onNames.join(', ')}${found.length?` · <span style=\"color:#C57E33\">＋ найдено: WhatsApp</span>`:''}`
+    : (WLANG==='en'?'nothing connected yet':'пока ничего не подключено');
+  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:10px 14px;margin:0 0 16px"${found.length?' open':''}>
+    <summary style="cursor:pointer;list-style:none;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${_wt('connHdr')} <span style="font-weight:400;font-size:12.5px;color:var(--silver,#889)">— ${sumTxt}</span></summary>
+    <div style="margin-top:12px">
+      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:6px">${_wt('connOut')}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-bottom:14px">${OUT_CH.map(c=>card(c[0],c[1],c[2])).join("")}</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-bottom:6px">${_wt('connIn')}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">${IN_SRC.map(c=>card(c[0],c[1],c[2])).join("")}</div>
     </div>
   </details>`;
+}
+// адопция найденного подключения (WhatsApp из Travel-пака) в общий сейф — секрет переносится серверно
+function adoptConn(key){
+  if(key!=='whatsapp') return;
+  ask("WhatsApp — кому слать по умолчанию", "Номер получателя, напр. 77001234567 (можно пропустить — спросим при доставке).", "", async (to)=>{
+    busy("Переношу подключение в общий сейф…");
+    const r = await jpost("/x/secret_adopt",{connector:"whatsapp", to:(to||"").trim()});
+    busyOff();
+    if(r&&r.status==="success"){ toast("✓ WhatsApp теперь общее подключение","ok"); renderConnections(); }
+    else toast("Ошибка: "+((r&&r.message)||""),"err");
+  });
 }
 async function disconnectConn(key){
   busy("Отключаю…");
