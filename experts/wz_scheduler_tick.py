@@ -397,25 +397,42 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         cfg["next_due_ts"] = (now() + timedelta(minutes=max(1, interval))).isoformat()
         kv("set", {"key": key, "value": json.dumps(cfg, ensure_ascii=False),
                    "description": "schedule " + key.split(":", 1)[-1]})
-        # доставка результата в канал (telegram/email/…) — коннектор wz_connector_<канал> на хостинге
-        deliver = str(cfg.get("deliver") or "").strip().lower()
-        if deliver and deliver.replace("_", "").isalnum() and run.get("status") == "success":
+        # доставка результата в каналы-получатели (telegram/email/…) — коннектор wz_connector_<канал> на хостинге.
+        # Несколько получателей: cfg['recipients'] (список); обратная совместимость — одиночный cfg['deliver'].
+        _rc = cfg.get("recipients")
+        if isinstance(_rc, list) and _rc:
+            recips = [str(x).strip().lower() for x in _rc if str(x).strip()]
+        else:
+            _d = str(cfg.get("deliver") or "").strip().lower()
+            recips = [_d] if _d else []
+        recips = [c for c in recips if c.replace("_", "").isalnum()]
+        if recips and run.get("status") == "success":
             tc = run.get("total_count"); ts = run.get("total_sum")
-            msg = "✅ Extella: процесс отработал по расписанию."
-            if tc is not None:
-                msg += "\nПозиций: " + str(tc)
-            if ts is not None:
-                msg += "\nСумма: " + format(ts, ",").replace(",", " ") + " ₸"
-            msg += "\n" + run["at"][:16].replace("T", " ") + " UTC"
-            dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
-                     "params": {"api_token": api_token, "client": cfg.get("client", "default"),
-                                "mode": "send", "text": msg}}
-            if cfg.get("target"):
-                dbody["target"] = cfg["target"]
-            try:
-                requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
-            except Exception:
-                pass
+            # шаблон сообщения per-automation (кабина «Шаблон»): {name}{count}{sum}{date}; пустой → дефолт
+            _tpl = cfg.get("message_template")
+            if isinstance(_tpl, str) and _tpl.strip():
+                _fn = (lambda x: format(x, ",").replace(",", " ") if isinstance(x, (int, float)) else "—")
+                msg = (_tpl.replace("{name}", str(cfg.get("name") or "процесс"))
+                           .replace("{count}", str(tc) if tc is not None else "—")
+                           .replace("{sum}", _fn(ts) if ts is not None else "—")
+                           .replace("{date}", run["at"][:16].replace("T", " ") + " UTC"))
+            else:
+                msg = "✅ Extella: процесс отработал по расписанию."
+                if tc is not None:
+                    msg += "\nПозиций: " + str(tc)
+                if ts is not None:
+                    msg += "\nСумма: " + format(ts, ",").replace(",", " ") + " ₸"
+                msg += "\n" + run["at"][:16].replace("T", " ") + " UTC"
+            for deliver in recips:
+                dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
+                         "params": {"api_token": api_token, "client": cfg.get("client", "default"),
+                                    "mode": "send", "text": msg}}
+                if cfg.get("target"):
+                    dbody["target"] = cfg["target"]
+                try:
+                    requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
+                except Exception:
+                    pass
         fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"]})
 
     return {"status": "success", "checked": checked, "fired": fired,

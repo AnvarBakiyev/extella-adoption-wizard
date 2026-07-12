@@ -1695,7 +1695,7 @@ function _wzCabRender(){
   var o=el('wz_cab'); if(!o){ o=document.createElement('div'); o.id='wz_cab'; o.style.cssText='position:fixed;inset:0;background:var(--cream);z-index:99998;display:flex;flex-direction:column;overflow:hidden'; document.body.appendChild(o); }
   var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс'), st=_wzStatus(a);
   var stBadge={active:['● активен','#2f9e56'],paused:['⏸ пауза','#C57E33'],frozen:['🔒 заморожен','#3A6EA5']}[st]||['● активен','#2f9e56'];
-  var tabs=[['overview','Обзор'],['runs','Запуски'],['schedule','Расписание'],['settings','Настройки']];
+  var tabs=[['overview','Запуск'],['settings','Настройка'],['template','Шаблон'],['runs','Прогоны']];
   var tabBar=tabs.map(function(t){var on=_wzCabTab===t[0];return '<button onclick="wzCabTab(\''+t[0]+'\')" style="border:none;background:'+(on?'var(--gold-bg)':'transparent')+';color:'+(on?'var(--gold)':'var(--nav)')+';font:600 13px var(--sans);padding:8px 16px;border-radius:8px;cursor:pointer">'+t[1]+'</button>';}).join('');
   o.innerHTML=
     '<div style="'+_wzHeroStyle(acc)+';padding:20px 26px 18px;position:relative;flex-shrink:0">'+
@@ -1716,13 +1716,43 @@ function _wzCabRender(){
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
 function _wzCabBody(a){
-  if(_wzCabTab==='overview') return _wzCabOverview(a);
+  if(_wzCabTab==='overview') return _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _wzCabRuns(a);
-  if(_wzCabTab==='schedule') return _wzCabSchedule(a);
   if(_wzCabTab==='settings') return _wzCabSettings(a);
+  if(_wzCabTab==='template') return _wzCabTemplate(a);
   return '';
 }
 function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;color:var(--ink-soft);background:var(--cream);border:1px solid var(--cream-dark);border-radius:7px;padding:4px 10px;margin:0 6px 6px 0">'+esc(c)+'</span>'; }
+// ── вкладка «Запуск и результат» (value-first): готовность → запуск → последний результат, плумбинг под спойлер ──
+function _wzReadyChip(state, label){
+  var c = state==='ok' ? ['#2f9e56','rgba(47,158,86,.10)','✓'] : (state==='warn'?['#C57E33','rgba(197,126,51,.12)','!']:['#7a7a7a','rgba(128,128,128,.10)','·']);
+  return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:'+c[0]+';background:'+c[1]+';border-radius:999px;padding:5px 11px;margin:0 6px 6px 0">'+c[2]+' '+esc(label)+'</span>';
+}
+function _wzCabLaunch(a){
+  var i=_wzCabI, rc=(a.recipients||[]);
+  var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
+  var ready =
+      _wzReadyChip(a.source&&a.source.kind?'ok':'idle', a.source&&a.source.kind?('Источник: '+_srcName(a.source.kind)):'Источник: файл вручную')
+    + _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Получатели: не заданы')
+    + _wzReadyChip(a.schedule&&a.schedule.period?'ok':'idle', a.schedule&&a.schedule.period?('Расписание: '+a.schedule.period):'Запуск вручную');
+  var lr=a.last_run;
+  var result = lr ? _wzCard(
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+_wzH('Последний результат')+'<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
+      ((lr.total_count!=null||lr.total_sum!=null)?
+        '<div style="display:flex;gap:24px">'+
+        (lr.total_count!=null?'<div><div style="font:700 24px var(--sans)">'+fmt(lr.total_count)+'</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>':'')+
+        (lr.total_sum!=null?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
+        '</div>'
+        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
+      (lr.report_xlsx?'<div style="margin-top:8px"><a href="/x/download?path='+encodeURIComponent(lr.report_xlsx)+'" target="_blank" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')
+    ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
+  return _wzCard(
+      _wzH('Готовность')+'<div>'+ready+'</div>'+
+      '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
+      '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
+    + result
+    + '<details style="max-width:720px;margin-bottom:14px"><summary style="cursor:pointer;color:var(--nav);font:600 13px var(--sans);padding:6px 0;list-style:none">⚙ Под капотом — как устроено</summary><div style="margin-top:8px">'+_wzCabOverview(a)+'</div></details>';
+}
 function _wzCabOverview(a){
   var caps=_wzCaps(a), comps=a.components||[], kp=a.knowledge_pack&&a.knowledge_pack.pack_id;
   var chips=caps.length?caps.map(_wzChip).join(''):'<span style="color:var(--silver);font-size:13px">умения не размечены</span>';
@@ -1747,11 +1777,101 @@ function _wzCabSchedule(a){
   return _wzCard(_wzH('Расписание')+cur)+
     _wzCard(_wzH('Изменить')+'<button class="btn gold sm" onclick="scheduleProcess('+_wzCabI+')">⏰ Настроить расписание и канал</button><div style="font-size:11.5px;color:var(--silver);margin-top:8px">Реальный крон на устройстве/VPS 24/7 (sched-тик).</div>');
 }
+// ── имена/эмодзи каналов и источников (для кабины «Настройка») ──
+function chName(k){ return ({telegram:"Telegram",email:"Email",slack:"Slack",whatsapp:"WhatsApp",sms:"SMS"})[k]||k; }
+function chEmoji(k){ return ({telegram:"✈️",email:"✉️",slack:"💬",whatsapp:"🟢",sms:"📱"})[k]||"📤"; }
+function _srcName(k){ return ({src_gsheets:"Google Sheets",src_bitrix24:"Bitrix24",src_postgres:"PostgreSQL",src_mysql:"MySQL",src_amocrm:"amoCRM",src_1c_file:"1С (файл)",src_1c_winrm:"1С (сервер)"})[k]||k; }
+var _RCPT_CH=[["telegram","Telegram"],["email","Email"],["slack","Slack"],["whatsapp","WhatsApp"],["sms","SMS"]];
+// ── получатели результата: добавить/убрать канал прямо в карточке (без Мастера) ──
+async function addRecipient(i){
+  var a=AUTOS[i]; if(!a) return;
+  var slot=el('wz_recadd-'+i); if(!slot) return;
+  slot.innerHTML='<span class="spin"></span>';
+  var conn=await ensureConn();
+  var cur=(a.recipients||[]);
+  var avail=_RCPT_CH.filter(function(c){return conn.includes(c[0]) && cur.indexOf(c[0])<0;});
+  if(!avail.length){ slot.innerHTML='<div style="font-size:12.5px;color:#888;margin-top:8px">Нет свободных подключённых каналов. Подключите канал в блоке <b>🔌 Подключения</b> вверху страницы.</div>'; return; }
+  slot.innerHTML='<div style="font-size:12.5px;color:var(--silver);margin:10px 0 6px">Выберите подключённый канал:</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+avail.map(function(c){
+     return '<button class="btn ghost sm" onclick="pickRecipient('+i+',\''+c[0]+'\')">'+chEmoji(c[0])+' '+c[1]+'</button>';
+  }).join('')+'</div>';
+}
+async function pickRecipient(i,ch){
+  var a=AUTOS[i]; if(!a) return;
+  var cur=(a.recipients||[]).slice();
+  if(cur.indexOf(ch)<0) cur.push(ch);
+  await _saveRecipients(a,cur);
+}
+async function removeRecipient(i,ch){
+  var a=AUTOS[i]; if(!a) return;
+  var cur=(a.recipients||[]).filter(function(x){return x!==ch;});
+  await _saveRecipients(a,cur);
+}
+async function _saveRecipients(a,list){
+  busy('Сохраняю получателей…');
+  var r=await jpost('/x/recipients',{session_id:a.session_id, recipients:list});
+  busyOff();
+  if(r&&r.status==='success'){ a.recipients=r.recipients||list; toast('✓ Получатели обновлены','ok'); if(_wzCabI>=0) _wzCabRender(); }
+  else toast('Ошибка: '+((r&&r.message)||''),'err');
+}
 function _wzCabSettings(a){
-  var sid=a.session_id;
-  return _wzCard(_wzH('Источник данных')+'<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">Настроить источник</button> <button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>')+
-    _wzCard(_wzH('Продовый агент 24/7')+'<button class="btn ghost sm" onclick="deployAgentPrompt('+_wzCabI+')">'+(a.production_agent?'Обновить агента':'Развернуть агента')+'</button>')+
-    _wzCard(_wzH('Поделиться / редактировать')+'<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">Опубликовать в витрину</button> <button class="btn ghost sm" onclick="openInWizard(\''+esc(sid)+'\')">Открыть в Мастере</button>');
+  var sid=a.session_id, rc=(a.recipients||[]);
+  var recRows = rc.length ? rc.map(function(ch){
+     return '<div style="display:flex;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:8px 12px;margin-bottom:6px">'+
+       '<span style="font-size:16px">'+chEmoji(ch)+'</span>'+
+       '<span style="font-size:14px;flex:1">'+esc(chName(ch))+'</span>'+
+       '<button onclick="removeRecipient('+_wzCabI+',\''+ch+'\')" title="Убрать получателя" style="border:none;background:transparent;color:var(--silver);cursor:pointer;font-size:16px;line-height:1">✕</button>'+
+     '</div>';
+  }).join('') : '<div style="color:var(--silver);font-size:13px;margin-bottom:8px">Пока никто — результат никуда не отправляется. Добавьте получателя.</div>';
+  var recipientsCard = _wzCard(_wzH('Кому отправлять результат')+recRows+
+     '<button class="btn ghost sm" onclick="addRecipient('+_wzCabI+')">+ Добавить получателя</button>'+
+     '<div id="wz_recadd-'+_wzCabI+'"></div>');
+  var srcCard = _wzCard(_wzH('Источник данных')+
+     '<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">'+((a.source&&a.source.kind)? esc(_srcName(a.source.kind))+' <span style="color:#2f9e56">✓</span>' : '<span style="color:var(--silver)">файл загружается вручную при запуске</span>')+'</div>'+
+     '<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">'+((a.source&&a.source.kind)?'Сменить источник':'Привязать источник')+'</button> '+
+     '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>');
+  var scCard = _wzCard(_wzH('Расписание')+
+     '<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">'+((a.schedule&&a.schedule.period)? '<b>'+esc(a.schedule.period)+'</b>' : '<span style="color:var(--silver)">запуск вручную</span>')+'</div>'+
+     '<button class="btn ghost sm" onclick="scheduleProcess('+_wzCabI+')">Настроить расписание</button>');
+  var deployCard = _wzCard(_wzH('Публикация')+
+     '<button class="btn ghost sm" onclick="deployAgentPrompt('+_wzCabI+')">'+(a.production_agent?'Обновить агента 24/7':'Развернуть агента 24/7')+'</button> '+
+     '<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">В витрину</button>');
+  var advCard = _wzCard(_wzH('Переделать процесс')+
+     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные, получатели, расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
+     '<button class="btn ghost sm" onclick="configureProcess('+_wzCabI+')">Изменить параметры (словами)</button> '+
+     '<button class="btn ghost sm" onclick="openInWizard(\''+esc(sid)+'\')">Открыть в Мастере</button>');
+  return recipientsCard+srcCard+scCard+deployCard+advCard;
+}
+// ── вкладка «Шаблон сообщения»: текст доставки per-automation с плейсхолдерами ──
+var _TPL_DEFAULT='✅ Extella: {name} — процесс отработал.\nПозиций: {count}\nСумма: {sum} ₸';
+function _renderTplLocal(tpl, a){
+  return (String(tpl||'').trim()||_TPL_DEFAULT)
+    .replace(/\{name\}/g, a.process_name||a.client_name||'процесс')
+    .replace(/\{count\}/g,'128')
+    .replace(/\{sum\}/g,'26 000 000')
+    .replace(/\{date\}/g,'2026-07-12 09:00 UTC');
+}
+function _wzCabTemplate(a){
+  var tpl=a.message_template||'';
+  return _wzCard(_wzH('Шаблон сообщения получателям')+
+    '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры: <code>{name}</code> — имя, <code>{count}</code> — позиций, <code>{sum}</code> — сумма, <code>{date}</code> — дата. Пусто — стандартный текст.</div>'+
+    '<textarea id="wz_tpl-'+_wzCabI+'" class="sess-select" style="width:100%;max-width:none;min-height:120px;font:13px/1.5 var(--mono,monospace);padding:10px" oninput="previewTemplate('+_wzCabI+')" placeholder="'+esc(_TPL_DEFAULT)+'">'+esc(tpl)+'</textarea>'+
+    '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn gold sm" onclick="saveTemplate('+_wzCabI+')">Сохранить шаблон</button></div>'+
+    '<div style="font-size:12px;color:var(--silver);margin:12px 0 4px">Так увидит получатель:</div>'+
+    '<div id="wz_tplprev-'+_wzCabI+'" style="white-space:pre-wrap;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;font-size:13px">'+esc(_renderTplLocal(tpl,a))+'</div>');
+}
+function previewTemplate(i){
+  var a=AUTOS[i]; if(!a) return;
+  var tpl=(el('wz_tpl-'+i)||{}).value||'';
+  var pv=el('wz_tplprev-'+i); if(pv) pv.textContent=_renderTplLocal(tpl,a);
+}
+async function saveTemplate(i){
+  var a=AUTOS[i]; if(!a) return;
+  var tpl=(el('wz_tpl-'+i)||{}).value||'';
+  busy('Сохраняю шаблон…');
+  var r=await jpost('/x/message_template',{session_id:a.session_id, template:tpl});
+  busyOff();
+  if(r&&r.status==='success'){ a.message_template=r.template; toast('✓ Шаблон сохранён','ok'); var pv=el('wz_tplprev-'+i); if(pv&&r.preview) pv.textContent=r.preview; }
+  else toast('Ошибка: '+((r&&r.message)||''),'err');
 }
 
 async function renderAutomations(){
@@ -1788,7 +1908,7 @@ async function renderAutomations(){
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0">
         ${tile(_wt('tSource'), a.source&&a.source.kind?SRCNAME(a.source.kind):"—", !!(a.source&&a.source.kind), `sourceProcess(${i})`)}
         ${tile(_wt('tSchedule'), (a.schedule&&a.schedule.period)?esc(a.schedule.period):"—", !!(a.schedule&&a.schedule.period), `scheduleProcess(${i})`)}
-        ${tile(_wt('tDeliver'), (a.schedule&&a.schedule.deliver)?CHNAME(a.schedule.deliver):"—", !!(a.schedule&&a.schedule.deliver), `scheduleProcess(${i})`)}
+        ${tile(_wt('tDeliver'), (a.recipients&&a.recipients.length)?a.recipients.map(CHNAME).join(", "):"—", !!(a.recipients&&a.recipients.length), `openWzCabinet(${i});wzCabTab('settings')`)}
         ${tile(_wt('tInbound'), (a.inbound&&a.inbound.mode)?(a.inbound.mode==="poll"?(WLANG==='en'?"poll":"опрос"):esc(a.inbound.mode)):"—", !!(a.inbound&&a.inbound.mode), `inboundProcess(${i})`)}
       </div>
       <div class="auto-actions">
@@ -1906,7 +2026,8 @@ async function runProcess(i){
   }
   const run = r.run||{}; const fmt=n=>(typeof n==="number")?n.toLocaleString("ru-RU"):esc(n);
   const dl = run.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(run.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:"";
-  const dlv = r.delivered ? (r.delivered.ok?` · <span style="color:var(--ok,#2a2)">→ отправлено в ${esc(r.delivered.channel)} ✓</span>`:` · <span style="color:var(--bad,#c33)">→ доставка в ${esc(r.delivered.channel)} не прошла: ${esc(r.delivered.err||"")}</span>`) : "";
+  const _dl = Array.isArray(r.delivered) ? r.delivered : (r.delivered?[r.delivered]:[]);
+  const dlv = _dl.length ? " · " + _dl.map(d=>d.ok?`<span style="color:var(--ok,#2a2)">→ ${esc(chName(d.channel))} ✓</span>`:`<span style="color:var(--bad,#c33)">→ ${esc(chName(d.channel))} не прошла: ${esc(d.err||"")}</span>`).join(" · ") : "";
   out.innerHTML = `<div class="card pack-card" style="margin:6px 0"><b>✓ Прогон завершён</b> · позиций ${fmt(run.total_count)} · сумма <b>${fmt(run.total_sum)}</b>${dl}${dlv}</div>`;
   // обновляем строку «последний прогон» ЭТОЙ карточки на месте (без перерисовки всего списка)
   const rr = el("runrow-"+i);
