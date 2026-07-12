@@ -684,11 +684,25 @@ async function composeNow(){
     chips: comps.map(compChip)
   };
   out.innerHTML =
-    '<div class="cmp-step" style="border-color:var(--ok,#2a2)"><b>✓ Assembled:</b> '+esc(card.name||task)+'</div>'+
-    '<div style="font-size:12px;color:var(--silver,#889);margin:10px 0 4px">Steps it composed:</div>'+ steps + inst + miss +
-    '<div style="margin-top:14px"><button class="btn gold" style="padding:10px 22px;font-size:15px" onclick="runComposed(\''+esc(r.flow_id)+'\',this)">▶ Run it now</button>'+
-    '<span id="cmp_run_msg" style="margin-left:12px;color:var(--silver,#889)"></span></div>'+
+    '<div class="cmp-step" style="border-color:var(--ok,#2a2)"><b>✓ Собрано:</b> '+esc(card.name||task)+'</div>'+
+    '<div style="font-size:12px;color:var(--silver,#889);margin:10px 0 4px">Из чего собрано:</div>'+ steps + inst + miss +
+    '<div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+    '<button class="btn gold" style="padding:10px 22px;font-size:15px" onclick="runComposed(\''+esc(r.flow_id)+'\',this)">▶ Запустить сейчас</button>'+
+    '<button class="btn ghost" style="padding:10px 18px;font-size:14px" onclick="saveComposedFlow(\''+esc(r.flow_id)+'\',this)">＋ Сохранить как автоматизацию</button>'+
+    '<span id="cmp_run_msg" style="color:var(--silver,#889)"></span></div>'+
     '<div id="composerCapOut" style="margin-top:12px"></div>';
+}
+// Инкр.3 (B-lite): собранная задача → «Мои автоматизации» (сессия-обёртка wz_flow_run) → кабина
+async function saveComposedFlow(flowId, btn){
+  if(btn){ if(btn.disabled) return; btn.disabled=true; }
+  var meta = COMPOSED[flowId]||{};
+  var r = await jpost("/x/flow_save",{flow_id:flowId, name:meta.title||"", description:meta.subtitle||"",
+                                      components:(meta.chips||[]).map(function(c){return String(c).replace(/^[^\s]+\s/,'');})});
+  if(btn) btn.disabled=false;
+  if(r && r.status==="success"){
+    toast(r.existing?"Уже сохранено — открой «Автоматизации»":"✓ Сохранено в «Мои автоматизации»","ok");
+    if(btn){ btn.textContent="✓ В автоматизациях — открыть"; btn.onclick=function(){ setMode('automations'); }; btn.disabled=false; }
+  } else toast("Ошибка: "+((r&&r.message)||""),"err");
 }
 async function runComposed(flowId, btn){
   if(btn){ if(btn.disabled) return; btn.disabled = true; }   // гард от повторного клика

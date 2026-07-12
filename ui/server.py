@@ -85,7 +85,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "3.59"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "3.60"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -1456,6 +1456,47 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"status": "success", "run": run_rec, "digest": digest,
                             "findings": res.get("findings"), "gaps": res.get("knowledge_gaps")})
                 return
+            if orch == "wz_flow_run":
+                # Задача, собранная Композитором и сохранённая как автоматизация (B-lite):
+                # прогон = wz_flow_run по flow_id из билда; результат — бриф (digest).
+                fid = str(builds[-1].get("flow_id") or "")
+                if not fid:
+                    self._send({"status": "error", "message": "у задачи нет flow_id"}, 400)
+                    return
+                res = run_expert("wz_flow_run", {"flow_id": fid, "api_token": CONFIG.get("auth_token", "")},
+                                 wait=260, glob=True)
+                ok = isinstance(res, dict) and res.get("status") == "success"
+                digest = ((res or {}).get("digest_md") or (res or {}).get("digest") or "") if ok else ""
+                run_rec = {"at": datetime.now(timezone.utc).isoformat(),
+                           "status": ((res or {}).get("run_status") or (res or {}).get("status") or "error"),
+                           "digest_source": "flow", "flow_id": fid}
+                s.setdefault("runs", []).append(run_rec)
+                s["updated_at"] = datetime.now(timezone.utc).isoformat()
+                sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+                if not ok:
+                    self._send({"status": "error", "run": run_rec,
+                                "message": _scrub((res or {}).get("message", str(res)[:180]) if isinstance(res, dict) else str(res)[:180])})
+                    return
+                # получатели кабины: короткое уведомление по шаблону (сам бриф остаётся в приложении)
+                delivered = None
+                recips = _recipients(s)
+                if recips:
+                    msg = _render_msg(s.get("message_template"), s.get("client_name") or sid, None, None)
+                    delivered = []
+                    for deliver in recips:
+                        dr = api("/api/expert/run", {"expert_name": "wz_connector_" + deliver, "global": True, "target": HOST_TARGET,
+                                                     "params": {"api_token": CONFIG["auth_token"], "client": CLIENT_ID, "mode": "send", "text": msg}}, 60)
+                        dout = dr.get("result", dr)
+                        if isinstance(dout, str):
+                            try:
+                                dout = json.loads(dout)
+                            except Exception:
+                                dout = {}
+                        delivered.append({"channel": deliver, "ok": bool(isinstance(dout, dict) and dout.get("ok")),
+                                          "err": ((dout or {}).get("err") if isinstance(dout, dict) else None)})
+                self._send({"status": "success", "run": run_rec, "digest": digest,
+                            "warnings": (res or {}).get("warnings") or [], "delivered": delivered})
+                return
             src = body.get("source_file") or builds[-1].get("source_file")
             if not src:
                 self._send({"status": "error", "message": "нет исходного файла для прогона"}, 400)
@@ -1585,6 +1626,30 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send({"status": "success", "recipients": clean})
+
+        elif self.path == "/x/flow_save":
+            # Создание (инкр.3, B-lite): сохранить собранную Композитором ЗАДАЧУ (flow) как автоматизацию.
+            # Сессия-обёртка с orchestrator=wz_flow_run → задача появляется в «Мои автоматизации» и в кабине.
+            fid = str(body.get("flow_id", "")).strip()
+            if not fid or not SAFE_ID.match(fid):
+                self._send({"status": "error", "message": "нет корректного flow_id"}, 400)
+                return
+            name = str(body.get("name", "")).strip()[:80] or ("Задача " + fid)
+            desc = str(body.get("description", "")).strip()[:200]
+            comps = [str(x)[:60] for x in (body.get("components") or []) if str(x).strip()][:12]
+            sid = "wz_" + datetime.now(timezone.utc).strftime("%Y%m%d") + "_fl" + re.sub(r"[^a-z0-9]", "", fid.lower())[-6:]
+            sp = SESS_DIR / (sid + ".json")
+            if sp.exists():   # идемпотентность: повторное сохранение того же flow в тот же день — не дублируем
+                self._send({"status": "success", "session_id": sid, "existing": True})
+                return
+            now = datetime.now(timezone.utc).isoformat()
+            s = {"session_id": sid, "client_name": name, "stage": "launched", "goal": desc,
+                 "created_at": now, "updated_at": now,
+                 "builds": [{"orchestrator": "wz_flow_run", "flow_id": fid, "experts": comps,
+                             "audit": {"verdict": "allow"}, "built_at": now, "composed": True}],
+                 "log": [{"ts": now, "event": "saved composed flow " + fid + " as automation"}]}
+            sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._send({"status": "success", "session_id": sid})
 
         elif self.path == "/x/message_template":
             # Кабина «Шаблон сообщения»: текст доставки per-automation (плейсхолдеры {name}{count}{sum}{date}).
