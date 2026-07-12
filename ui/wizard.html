@@ -653,18 +653,50 @@ function _cmpErr(msg){
   return msg;
 }
 var _composing=false;
+// Роутинг по намерению (инкр.5-lite, эвристика без LLM): фраза с признаками БИЗНЕС-ПРОЦЕССА
+// (регулярность + получатели + данные систем, ≥2 из 3) → мягкая подсказка «надёжнее через Мастера».
+// Компоновку НЕ блокируем — подсказка живёт над результатом.
+function _intentProcess(t){
+  t=(t||'').toLowerCase();
+  var g={ 'регулярность': /(кажд|еженед|ежемес|ежеднев|по расписан|раз в (день|недел|месяц)|по понедельник|daily|weekly|monthly)/,
+          'получатели':   /(директор|руководител|менеджер|бухгалтер|отдел|команд|сотрудник|филиал|начальник)/,
+          'данные систем':/(1с|1c|crm|битрикс|bitrix|amocrm|kommo|sql|postgres|mysql|erp|склад|дебиторк|закуп|выписк|заявк)/ };
+  var hits=[]; for(var k in g){ if(g[k].test(t)) hits.push(k); }
+  return hits.length>=2 ? hits : null;
+}
+function _procHintHTML(task, hits){
+  return '<div class="cmp-step" style="border-color:var(--gold,#c60);flex-wrap:wrap;gap:8px">🏢 Похоже на бизнес-процесс ('+esc(hits.join(', '))+') — такие надёжнее строить через интервью с Мастером.'+
+    ' <button class="btn ghost" style="padding:5px 12px;font-size:12px;margin-left:auto" onclick="buildProcessFromTask()">Пройти интервью →</button></div>';
+}
+// Хэндофф «процессная фраза → Мастер»: проект с именем задачи + засеянный чат (как buildGapWithWizard, без пробела)
+async function buildProcessFromTask(){
+  var task = window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
+  setMode("wizard");
+  var nm=(task||"Новый процесс").slice(0,40);
+  busy("Создаю проект «"+nm+"»…");
+  var r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"create",client_name:nm}});
+  var sid = r.session && r.session.session_id;
+  busyOff();
+  if(!sid){ toast("Не удалось создать проект: "+((r&&r.message)||""),"err"); return; }
+  await refreshSessions(sid); await loadSession(sid);
+  if(!el("chat").classList.contains("open")) toggleChat();
+  var ci=el("chatInput"); if(ci){ ci.value="Хочу автоматизировать процесс: "+task+". Расспроси меня и спроектируй."; ci.focus(); }
+}
 async function composeNow(){
   if(_composing) return;                       // гард от двойного сабмита (double-click / зажатый Enter)
   const task = (el("composerInput").value||"").trim();
   if(!task){ el("composerInput").focus(); return; }
   const out = el("composerOut");
   const cbtn = el("composeBtn");
+  window._composerTask = task;
+  const procHits = _intentProcess(task);
+  const procHint = procHits ? _procHintHTML(task, procHits) : '';
   _composing=true; if(cbtn) cbtn.disabled=true;
-  out.innerHTML = '<div class="cmp-step"><span class="spin"></span> <b>Understanding your task…</b> picking tools, models and skills from your library</div>';
+  out.innerHTML = procHint + '<div class="cmp-step"><span class="spin"></span> <b>Разбираю задачу…</b> подбираю блоки, модели и навыки из вашей библиотеки</div>';
   let r;
   try{ r = await jpost("/x/compose",{task:task}); }
   finally{ _composing=false; if(cbtn) cbtn.disabled=false; }
-  if(!r || r.status!=="success"){ out.innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'; return; }
+  if(!r || r.status!=="success"){ out.innerHTML = procHint + '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'; return; }
   // показываем ЧТО собрал: шаги, установки, чего не хватило
   var steps = (r.steps||[]).map(function(s){ return '<div class="cmp-step"><span class="cmp-dot"></span> <b>'+esc(s.expert)+'</b> <span style="color:var(--silver,#889)">'+esc(JSON.stringify(s.params).slice(0,70))+'</span></div>'; }).join('');
   var inst = (r.installed||[]).filter(function(x){return x.status!=='already';}).map(function(x){ return '<div class="cmp-step" style="border-color:var(--gold,#c60)">⬇ installing <b>'+esc(x.model)+'</b> ('+esc(x.status)+')</div>'; }).join('');
@@ -686,6 +718,7 @@ async function composeNow(){
     chips: comps.map(compChip)
   };
   out.innerHTML =
+    procHint +
     '<div class="cmp-step" style="border-color:var(--ok,#2a2)"><b>✓ Собрано:</b> '+esc(card.name||task)+'</div>'+
     '<div style="font-size:12px;color:var(--silver,#889);margin:10px 0 4px">Из чего собрано:</div>'+ steps + inst + miss +
     '<div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
