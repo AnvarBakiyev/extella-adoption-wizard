@@ -1912,6 +1912,7 @@ function _wzCabRender(){
           (tag?'<div style="font-size:13px;color:rgba(255,255,255,.94);margin-top:4px;text-shadow:0 1px 4px rgba(0,0,0,.3)">'+esc(tag)+'</div>':'')+
           '<div style="margin-top:8px;font:700 10px var(--mono,monospace);color:'+stBadge[1]+'">'+stBadge[0]+' <span style="color:rgba(255,255,255,.7);font-weight:500">· '+esc(a.orchestrator||a.session_id||'')+'</span></div>'+
         '</div>'+
+        (a.panel_url?'<button onclick="window.open(\''+esc(a.panel_url)+'\',\'_blank\')" style="border:1px solid rgba(255,255,255,.5);background:rgba(255,255,255,.22);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:700 13px var(--sans);flex-shrink:0;position:relative;margin-right:8px">🧳 '+esc(a.panel_name||'Кабинет пака')+' →</button>':'')+
         '<button onclick="closeWzCabinet()" style="border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.14);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:600 13px var(--sans);flex-shrink:0;position:relative">✕ Закрыть</button>'+
       '</div>'+
     '</div>'+
@@ -1936,8 +1937,10 @@ function _wzReadyChip(state, label){
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
   var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
+  var _srcLabel = a.source&&a.source.kind ? ('Источник: '+_srcName(a.source.kind))
+      : (a.panel_url ? 'Источник: входящие каналы (пак)' : 'Источник: файл вручную');
   var ready =
-      _wzReadyChip(a.source&&a.source.kind?'ok':'idle', a.source&&a.source.kind?('Источник: '+_srcName(a.source.kind)):'Источник: файл вручную')
+      _wzReadyChip(a.source&&a.source.kind?'ok':(a.panel_url?'ok':'idle'), _srcLabel)
     + _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Получатели: не заданы')
     + _wzReadyChip(a.schedule&&a.schedule.period?'ok':'idle', a.schedule&&a.schedule.period?('Расписание: '+a.schedule.period):'Запуск вручную');
   var lr=a.last_run;
@@ -1951,7 +1954,11 @@ function _wzCabLaunch(a){
         : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
       (lr.report_xlsx?'<div style="margin-top:8px"><a href="/x/download?path='+encodeURIComponent(lr.report_xlsx)+'" target="_blank" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')
     ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
-  return _wzCard(
+  var panelCard = a.panel_url ? _wzCard(
+      _wzH('Рабочая панель пака')+
+      '<div style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">У этой автоматизации есть свой полноценный кабинет: лиды, подборки туров, рассылки, договоры — вся работа там.</div>'+
+      '<button class="btn gold" style="font-size:14px;padding:10px 20px" onclick="window.open(\''+esc(a.panel_url)+'\',\'_blank\')">🧳 Открыть '+esc(a.panel_name||'кабинет пака')+' →</button>') : '';
+  return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
       '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
       '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
