@@ -1736,7 +1736,8 @@ async function renderConnections(){
   const bar = el("connBar"); if(!bar) return;
   let secrets=[]; try{ const sc=await jget("/x/secrets"); secrets=sc.secrets||[]; }catch(e){}
   const vaulted = secrets.filter(x=>!x.external).map(x=>x.connector);
-  const found   = secrets.filter(x=>x.external).map(x=>x.connector);   // напр. WhatsApp из Travel-пака
+  // «находки» для адопции в сейф (Tourvisor не находка — он живёт в config постоянно, его читают ta_*)
+  const found   = secrets.filter(x=>x.external && x.connector!=='tourvisor').map(x=>x.connector);
   window.CONN = vaulted;
   const card = (key,label,fn)=>{
     const m = CONN_META[key]||{e:'🔌',what:'',need:''};
@@ -1755,19 +1756,66 @@ async function renderConnections(){
       <div style="margin-top:2px">${act}</div>
     </div>`;
   };
+  // Отраслевые сервисы (Tourvisor и т.п.): источник правды — config.json (его читают ta_*-эксперты),
+  // карточка показывает СРОК токена заранее: зелёный >7 дн., жёлтый ≤7, красный — истёк.
+  const tv = secrets.find(x=>x.connector==='tourvisor');
+  let tvCard = '';
+  if(true){
+    let st='', act='';
+    if(tv){
+      let days=null, dstr='';
+      if(tv.expires){ days=Math.floor((new Date(tv.expires)-Date.now())/86400000); dstr=String(tv.expires).slice(0,10); }
+      if(days!=null && days<0){ st='<span style="font-size:11.5px;color:#c0392b;background:rgba(192,57,43,.12);border-radius:999px;padding:3px 9px">токен истёк '+esc(dstr)+'</span>'; }
+      else if(days!=null && days<=7){ st='<span style="font-size:11.5px;color:#C57E33;background:rgba(197,126,51,.13);border-radius:999px;padding:3px 9px">⚠ токен до '+esc(dstr)+' ('+days+' дн.)</span>'; }
+      else { st='<span style="font-size:11.5px;color:#2f9e56;background:rgba(47,158,86,.12);border-radius:999px;padding:3px 9px">✓ подключено'+(dstr?' · до '+esc(dstr):'')+'</span>'; }
+      act='<a href="#" onclick="tvTest();return false" style="color:#2f9e56;font-size:12.5px">проверить</a> <button class="btn ghost sm" style="font-size:12px;padding:5px 12px;margin-left:8px" onclick="connectTourvisor()">Обновить токен</button>';
+    } else {
+      act='<button class="btn ghost sm" style="font-size:12px;padding:5px 12px" onclick="connectTourvisor()">Подключить</button>';
+    }
+    tvCard = `<div style="font-size:12px;color:var(--silver,#889);margin:14px 0 6px">Отраслевые сервисы</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">
+      <div style="background:var(--paper);border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px">🧳</span><b style="font-size:13.5px;flex:1">Tourvisor (туры)</b>${st}</div>
+        <div style="font-size:12px;color:var(--silver,#889);line-height:1.45;flex:1">Поиск туров и подборки для клиентов турагентства${tv?'':'<br><span style="opacity:.8">Понадобится: JWT из кабинета pro.tourvisor.ru → Настройки → Интеграции</span>'}</div>
+        <div style="margin-top:2px" id="tvTestOut">${act}</div>
+      </div></div>`;
+  }
+  const tvWarn = tv && tv.expires && (new Date(tv.expires)-Date.now())/86400000 <= 7;
   const onNames = [...OUT_CH,...IN_SRC].filter(c=>vaulted.includes(c[0])).map(c=>c[1]);
+  if(tv) onNames.push('Tourvisor');
   const sumTxt = onNames.length
-    ? `${onNames.join(', ')}${found.length?` · <span style=\"color:#C57E33\">＋ найдено: WhatsApp</span>`:''}`
+    ? `${onNames.join(', ')}${found.length?` · <span style=\"color:#C57E33\">＋ найдено: WhatsApp</span>`:''}${tvWarn?` · <span style=\"color:#C57E33\">⚠ токен Tourvisor истекает</span>`:''}`
     : (WLANG==='en'?'nothing connected yet':'пока ничего не подключено');
-  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:10px 14px;margin:0 0 16px"${found.length?' open':''}>
+  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:10px 14px;margin:0 0 16px"${(found.length||tvWarn)?' open':''}>
     <summary style="cursor:pointer;list-style:none;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${_wt('connHdr')} <span style="font-weight:400;font-size:12.5px;color:var(--silver,#889)">— ${sumTxt}</span></summary>
     <div style="margin-top:12px">
       <div style="font-size:12px;color:var(--silver,#889);margin-bottom:6px">${_wt('connOut')}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-bottom:14px">${OUT_CH.map(c=>card(c[0],c[1],c[2])).join("")}</div>
       <div style="font-size:12px;color:var(--silver,#889);margin-bottom:6px">${_wt('connIn')}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">${IN_SRC.map(c=>card(c[0],c[1],c[2])).join("")}</div>
+      ${tvCard}
     </div>
   </details>`;
+}
+// Tourvisor: обновить/подключить JWT (кабинет pro.tourvisor.ru → Настройки → Интеграции; живёт ~год)
+function connectTourvisor(){
+  ask("Tourvisor — JWT-токен", "Возьмите в кабинете pro.tourvisor.ru → Настройки → Интеграции. Токен живёт ~год.", "", async (jwt)=>{
+    if(!jwt || !jwt.trim()) return;
+    busy("Сохраняю токен Tourvisor…");
+    const r = await jpost("/x/tourvisor_token",{jwt:jwt.trim()});
+    busyOff();
+    if(r&&r.status==="success"){ toast("✓ Токен Tourvisor обновлён"+(r.expires?" · до "+String(r.expires).slice(0,10):""),"ok"); renderConnections(); }
+    else toast("Ошибка: "+((r&&r.message)||""),"err");
+  });
+}
+async function tvTest(){
+  const out=el("tvTestOut"); const old=out?out.innerHTML:"";
+  if(out) out.innerHTML='<span class="spin"></span> <span style="font-size:12px">проверяю…</span>';
+  const r = await jpost("/x/expert",{expert_name:"ta_tv_get",params:{path:"/departures"}});
+  let n=0, ok=false;
+  try{ const d=(r&&r.result)?(typeof r.result==="string"?JSON.parse(r.result):r.result):r; ok=(d.status==="success"||d.ok); const dep=d.data&&(d.data.departures||d.data); n=Array.isArray(dep)?dep.length:0; }catch(e){}
+  if(out) out.innerHTML=old;
+  toast(ok?("✓ Tourvisor отвечает"+(n?" · городов вылета: "+n:"")):"Tourvisor не ответил — проверьте токен", ok?"ok":"err");
 }
 // адопция найденного подключения (WhatsApp из Travel-пака) в общий сейф — секрет переносится серверно
 function adoptConn(key){
