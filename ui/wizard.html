@@ -1892,7 +1892,7 @@ function _wzHeroHTML(a){
 }
 // ── Кабинет агента (оверлей с вкладками) ──
 var _wzCabI=-1, _wzCabTab='overview';
-function openWzCabinet(i){ _wzCabI=i; _wzCabTab='overview'; _wzCabRender(); }
+function openWzCabinet(i){ _wzCabI=i; _wzCabTab=(AUTOS[i]&&AUTOS[i].panel_url)?'panel':'overview'; _wzCabRender(); }
 function closeWzCabinet(){ _wzCabI=-1; var o=el('wz_cab'); if(o)o.remove(); }
 function wzCabTab(t){ _wzCabTab=t; _wzCabRender(); }
 function _wzCabRender(){
@@ -1900,7 +1900,8 @@ function _wzCabRender(){
   var o=el('wz_cab'); if(!o){ o=document.createElement('div'); o.id='wz_cab'; o.style.cssText='position:fixed;inset:0;background:var(--cream);z-index:99998;display:flex;flex-direction:column;overflow:hidden'; document.body.appendChild(o); }
   var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс'), st=_wzStatus(a);
   var stBadge={active:['● активен','#2f9e56'],paused:['⏸ пауза','#C57E33'],frozen:['🔒 заморожен','#3A6EA5']}[st]||['● активен','#2f9e56'];
-  var tabs=[['overview','Запуск'],['settings','Настройка'],['template','Шаблон'],['runs','Прогоны']];
+  // доменная работа пака (Travel: лиды/подборки/рассылки) — ПЕРВОЙ вкладкой внутри кабинета, не отдельным окном
+  var tabs=(a.panel_url?[['panel','🧳 Работа']]:[]).concat([['overview','Запуск'],['settings','Настройка'],['template','Шаблон'],['runs','Прогоны']]);
   var tabBar=tabs.map(function(t){var on=_wzCabTab===t[0];return '<button onclick="wzCabTab(\''+t[0]+'\')" style="border:none;background:'+(on?'var(--gold-bg)':'transparent')+';color:'+(on?'var(--gold)':'var(--nav)')+';font:600 13px var(--sans);padding:8px 16px;border-radius:8px;cursor:pointer">'+t[1]+'</button>';}).join('');
   o.innerHTML=
     '<div style="'+_wzHeroStyle(acc)+';padding:20px 26px 18px;position:relative;flex-shrink:0">'+
@@ -1912,7 +1913,6 @@ function _wzCabRender(){
           (tag?'<div style="font-size:13px;color:rgba(255,255,255,.94);margin-top:4px;text-shadow:0 1px 4px rgba(0,0,0,.3)">'+esc(tag)+'</div>':'')+
           '<div style="margin-top:8px;font:700 10px var(--mono,monospace);color:'+stBadge[1]+'">'+stBadge[0]+' <span style="color:rgba(255,255,255,.7);font-weight:500">· '+esc(a.orchestrator||a.session_id||'')+'</span></div>'+
         '</div>'+
-        (a.panel_url?'<button onclick="window.open(\''+esc(a.panel_url)+'\',\'_blank\')" style="border:1px solid rgba(255,255,255,.5);background:rgba(255,255,255,.22);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:700 13px var(--sans);flex-shrink:0;position:relative;margin-right:8px">🧳 '+esc(a.panel_name||'Кабинет пака')+' →</button>':'')+
         '<button onclick="closeWzCabinet()" style="border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.14);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:600 13px var(--sans);flex-shrink:0;position:relative">✕ Закрыть</button>'+
       '</div>'+
     '</div>'+
@@ -1922,6 +1922,11 @@ function _wzCabRender(){
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
 function _wzCabBody(a){
+  if(_wzCabTab==='panel' && a.panel_url)
+    return '<div style="display:flex;flex-direction:column;height:calc(100vh - 200px)">'+
+      '<div style="font-size:12px;color:var(--silver);margin:-8px 0 8px;display:flex;align-items:center;gap:10px">Доменная работа этого пака — лиды, подборки, рассылки, договоры.'+
+      '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
+      '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
   if(_wzCabTab==='overview') return _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _wzCabRuns(a);
   if(_wzCabTab==='settings') return _wzCabSettings(a);
@@ -1956,8 +1961,8 @@ function _wzCabLaunch(a){
     ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
   var panelCard = a.panel_url ? _wzCard(
       _wzH('Рабочая панель пака')+
-      '<div style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">У этой автоматизации есть свой полноценный кабинет: лиды, подборки туров, рассылки, договоры — вся работа там.</div>'+
-      '<button class="btn gold" style="font-size:14px;padding:10px 20px" onclick="window.open(\''+esc(a.panel_url)+'\',\'_blank\')">🧳 Открыть '+esc(a.panel_name||'кабинет пака')+' →</button>') : '';
+      '<div style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">Вся доменная работа — лиды, подборки, рассылки, договоры — на вкладке «🧳 Работа».</div>'+
+      '<button class="btn gold" style="font-size:14px;padding:10px 20px" onclick="wzCabTab(\'panel\')">🧳 К работе →</button>') : '';
   return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
       '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
