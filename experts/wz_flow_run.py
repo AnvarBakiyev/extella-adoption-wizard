@@ -3,7 +3,8 @@
 
 def wz_flow_run(flow_id="", agent_id="", deliver="", deliver_client="",
                 api_token="", api_base="https://api.extella.ai", work_dir="",
-                source_file="", source_key="", target="", client="") -> dict:
+                source_file="", source_key="", target="", client="",
+                rules="", fields="") -> dict:
     # хвостовые параметры — толерантность к вызову планировщиком/Визардом (игнорируются)
     import json, re, time, urllib.request
     from pathlib import Path
@@ -182,8 +183,25 @@ def wz_flow_run(flow_id="", agent_id="", deliver="", deliver_client="",
     syn = flow.get("synthesis_prompt") or ""
     if syn:
         data_blob = json.dumps(results, ensure_ascii=False, default=str)[:16000]
+        # «Правила и поля» владельца (кабинет автоматизации): правила ОБЯЗАТЕЛЬНЫ для синтеза,
+        # поля — доп. контекст процесса. Приходят JSON-строками из моста/тика (sессия автоматизации).
+        owner_block = ""
+        try:
+            _r = json.loads(rules) if rules and not str(rules).startswith("{{") else []
+            if isinstance(_r, list) and _r:
+                owner_block += "\nOWNER RULES (обязательные требования владельца процесса — соблюдать строго):\n" + \
+                               "\n".join("- " + str(x)[:200] for x in _r[:20]) + "\n"
+        except Exception:
+            pass
+        try:
+            _f = json.loads(fields) if fields and not str(fields).startswith("{{") else {}
+            if isinstance(_f, dict) and _f:
+                owner_block += "\nCONTEXT FIELDS (факты о процессе от владельца):\n" + \
+                               "\n".join("- " + str(k)[:60] + ": " + str(v)[:200] for k, v in list(_f.items())[:20]) + "\n"
+        except Exception:
+            pass
         msg = ("You are an analyst agent inside a composed automation. Work ONLY from DATA below — no tools, no browsing.\n"
-               "TASK:\n" + syn + "\n\nDATA (JSON, step results):\n" + data_blob + "\n\n"
+               "TASK:\n" + syn + "\n" + owner_block + "\nDATA (JSON, step results):\n" + data_blob + "\n\n"
                "Output: clean MARKDOWN only (## headings, tables, bullet lists). No preamble, no code fences.")
         stages.append({"name": "Синтез (Qwen)", "status": "running"})
         try:

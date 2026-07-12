@@ -335,6 +335,10 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             run_params = {"api_token": api_token, "flow_id": fid}
             if cfg.get("agent_id"):
                 run_params["agent_id"] = cfg["agent_id"]
+            if cfg.get("rules"):
+                run_params["rules"] = json.dumps(cfg["rules"], ensure_ascii=False)     # «Правила и поля» владельца
+            if cfg.get("fields"):
+                run_params["fields"] = json.dumps(cfg["fields"], ensure_ascii=False)
         else:
             run_params = {"api_token": api_token, "source_file": src}
             if skey:
