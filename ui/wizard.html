@@ -1114,7 +1114,40 @@ var _I18N_DICT = {
   "Адрес вебхука (скопируйте)": "Webhook address (copy it)",
   "Публичный шлюз ещё поднимается — адрес закреплён за вами. ": "The public gateway is still coming up — the address is reserved for you. ",
   "Вставьте этот адрес в настройках канала/CRM.": "Paste this address into the channel/CRM settings.",
-  "✓ Опрос включён — напишите боту, ответ придёт в течение ~2 минут": "✓ Polling enabled — message the bot, the reply will arrive within ~2 minutes"
+  "✓ Опрос включён — напишите боту, ответ придёт в течение ~2 минут": "✓ Polling enabled — message the bot, the reply will arrive within ~2 minutes",
+  "черновик · не сохранён": "draft · not saved",
+  "✕ начать заново": "✕ start over",
+  "Чтобы заработало, осталось:": "To make it work, you still need:",
+  "Поправьте словами в чате ниже — или:": "Fix it in words in the chat below — or:",
+  "🌐 Найти блок в интернете": "🌐 Find a block online",
+  "🧩 Достроить Мастером": "🧩 Finish with the Wizard",
+  "⚙ Технические детали (для любопытных)": "⚙ Technical details (for the curious)",
+  "Собрано из ваших блоков:": "Assembled from your blocks:",
+  "▶ Запустить сейчас": "▶ Run now",
+  "＋ Сохранить как автоматизацию": "＋ Save as automation",
+  "«Запустить» — прогнать разово. «Сохранить» — в «Мои», чтобы ставить на расписание и слать в Telegram/почту.": "«Run» does a one-off run. «Save» puts it in «Mine» so you can schedule it and send to Telegram/email.",
+  "Доработать словами — Композитор пересоберёт:": "Refine in words — the Composer will rebuild:",
+  "пересобираю…": "rebuilding…",
+  "напр.: фото лежат в ~/Photos · используй openai-vision · убери шаг OCR": "e.g.: photos are in ~/Photos · use openai-vision · remove the OCR step",
+  "Не удалось пересобрать — попробуйте сформулировать иначе.": "Couldn't rebuild — try rephrasing.",
+  "Отправить": "Send",
+  "Готово.": "Done.",
+  "Понадобится: токен бота (создаётся у @BotFather за минуту)": "Needed: bot token (created with @BotFather in a minute)",
+  "Понадобится: SMTP-доступ почты: хост, логин, пароль приложения": "Needed: email SMTP access: host, login, app password",
+  "Понадобится: Incoming Webhook URL из настроек Slack": "Needed: Incoming Webhook URL from Slack settings",
+  "Понадобится: GreenAPI: idInstance + apiToken (кабинет green-api.com)": "Needed: GreenAPI: idInstance + apiToken (green-api.com dashboard)",
+  "Понадобится: ключ SMS-провайдера": "Needed: SMS provider key",
+  "Понадобится: JSON-ключ сервис-аккаунта Google": "Needed: Google service-account JSON key",
+  "Понадобится: входящий вебхук Битрикс24": "Needed: Bitrix24 inbound webhook",
+  "Понадобится: строка подключения к базе": "Needed: database connection string",
+  "Понадобится: домен и долгосрочный токен": "Needed: domain and long-lived token",
+  "Понадобится: путь к файлу выгрузки": "Needed: path to the export file",
+  "Понадобится: адрес сервера и логин WinRM": "Needed: server address and WinRM login",
+  "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
+  "— имя,": "— name,",
+  "— позиций,": "— items,",
+  "— сумма,": "— sum,",
+  "— дата. Пусто — стандартный текст.": "— date. Empty — default text."
 };
 var _I18N_RULES = [
   ["· ответов (\\d+)", "· answers $1"],
@@ -1152,7 +1185,36 @@ var _I18N_RULES = [
   ["(\\d+) н/п", "$1 N/A"],
   ["⚠ токен до (\\d{4}-\\d{2}-\\d{2}) \\((\\d+) дн\\.\\)", "⚠ token until $1 ($2 days)"],
   ["токен (.+?) истёк", "token $1 expired"],
-  ["токен (.+?) истекает через (\\d+) дн\\.", "token $1 expires in $2 days"]
+  ["токен (.+?) истекает через (\\d+) дн\\.", "token $1 expires in $2 days"],
+  ["⬇ доустановлено под задачу: (\\d+) модел\\S*", "⬇ installed for this task: $1 model(s)"],
+  ["Пересобрал: «(.+?)» — (\\d+) блок\\(ов\\)\\. Можно запускать или сохранить\\.", "Rebuilt: «$1» — $2 block(s). Ready to run or save."],
+  ["Пересобрал: «(.+?)» — (\\d+) блок\\(ов\\)\\.[\\s\\S]*", "Rebuilt: «$1» — $2 block(s). See what's still needed above."],
+  ["Не вышло: ([\\s\\S]+)", "Didn't work: $1"],
+  ["шагу «(.+?)» нужен вход: папка с входными файлами — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: an input folder — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шагу «(.+?)» нужен вход: папка для результата — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: an output folder — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шагу «(.+?)» нужен вход: путь к файлу — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: a file path — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шагу «(.+?)» нужен вход: файл — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: a file — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шагу «(.+?)» нужен вход: источник данных — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: a data source — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шагу «(.+?)» нужен вход: (.+?) — укажите его словами \\(напр\\. «файлы в ~/Папка»\\) или уберите шаг", "step «$1» needs an input: $2 — specify it in words (e.g. «files in ~/Folder») or remove the step"],
+  ["шаг «(.+?)» ждёт данные «(.+?)» с предыдущего шага — их нет; уточните порядок словами", "step «$1» expects data «$2» from the previous step — it's missing; clarify the order in words"],
+  ["блок «(.+?)» не в вашей библиотеке — доустановите или достройте Мастером", "block «$1» isn't in your library — install it or finish with the Wizard"],
+  ["не удалось поставить модель: ([\\s\\S]+)", "couldn't install the model: $1"],
+  ["⏰ Каждый час", "⏰ Every hour"],
+  ["⏰ Ежедневно", "⏰ Daily"],
+  ["⏰ Еженедельно", "⏰ Weekly"],
+  ["⏰ Ежемесячно", "⏰ Monthly"],
+  ["⏱ Каждый час", "⏱ Every hour"],
+  ["⏱ Ежедневно", "⏱ Daily"],
+  ["⏱ Еженедельно", "⏱ Weekly"],
+  ["⏱ Ежемесячно", "⏱ Monthly"],
+  ["Расписание: Каждый час", "Schedule: Every hour"],
+  ["Расписание: Ежедневно", "Schedule: Daily"],
+  ["Расписание: Еженедельно", "Schedule: Weekly"],
+  ["Расписание: Ежемесячно", "Schedule: Monthly"],
+  ["✅ Extella: ([\\s\\S]+?) — процесс отработал\\.\\nПозиций: ([\\s\\S]*?)\\nСумма: ([\\s\\S]*)", "✅ Extella: $1 — process completed.\nItems: $2\nSum: $3"],
+  ["Источник: ([\\s\\S]+)", "Source: $1"],
+  ["Получатели: ([\\s\\S]+)", "Recipients: $1"],
+  ["Понадобится: ([\\s\\S]+)", "Needed: $1"]
 ].map(function(x){ try{ return [new RegExp(x[0]), x[1]]; }catch(e){ return null; } }).filter(Boolean);
 function _trStr(s){
   var t = String(s).trim(); if(!t) return null;
@@ -2659,7 +2721,7 @@ function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;co
 // ── вкладка «Запуск и результат» (value-first): готовность → запуск → последний результат, плумбинг под спойлер ──
 function _wzReadyChip(state, label){
   var c = state==='ok' ? ['#2f9e56','rgba(47,158,86,.10)','✓'] : (state==='warn'?['#C57E33','rgba(197,126,51,.12)','!']:['#7a7a7a','rgba(128,128,128,.10)','·']);
-  return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:'+c[0]+';background:'+c[1]+';border-radius:999px;padding:5px 11px;margin:0 6px 6px 0">'+c[2]+' '+esc(label)+'</span>';
+  return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:'+c[0]+';background:'+c[1]+';border-radius:999px;padding:5px 11px;margin:0 6px 6px 0"><i style="font-style:normal">'+c[2]+'</i> '+esc(label)+'</span>';
 }
 // ── вкладка «🧭 Процесс» (§7bis ступень 3, срез 1): доменный вид, СГЕНЕРированный из blueprint ──
 function _wzCabProcess(a){
