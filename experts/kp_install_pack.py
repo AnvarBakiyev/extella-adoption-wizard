@@ -1,6 +1,5 @@
 # expert: kp_install_pack
-# description: kp_install_pack
-# params:
+# description: База знаний: устанавливает ГОТОВУЮ базу (кодекс/справочник) — качает официальный корпус или статьи Википедии, чанкует, векторизует локально. Параметр: pack_id.
 
 def kp_install_pack(pack_id="") -> str:
     import os, re, ssl, html, json, time, subprocess, urllib.request, urllib.parse

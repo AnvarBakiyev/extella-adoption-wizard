@@ -1,6 +1,5 @@
 # expert: kp_ask
-# description: kp_ask
-# params:
+# description: База знаний: отвечает на вопрос ПО загруженным документам (RAG, локальный поиск + синтез). Параметры: name, question.
 
 def kp_ask(name="", question="") -> str:
     import os, re, json, math, urllib.request

@@ -1,6 +1,5 @@
 # expert: kp_ingest
-# description: kp_ingest
-# params:
+# description: База знаний: загружает документы (.txt/.md/.pdf) из папки, режет на куски и векторизует ЛОКАЛЬНО (nomic-embed-text). Параметры: name, folder.
 
 def kp_ingest(name="", folder="") -> str:
     import os, re, json, glob, subprocess, time, urllib.request
