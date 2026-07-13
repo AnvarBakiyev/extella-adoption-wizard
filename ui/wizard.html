@@ -1387,28 +1387,42 @@ async function composeNow(){
   try{ r = await jpost("/x/compose",{task:task}); }
   finally{ _composing=false; if(cbtn) cbtn.disabled=false; }
   if(!r || r.status!=="success"){ _body().innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'; return; }
-  // ЧЕЛОВЕЧЕСКИЙ экран: польза словами (card.name/description), блоки — понятными чипами;
-  // сырьё (id экспертов + JSON-параметры) прячем под «Технические детали».
+  // верстак-чат: черновик flow можно доводить словами (полный чат по сборке)
+  window._composeState = { task: task, refinements: [], chat: [] };
+  _composeWorkbench(r);
+}
+// Рендер верстака сборки: карточка пользы + человеческие пробелы + запуск/сохранение + ЧАТ-доводка
+function _composeWorkbench(r){
+  var st = window._composeState || { task:'', refinements:[], chat:[] };
   var card = r.card||{};
   var comps = (card.components && card.components.length) ? card.components : (r.steps||[]).map(function(s){return s.expert;});
   var chips = comps.map(function(c){ return '<span style="display:inline-block;font-size:12.5px;background:#faf7f2;border:1px solid #e4ded5;border-radius:999px;padding:4px 11px;margin:0 6px 6px 0;color:#48423a">'+esc(compChip(c))+'</span>'; }).join('');
   var instN = (r.installed||[]).filter(function(x){return x.status!=='already';}).length;
   var inst = instN ? '<div style="font-size:12.5px;color:var(--gold,#c60);margin:2px 0 8px">⬇ доустановлено под задачу: '+instN+' '+(instN===1?'модель':'модели')+'</div>' : '';
-  var missReal = (r.missing||[]).filter(function(m){return !/^unknown block:|params не объект|ссылается на|не установилась/i.test(String(m));});
-  window._composerCapQ = missReal.length ? missReal.join(', ') : task;
-  window._composerTask = task;   // для handoff «Достроить Мастером» (кодоген недостающего блока → в библиотеку)
-  var miss = (missReal.length)
-    ? '<div class="cmp-step" style="border-color:#c93;flex-wrap:wrap;gap:8px;margin-top:10px"><div style="width:100%;font-size:12.5px;color:#7a5b1a">Не всё нашлось в вашей библиотеке — можно доустановить или достроить:</div>'+
-      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="capSearch(window._composerCapQ||\'\',\'composerCapOut\')">🌐 Найти в интернете</button>'+
+  var mh = (r.missing_human||[]).filter(Boolean);
+  window._composerCapQ = (r.missing&&r.missing.length) ? r.missing.join(', ') : st.task;
+  window._composerTask = st.task;
+  st.flowId = r.flow_id;
+  var miss = mh.length
+    ? '<div class="cmp-step" style="border-color:#c93;flex-wrap:wrap;gap:6px;margin-top:10px">'+
+      '<div style="width:100%;font-size:12.5px;color:#7a5b1a;margin-bottom:2px">Чтобы заработало, осталось:</div>'+
+      '<ul style="margin:0 0 6px 18px;font-size:12.5px;color:#7a5b1a;width:100%">'+mh.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>'+
+      '<div style="width:100%;font-size:12px;color:var(--silver)">Поправьте словами в чате ниже — или:</div>'+
+      ' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="capSearch(window._composerCapQ||\'\',\'composerCapOut\')">🌐 Найти блок в интернете</button>'+
       ' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="buildGapWithWizard()">🧩 Достроить Мастером</button></div>'
     : '';
   var rawRows = (r.steps||[]).map(function(s){ return '<div style="font-size:12px;color:var(--silver,#889);padding:3px 0"><code>'+esc(s.expert)+'</code> '+esc(JSON.stringify(s.params).slice(0,90))+'</div>'; }).join('');
   var raw = rawRows ? '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12px;color:var(--silver,#889);list-style:none">⚙ Технические детали (для любопытных)</summary><div style="margin-top:6px">'+rawRows+'</div></details>' : '';
   var em = (card.name||'').match(/^\s*(\p{Emoji})/u); em = em?em[1]:'⚡';
-  var nm = esc((card.name||task).replace(/^\s*\p{Emoji}\s*/u,''));
-  var desc = esc(card.description || task);
-  COMPOSED[r.flow_id] = { kicker:'Extella · Composed automation', title:card.name||task, subtitle:card.description||task, chips:comps.map(compChip) };
-  _body().innerHTML =
+  var nm = esc((card.name||st.task).replace(/^\s*\p{Emoji}\s*/u,''));
+  var desc = esc(card.description || st.task);
+  COMPOSED[r.flow_id] = { kicker:'Extella · Composed automation', title:card.name||st.task, subtitle:card.description||st.task, chips:comps.map(compChip) };
+  var bubble = function(m){ return m.role==='user'
+    ? '<div style="text-align:right;margin:6px 0"><span style="display:inline-block;background:var(--gold-bg,#f3e6d5);color:#7a4a12;border-radius:12px 12px 2px 12px;padding:6px 11px;font-size:13px;max-width:82%">'+esc(m.text)+'</span></div>'
+    : '<div style="margin:6px 0"><span style="display:inline-block;background:var(--cream);border:1px solid var(--cream-dark);border-radius:12px 12px 12px 2px;padding:6px 11px;font-size:13px;max-width:82%">'+esc(m.text)+'</span></div>'; };
+  var thread = (st.chat||[]).map(bubble).join('');
+  (el('composeBody')||el('composerOut')).innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:11.5px;background:rgba(128,128,128,.12);color:var(--silver);border-radius:999px;padding:3px 10px">черновик · не сохранён</span><a href="#" onclick="resetCompose();return false" style="font-size:12px;color:var(--silver);margin-left:auto">✕ начать заново</a></div>'+
     '<div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:16px 18px;background:var(--paper,#fff);margin-bottom:12px">'+
       '<div style="display:flex;align-items:center;gap:10px"><span style="font-size:26px">'+em+'</span><div style="font:700 17px var(--sans)">'+nm+'</div></div>'+
       '<div style="font-size:13.5px;color:var(--ink-soft);line-height:1.5;margin:8px 0 12px">'+desc+'</div>'+
@@ -1418,10 +1432,33 @@ async function composeNow(){
     '<button class="btn gold" style="padding:10px 22px;font-size:15px" onclick="runComposed(\''+esc(r.flow_id)+'\',this)">▶ Запустить сейчас</button>'+
     '<button class="btn ghost" style="padding:10px 18px;font-size:14px" onclick="saveComposedFlow(\''+esc(r.flow_id)+'\',this)">＋ Сохранить как автоматизацию</button>'+
     '<span id="cmp_run_msg" style="color:var(--silver,#889)"></span></div>'+
-    '<div style="font-size:11.5px;color:var(--silver,#889);margin-top:6px">«Запустить» — прогнать разово, результат покажу здесь. «Сохранить» — добавить в «Мои», чтобы ставить на расписание и слать в Telegram/почту.</div>'+
+    '<div style="font-size:11.5px;color:var(--silver,#889);margin-top:6px">«Запустить» — прогнать разово. «Сохранить» — в «Мои», чтобы ставить на расписание и слать в Telegram/почту.</div>'+
     raw +
+    '<div style="margin-top:16px;border-top:1px solid var(--cream-dark);padding-top:12px">'+
+      '<div style="font-size:12px;color:var(--silver);margin-bottom:8px">Доработать словами — Композитор пересоберёт:</div>'+
+      '<div id="cmp_thread">'+thread+'</div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px"><input id="cmp_chat_in" class="sess-select" style="flex:1;max-width:none" placeholder="напр.: фото лежат в ~/Photos · используй openai-vision · убери шаг OCR" onkeydown="if(event.key===\'Enter\')composeChat()"><button class="btn ghost sm" onclick="composeChat()">Отправить</button></div>'+
+    '</div>'+
     '<div id="composerCapOut" style="margin-top:12px"></div>';
 }
+async function composeChat(){
+  var st = window._composeState; if(!st) return;
+  var inp = el('cmp_chat_in'); var msg = (inp&&inp.value||'').trim(); if(!msg) return;
+  inp.value=''; inp.disabled=true;
+  var th = el('cmp_thread');
+  if(th) th.innerHTML += '<div style="text-align:right;margin:6px 0"><span style="display:inline-block;background:var(--gold-bg,#f3e6d5);color:#7a4a12;border-radius:12px 12px 2px 12px;padding:6px 11px;font-size:13px;max-width:82%">'+esc(msg)+'</span></div><div id="cmp_wait" style="margin:6px 0;color:var(--silver);font-size:13px"><span class="spin"></span> пересобираю…</div>';
+  var r = await jpost('/x/compose_chat',{task:st.task, refinements:st.refinements, message:msg});
+  if(r && r.status==='success'){
+    st.refinements.push(msg);
+    st.chat.push({role:'user',text:msg});
+    st.chat.push({role:'assistant',text:r.reply||'Готово.'});
+    _composeWorkbench(r);
+  } else {
+    if(inp) inp.disabled=false;
+    var w=el('cmp_wait'); if(w) w.outerHTML='<div style="margin:6px 0;color:var(--bad,#c33);font-size:13px">'+esc((r&&r.reply)||('Не вышло: '+((r&&r.message)||'')))+'</div>';
+  }
+}
+function resetCompose(){ window._composeState=null; var out=el('composerOut'); if(out) out.innerHTML=''; var ci=el('composerInput'); if(ci){ ci.value=''; ci.focus(); } }
 // Инкр.3 (B-lite): собранная задача → «Мои автоматизации» (сессия-обёртка wz_flow_run) → кабина
 async function saveComposedFlow(flowId, btn){
   if(btn){ if(btn.disabled) return; btn.disabled=true; }
