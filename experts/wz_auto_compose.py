@@ -51,7 +51,7 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
 
     # --- каталог блоков (вет-проверенный whitelist) ---
     try:
-        catalog_val = _post("/api/kv/get", {"key": "composer:catalog"}, t=60).get("value")
+        catalog_val = _post("/api/kv/get", {"key": "composer:catalog", "global": True}, t=60).get("value")
     except Exception as ex:
         return json.dumps({"status": "error", "message": "не прочитал каталог блоков (сеть/KV): " + str(ex)[:120]}, ensure_ascii=False)
     try:
@@ -226,12 +226,15 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
             "composed": True, "installed": bool(install_ok),
             "components": [s["expert"] for s in steps]}
     try:
-        cur = _post("/api/kv/get", {"key": "_mkt_automations"}, t=60).get("value")
+        try:
+            cur = _post("/api/kv/get", {"key": "_mkt_automations", "global": True}, t=60).get("value")
+        except Exception:
+            cur = None  # каталога ещё нет (первая автоматизация на аккаунте) — создадим ниже
         cat2 = json.loads(cur) if cur else {"items": []}
         cat2["items"] = [it for it in cat2.get("items", []) if it.get("id") != card["id"]]
         cat2["items"].insert(0, card)
         _post("/api/kv/set", {"key": "_mkt_automations", "value": json.dumps(cat2, ensure_ascii=False),
-                              "description": "automations catalog"}, t=60)
+                              "description": "automations catalog", "global": True}, t=60)
     except Exception as ex:
         return json.dumps({"status": "error", "message": "карточка не записана: " + str(ex)[:120], "flow_id": flow_id}, ensure_ascii=False)
 
