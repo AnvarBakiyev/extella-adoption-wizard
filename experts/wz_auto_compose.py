@@ -1,7 +1,7 @@
 # expert: wz_auto_compose
 # description: Композитор: задача словами -> Qwen подбирает блоки из каталога способностей (composer:catalog), собирает декларативный план, ставит недостающие локальные модели, пишет flow:<id> в KV и карточку в _mkt_automations. Только вет-проверенные блоки (whitelist) — чего нет, честно возвращает в missing. Возвращает {flow_id, plan, card, missing}.
 
-def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.extella.ai") -> dict:
+def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.extella.ai", reuse_flow_id="") -> dict:
     import json, re, urllib.request
     from pathlib import Path
     from datetime import datetime, timezone
@@ -209,10 +209,17 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
     # --- flow в KV + карточка в витрине ---
     import hashlib
     slug = re.sub(r"[^a-z0-9]+", "-", str(plan.get("name") or "").lower()).strip("-")[:28]
-    flow_id = (slug + "-" if slug else "") + hashlib.md5(str(task).encode("utf-8")).hexdigest()[:8]
+    # C2 (кабинет композиции): reuse_flow_id = СТАБИЛЬНАЯ перезапись сохранённой композиции.
+    # Иначе каждая чат-доводка рождала бы новый flow:<id> + новую карточку (мусор в витрине)
+    # и рассинхрон с sched:<sid>.flow_id / builds[] сессии.
+    if not _b(reuse_flow_id):
+        flow_id = re.sub(r"[^A-Za-z0-9_-]", "", str(reuse_flow_id))[:64]
+    else:
+        flow_id = (slug + "-" if slug else "") + hashlib.md5(str(task).encode("utf-8")).hexdigest()[:8]
     flow = {"name": plan.get("name") or slug, "task": str(task),
             "steps": steps, "synthesis_prompt": plan.get("synthesis_prompt") or "Summarize the step results as a markdown brief with a table.",
             "deliver": "", "deliver_client": "default",
+            "installed": installed, "missing": missing,   # C2: персистенция для вкладки «Состав» (раньше жили только в эфемерном ответе)
             "composed_at": datetime.now(timezone.utc).isoformat()}
     try:
         _post("/api/kv/set", {"key": "flow:" + flow_id, "value": json.dumps(flow, ensure_ascii=False),

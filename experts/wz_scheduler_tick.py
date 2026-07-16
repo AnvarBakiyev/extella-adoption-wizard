@@ -448,7 +448,9 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         except Exception:
             _fresh = None
         if isinstance(_fresh, dict):
-            for _own in ("rules", "fields", "recipients", "deliver", "message_template", "active", "interval_min", "period", "source"):
+            # C2: +flow_id/agent_id — иначе write-back тика откатывал бы чат-доводку композиции,
+            # сделанную во время прогона (ревью CABINET_TZ: гонка «тик затирает правку владельца»)
+            for _own in ("rules", "fields", "recipients", "deliver", "message_template", "active", "interval_min", "period", "source", "flow_id", "agent_id"):
                 if _own in _fresh:
                     cfg[_own] = _fresh[_own]
             runs = (_fresh.get("runs") or cfg.get("runs") or [])   # прогоны — из свежего (могли дописаться ручным запуском)

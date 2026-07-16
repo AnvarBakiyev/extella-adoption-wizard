@@ -1155,6 +1155,16 @@ var _I18N_DICT = {
   "⏸ На паузе — автозапуски остановлены, настройки сохранены": "⏸ Paused — auto-runs stopped, settings kept",
   "▶ Возобновлено — следующий запуск через интервал": "▶ Resumed — next run in one interval",
   "На паузе входящие обращения обрабатываться НЕ будут (накопленные за паузу не получат ответов). Поставить на паузу?": "While paused, incoming messages will NOT be processed (backlog accumulated during the pause will not be answered). Pause now?",
+  "🧩 Состав·Доводка": "🧩 Makeup·Refine",
+  "загружаю состав…": "loading makeup…",
+  "Состав — из чего собрано": "Makeup — what it's built from",
+  "Доводка словами — Композитор пересоберёт": "Refine in words — the Composer will rebuild",
+  "пересобираю… (до 2 мин)": "rebuilding… (up to 2 min)",
+  "Пересборка обновит эту автоматизацию на месте — карточка и расписание сохраняются.": "Rebuilding updates this automation in place — the card and schedule are kept.",
+  "напр.: убери шаг X · шли только топ-5 · поменяй источник": "e.g.: remove step X · send only top-5 · change the source",
+  "Эта сборка может стать паком-продуктом — публикация композиций появится позже.": "This build can become a product pack — publishing compositions is coming later.",
+  "Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.": "Publishing a composition as a pack is in development; packs are currently published from Wizard processes.",
+  "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
   "— имя,": "— name,",
   "— позиций,": "— items,",
@@ -2738,6 +2748,7 @@ function _wzCabRender(){
   var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс');
   // доменная вкладка ПЕРВОЙ: ручная панель пака (Travel «🧳 Работа») ИЛИ генерируемый вид процесса из blueprint
   var domainTab = a.panel_url ? [['panel','🧳 Работа']] : ((a.stages_meta&&a.stages_meta.length) ? [['process','🧭 Процесс']] : []);
+  if(a.flow_id) domainTab.push(['compose','🧩 Состав·Доводка']);   // C2: композиция — доводка не теряется после сохранения
   var tabs=domainTab.concat([['overview','Запуск'],['settings','Настройка'],['rules','Правила'],['template','Шаблон'],['runs','Прогоны']]);
   var tabBar=tabs.map(function(t){var on=_wzCabTab===t[0];return '<button onclick="wzCabTab(\''+t[0]+'\')" style="border:none;background:'+(on?'var(--gold-bg)':'transparent')+';color:'+(on?'var(--gold)':'var(--nav)')+';font:600 13px var(--sans);padding:8px 16px;border-radius:8px;cursor:pointer">'+t[1]+'</button>';}).join('');
   o.innerHTML=
@@ -2765,6 +2776,7 @@ function _wzCabBody(a){
       '<div style="font-size:12px;color:var(--silver);margin:-8px 0 8px;display:flex;align-items:center;gap:10px">Доменная работа этого пака — лиды, подборки, рассылки, договоры.'+
       '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
       '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
+  if(_wzCabTab==='compose' && a.flow_id) return _wzCabComposeTab(a);
   if(_wzCabTab==='process' && a.stages_meta && a.stages_meta.length) return _wzCabProcess(a);
   if(_wzCabTab==='overview') return _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _wzCabRuns(a);
@@ -2778,6 +2790,59 @@ function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;co
 function _wzReadyChip(state, label){
   var c = state==='ok' ? ['#2f9e56','rgba(47,158,86,.10)','✓'] : (state==='warn'?['#C57E33','rgba(197,126,51,.12)','!']:['#7a7a7a','rgba(128,128,128,.10)','·']);
   return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:'+c[0]+';background:'+c[1]+';border-radius:999px;padding:5px 11px;margin:0 6px 6px 0"><i style="font-style:normal">'+c[2]+'</i> '+esc(label)+'</span>';
+}
+// ── C2: вкладка «🧩 Состав·Доводка» для композиций (orchestrator=wz_flow_run) ──
+// Суперсила Композитора (чат-доводка) больше НЕ теряется после «Сохранить»: пересборка идёт
+// по стабильному flow_id (та же карточка, то же расписание — обновление на месте, без мусора).
+function _wzCabComposeTab(a){
+  setTimeout(function(){ _wzComposeLoad(a); }, 30);
+  return '<div id="wz_compose_tab">'+_wzCard('<span class="spin"></span> загружаю состав…')+'</div>';
+}
+async function _wzComposeLoad(a){
+  var box=el('wz_compose_tab'); if(!box) return;
+  var f=await jpost('/x/flow',{flow_id:a.flow_id});
+  if(!f||f.status!=='success'){ box.innerHTML=_wzCard('<span style="color:var(--bad,#c33)">Не удалось прочитать состав: '+esc((f&&f.message)||'')+'</span>'); return; }
+  box.innerHTML =
+    '<div id="cabcmp_makeup">'+_wzComposeMakeupHTML(f)+'</div>'+
+    _wzCard(_wzH('Доводка словами — Композитор пересоберёт')+
+      '<div id="cabcmp_thread"></div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px"><input id="cabcmp_in" class="sess-select" style="flex:1;max-width:none" placeholder="напр.: убери шаг X · шли только топ-5 · поменяй источник" onkeydown="if(event.key===\'Enter\')cabComposeChat()"><button class="btn gold sm" onclick="cabComposeChat()">Отправить</button></div>'+
+      '<div style="font-size:11.5px;color:var(--silver);margin-top:6px">Пересборка обновит эту автоматизацию на месте — карточка и расписание сохраняются.</div>');
+}
+function _wzComposeMakeupHTML(f){
+  var steps=(f.steps||[]).map(function(s,i){
+    return '<div style="font-size:13px;padding:5px 0;border-bottom:1px dashed var(--cream-dark)">'+(i+1)+'. <code>'+esc(s.expert||'')+'</code> <span style="font-size:11.5px;color:var(--silver)">'+esc(JSON.stringify(s.params||{}).slice(0,90))+'</span></div>';
+  }).join('') || '<div style="color:var(--silver);font-size:13px">шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)</div>';
+  var inst=(f.installed||[]).map(function(x){
+    return '<span style="display:inline-block;font-size:11.5px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:999px;padding:3px 10px;margin:6px 6px 0 0">⬇ '+esc(String(x.model||x.name||''))+' · '+esc(String(x.status||''))+'</span>';
+  }).join('');
+  var miss=(f.missing_human||[]);
+  var missBlock = miss.length
+    ? '<div style="margin-top:10px;background:rgba(197,126,51,.08);border:1px solid rgba(197,126,51,.3);border-radius:10px;padding:9px 13px;font-size:12.5px;color:#7a5b1a"><b>Чтобы заработало, осталось:</b><ul style="margin:4px 0 0 18px">'+miss.map(function(m){return '<li>'+esc(m)+'</li>';}).join('')+'</ul></div>'
+    : '';
+  return _wzCard(_wzH('Состав — из чего собрано')+steps+(inst?'<div>'+inst+'</div>':'')+missBlock+
+    '<div style="font-size:11px;color:var(--silver);margin-top:10px">Эта сборка может стать паком-продуктом — публикация композиций появится позже.</div>');
+}
+async function cabComposeChat(){
+  var a=AUTOS[_wzCabI]; if(!a||!a.flow_id) return;
+  var inp=el('cabcmp_in'); var msg=(inp&&inp.value||'').trim(); if(!msg) return;
+  inp.value=''; inp.disabled=true;
+  var th=el('cabcmp_thread');
+  if(th) th.innerHTML += '<div style="text-align:right;margin:6px 0"><span style="display:inline-block;background:var(--gold-bg,#f3e6d5);color:#7a4a12;border-radius:12px 12px 2px 12px;padding:6px 11px;font-size:13px;max-width:82%">'+esc(msg)+'</span></div><div id="cabcmp_wait" style="margin:6px 0;color:var(--silver);font-size:13px"><span class="spin"></span> пересобираю… (до 2 мин)</div>';
+  var r=await jpost('/x/compose_chat',{flow_id:a.flow_id, session_id:a.session_id, message:msg});
+  var w=el('cabcmp_wait');
+  if(r&&r.status==='success'){
+    if(w) w.outerHTML='<div style="margin:6px 0"><span style="display:inline-block;background:var(--cream);border:1px solid var(--cream-dark);border-radius:12px 12px 12px 2px;padding:6px 11px;font-size:13px;max-width:82%">'+esc(r.reply||'Готово.')+'</span></div>';
+    var card=r.card||{};
+    if(card.name){ a.client_name=card.name; a.process_name=card.name; }
+    if(card.description) a.goal=card.description;
+    if(card.components) a.components=card.components;
+    var mk=el('cabcmp_makeup');   // состав обновляем на месте, тред не трогаем
+    if(mk) mk.innerHTML=_wzComposeMakeupHTML({steps:r.steps||[], installed:r.installed||[], missing_human:r.missing_human||[]});
+  } else {
+    if(w) w.outerHTML='<div style="margin:6px 0;color:var(--bad,#c33);font-size:13px">'+esc((r&&r.reply)||('Не вышло: '+((r&&r.message)||'')))+'</div>';
+  }
+  inp.disabled=false; inp.focus();
 }
 // ── вкладка «🧭 Процесс» (§7bis ступень 3, срез 1): доменный вид, СГЕНЕРированный из blueprint ──
 function _wzCabProcess(a){
@@ -2994,7 +3059,9 @@ function _wzCabSettings(a){
      '<button class="btn ghost sm" onclick="scheduleProcess('+_wzCabI+')">Настроить расписание</button>');
   var deployCard = _wzCard(_wzH('Публикация')+
      '<button class="btn ghost sm" onclick="deployAgentPrompt('+_wzCabI+')">'+(a.production_agent?'Обновить агента 24/7':'Развернуть агента 24/7')+'</button> '+
-     '<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">В витрину</button>');
+     (a.flow_id
+       ? '<button class="btn ghost sm" disabled title="Публикация композиций как паков появится позже (C5)">В витрину</button><div style="font-size:11.5px;color:var(--silver);margin-top:6px">Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.</div>'
+       : '<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">В витрину</button>'));
   var advCard = _wzCard(_wzH('Переделать процесс')+
      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные, получатели, расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
      '<button class="btn ghost sm" onclick="configureProcess('+_wzCabI+')">Изменить параметры (словами)</button> '+
