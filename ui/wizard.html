@@ -1191,6 +1191,13 @@ var _I18N_DICT = {
   "Эта сборка может стать паком-продуктом — публикация композиций появится позже.": "This build can become a product pack — publishing compositions is coming later.",
   "Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.": "Publishing a composition as a pack is in development; packs are currently published from Wizard processes.",
   "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
+  "Версии и правки": "Versions & changes",
+  "Правок пока не было — процесс в исходной версии.": "No changes yet — the process is in its original version.",
+  "↩ Откатить последнюю правку": "↩ Roll back the last change",
+  "процесс пересоберётся по прежней версии": "the process will be rebuilt from the previous version",
+  "Откатить последнюю правку? Процесс будет пересобран по прежней версии (1–3 мин).": "Roll back the last change? The process will be rebuilt from the previous version (1-3 min).",
+  "откатываю и пересобираю…": "rolling back and rebuilding…",
+  "Откат-пересборка упала — прежняя версия продолжает работать.": "The rollback rebuild failed — the previous version keeps working.",
   "Вопросы под вашу задачу": "Questions tailored to your task",
   "Опишите задачу одной фразой — конспект перестроится под неё (вместо стандартного списка).": "Describe the task in one phrase — the brief will be rebuilt around it (instead of the standard list).",
   "напр.: контроль дебиторки 28 филиалов из 1С с еженедельной сводкой директору": "e.g.: receivables control for 28 branches from 1C with a weekly summary to the director",
@@ -3282,11 +3289,46 @@ function _wzCabSettings(a){
      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные, получатели, расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
      '<button class="btn ghost sm" onclick="configureProcess('+_wzCabI+')">Изменить параметры (словами)</button> '+
      '<button class="btn ghost sm" onclick="openInWizard(\''+esc(sid)+'\')">Открыть в Мастере</button>');
+  // C6: журнал правок (решения Строителя человеческим языком) + откат последней
+  var decs=(a.decisions||[]);
+  var decRows = decs.length ? decs.slice().reverse().map(function(d){
+      return '<div style="font-size:12.5px;padding:6px 0;border-bottom:1px dashed var(--cream-dark)">'+
+        '<span style="color:var(--silver);font-size:11px">'+esc(String(d.at||'').slice(5,16).replace('T',' '))+(d.by==='rollback'?' · ↩ откат':'')+'</span><br>'+
+        esc(d.decision||d.change||'')+'</div>';
+    }).join('') : '<div style="font-size:12.5px;color:var(--silver)">Правок пока не было — процесс в исходной версии.</div>';
+  var verCard = _wzCard(_wzH('Версии и правки')+decRows+
+     (a.can_rollback?'<div style="margin-top:10px"><button class="btn ghost sm" onclick="rollbackProcess('+_wzCabI+')">↩ Откатить последнюю правку</button>'+
+       '<span style="font-size:11.5px;color:var(--silver);margin-left:8px">процесс пересоберётся по прежней версии</span></div>':''));
   var dangerCard = _wzCard(
      '<div style="font:700 12px var(--sans);color:#c0392b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Опасная зона</div>'+
      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Убрать автоматизацию из списка. Уходит в архив (можно вернуть), расписание снимается.</div>'+
      '<button class="btn ghost sm" style="color:#c0392b;border-color:#e0a0a0" onclick="deleteAutomation('+_wzCabI+')">🗑 Удалить автоматизацию</button>');
-  return recipientsCard+srcCard+scCard+deployCard+advCard+dangerCard;
+  return recipientsCard+srcCard+scCard+deployCard+advCard+verCard+dangerCard;
+}
+async function rollbackProcess(i){
+  var a=AUTOS[i]; if(!a) return;
+  if(!confirm('Откатить последнюю правку? Процесс будет пересобран по прежней версии (1–3 мин).')) return;
+  _cabPush(_cabU('↩ Откатить последнюю правку'));
+  _cabPush('<div id="cabchat_build" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> откатываю и пересобираю…</div>');
+  var r=await jpost('/x/rollback',{session_id:a.session_id});
+  if(!r||r.status!=='success'){
+    window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_build')<0;});
+    var w0=el('cabchat_build'); if(w0) w0.remove();
+    _cabPush(_cabA('Откат не удался: '+esc((r&&r.message)||''))); return;
+  }
+  var bid=r.build_id, t0=Date.now();
+  (function pollR(){
+    jget('/x/build_progress?build_id='+encodeURIComponent(bid)).then(function(p){
+      var pr=(p&&p.progress)||{};
+      if(pr.status==='running' && Date.now()-t0<8*60*1000){ setTimeout(pollR,4000); return; }
+      window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_build')<0;});
+      var wb=el('cabchat_build'); if(wb) wb.remove();
+      if(pr.status==='error'){ _cabPush(_cabA('Откат-пересборка упала — прежняя версия продолжает работать.')); return; }
+      a.can_rollback=false;   // уточнится при следующей загрузке списка
+      _cabPush(_cabA('✓ '+esc(r.decision||'Откат готов.')+' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="wzCabTab(\'overview\');runProcess(_wzCabI)">▶ Пробный прогон</button>'));
+      _wzCabRender();
+    });
+  })();
 }
 // ── вкладка «Правила и поля» (§7bis ступень 2): бизнес-правила словами + факты-поля per-automation ──
 function _wzCabRules(a){
