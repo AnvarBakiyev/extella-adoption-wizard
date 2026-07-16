@@ -295,8 +295,14 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
       </div>
       <button class="btn ghost" style="margin-left:auto;padding:8px 16px" onclick="closeCsplStudio()">✕ Закрыть</button>
     </div>
+    <div class="card" style="border-left:3px solid var(--gold,#c9a35c);margin-bottom:14px">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:6px">✨ Создать язык словами</div>
+      <div style="font-size:12px;color:var(--silver);margin-bottom:8px">Опишите, какой отчётный язык нужен: какие колонки обязательны, какой фильтр по умолчанию, что считать итогом. Проектировщик соберёт спецификацию поверх проверенного ядра и зарегистрирует язык ТОЛЬКО после контрольных прогонов.</div>
+      <textarea id="csplCreateDesc" placeholder="например: язык отчёта по просроченной дебиторке — обязательны колонки Филиал, Сумма долга, Дней просрочки; по умолчанию показывать только строки с просрочкой больше 30 дней; итог — сумма долга; группировать по филиалу" style="width:100%;height:72px;font-size:13px;border:1px solid var(--cream-dark);border-radius:8px;padding:8px"></textarea>
+      <div style="margin-top:8px"><button class="btn gold sm" onclick="csplCreate()">✨ Спроектировать и зарегистрировать</button><span class="statusline" id="csplCreateSt"></span></div>
+      <div id="csplCreateOut" style="margin-top:8px;font-size:12.5px"></div>
+    </div>
     <div id="csplList"><div class="empty"><span class="spin"></span> загружаю языки…</div></div>
-    <div style="font-size:12px;color:var(--silver);margin-top:14px">Создание нового языка словами (генеративный builder) — следующий этап Студии; сегодня языки регистрируются с обязательными контрольными прогонами (fixtures-гейт).</div>
   </div>
 </div>
 
@@ -612,6 +618,9 @@ var _I18N_DICT = {
   "Визард": "Wizard",
   "Воркспейсес": "Workspaces",
   "Студия языков": "Language Studio",
+  "✨ Создать язык словами": "✨ Create a language in words",
+  "✨ Спроектировать и зарегистрировать": "✨ Design and register",
+  "Опишите, какой отчётный язык нужен: какие колонки обязательны, какой фильтр по умолчанию, что считать итогом. Проектировщик соберёт спецификацию поверх проверенного ядра и зарегистрирует язык ТОЛЬКО после контрольных прогонов.": "Describe the reporting language you need: which columns are mandatory, the default filter, what counts as the total. The designer builds a specification on top of the verified core and registers the language ONLY after control runs.",
   "свои предметные языки": "your own domain languages",
   "предметные языки вашего аккаунта: программа словами дела → проверенный исполняемый результат": "your account's domain languages: a program in business terms → a verified executable result",
   "Создание нового языка словами (генеративный builder) — следующий этап Студии; сегодня языки регистрируются с обязательными контрольными прогонами (fixtures-гейт).": "Creating a new language in words (generative builder) is the Studio's next stage; today languages are registered with mandatory control runs (fixtures gate).",
@@ -1577,6 +1586,26 @@ async function renderCsplStudio(){
       : JSON.stringify({report:"Крупные расхождения",columns:["Контрагент","Расхождение"],filter:{field:"Расхождение",op:">",value:1000},totals:["Расхождение"],out:"md"},null,1);
     var r=el('cspl_recs_'+i); if(r) r.value=_CSPL_SAMPLE;
   });
+}
+async function csplCreate(){
+  // генеративный builder: описание словами → Qwen проектирует СПЕЦИФИКАЦИЮ (не код) →
+  // fixtures-гейт вживую → регистрация. Отказ гейта = язык не рождается.
+  var desc=(el('csplCreateDesc')||{}).value||'';
+  var st=el('csplCreateSt'), out=el('csplCreateOut');
+  if(desc.trim().length<15){ if(out) out.textContent=(WLANG==='en'?'Describe the language in more detail':'Опишите язык подробнее'); return; }
+  if(st) st.innerHTML='<span class="spin"></span> '+(WLANG==='en'?'designing and running control checks…':'проектирую и гоняю контрольные прогоны…');
+  var r; try{ r=await jpost('/x/cspl_create',{description:desc}); }
+  catch(e){ r={status:'error',message:String(e)}; }
+  if(st) st.innerHTML='';
+  if(!out) return;
+  if(r&&r.status==='success'){
+    out.innerHTML='<span style="color:var(--ok,#2a2)">✓ '+(WLANG==='en'?'Language registered':'Язык зарегистрирован')+': <b>'+esc(r.title||r.handler_id)+'</b> <code>'+esc(r.handler_id)+'</code></span>'
+      +'<div style="font-size:11.5px;color:var(--silver)">'+(WLANG==='en'?'fixtures':'контрольные прогоны')+': '+(r.fixtures||[]).map(function(f){return (f.ok?'✓':'✗')+f.name;}).join(' · ')+'</div>';
+    renderCsplStudio();
+  } else {
+    out.innerHTML='<span style="color:var(--bad)">'+esc((r&&r.message)||'ошибка')+'</span>'
+      +((r&&r.fixtures)?'<div style="font-size:11.5px;color:var(--silver)">'+(r.fixtures||[]).map(function(f){return (f.ok?'✓':'✗')+f.name+'→'+esc(String(f.got||''));}).join(' · ')+'</div>':'');
+  }
 }
 async function csplTry(i, handler){
   var st=el('cspl_st_'+i), out=el('cspl_out_'+i);
