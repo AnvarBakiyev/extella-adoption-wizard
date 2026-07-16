@@ -21,7 +21,8 @@
 | `_mkt_installed` | wz_capability_install | вкладка «Мои» | `{items:[…60]}` — установленное Композитором (per-account по смыслу, живёт global — легаси) |
 | `_mkt_models`, `_mkt_cli_catalog`, `_mkt_programs`, `_mkt_skills`, … | харвестеры VPS | тулбар | каталоги витрины (шардированы) |
 | `composer:catalog` | сидер | wz_auto_compose | whitelist блоков Композитора |
-| `capability:registry` (+`:0..N`) | scripts/capability_registry.py | /x/registry (мост → все 4 поверхности) | Capability Registry v0: meta `{chunks, enc:"b64", count, generated_at}` + b64-шарды по 8000 (kv/set строит эмбеддинг — крупные значения бьются об его лимит); зеркало для людей — docs/CAPABILITIES.md |
+| `capability:registry` (+`:0..N`) | эксперт wz_registry_rebuild (у клиента; событийно из моста `_registry_refresh_async` + суточно тиком) | /x/registry (мост → все 4 поверхности) | Capability Registry v0: meta `{chunks, enc:"b64", count, generated_at}` + b64-шарды по 8000 (kv/set строит эмбеддинг — крупные значения бьются об его лимит). Скоуп: под default-агентом БЕЗ флага global (писатель и читатель в одном скоупе). Зеркала для людей: docs/CAPABILITIES.md (наш git) и `~/extella_wizard/registry/CAPABILITIES.md` (устройство клиента) |
+| `registry:last_rebuild` | wz_registry_rebuild | тик (суточная страховка пересбора) | ISO ts последнего полного пересбора реестра |
 
 ## Per-account скоуп (без global; писатель указан)
 | Ключ | Писатели | Читатели | Значение |

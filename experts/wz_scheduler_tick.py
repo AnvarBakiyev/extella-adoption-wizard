@@ -528,5 +528,25 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                     pass
         fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"]})
 
+    # Capability Registry: суточный ПОЛНЫЙ пересбор (событийные обновления делает мост;
+    # тик — страховка, чтобы реестр не протухал без событий). Маркер пишет сам эксперт.
+    try:
+        gr = requests.post(base + "/api/kv/get", headers=headers,
+                           json={"key": "registry:last_rebuild"}, timeout=30).json()
+        _lr = str(gr.get("value") or "")
+        _stale = True
+        if _lr:
+            try:
+                from datetime import datetime as _rdt
+                _stale = (now() - _rdt.fromisoformat(_lr.replace("Z", "+00:00"))).total_seconds() > 86400
+            except Exception:
+                _stale = True
+        if _stale:
+            requests.post(base + "/api/expert/run", headers=headers,
+                          json={"expert_name": "wz_registry_rebuild", "global": True, "params": {}},
+                          timeout=30)   # отложенный запуск; результата не ждём
+    except Exception:
+        pass
+
     return {"status": "success", "checked": checked, "fired": fired,
             "inbound": inbound_fired, "inbound_dbg": _dbg, "tick_at": now().isoformat()}
