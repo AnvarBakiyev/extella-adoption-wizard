@@ -281,6 +281,37 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
       <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Студия языков</div>
       <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">свои предметные языки</div>
     </div>
+    <div class="sysapp" onclick="openTeam()" title="Системное приложение — нельзя удалить"
+         style="width:180px;cursor:pointer;text-align:center;padding:18px 12px;border-radius:16px;transition:background .15s"
+         onmouseover="this.style.background='var(--paper,#fff)'" onmouseout="this.style.background='transparent'">
+      <div style="width:84px;height:84px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#c9a35c,#3f4b52);display:flex;align-items:center;justify-content:center;font-size:42px;box-shadow:0 6px 18px rgba(63,75,82,.3)">👥</div>
+      <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Команда</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">пригласить в общий контур</div>
+    </div>
+  </div>
+</div>
+
+<!-- Команда v0: приглашение = именной токен контура (invite:); роли — позже (PLATFORM_ASKS A4) -->
+<div id="team_studio" style="display:none;position:fixed;inset:0;z-index:9990;background:var(--cream,#f4f1ea);overflow:auto">
+  <div style="max-width:820px;margin:0 auto;padding:26px 28px 70px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+      <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#c9a35c,#3f4b52);display:flex;align-items:center;justify-content:center;font-size:26px">👥</div>
+      <div>
+        <div style="font:700 20px var(--sans);color:var(--ink,#0a0a0a)">Команда</div>
+        <div style="font-size:12.5px;color:var(--silver,#889)">общий контур: процессы, витрина и кабинеты — одни на всех участников. Роли и права — на подходе.</div>
+      </div>
+      <button class="btn ghost" style="margin-left:auto;padding:8px 16px" onclick="closeTeam()">✕ Закрыть</button>
+    </div>
+    <div class="card" style="border-left:3px solid var(--gold,#c9a35c);margin-bottom:14px">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:6px">➕ Пригласить</div>
+      <div style="font-size:12px;color:var(--silver);margin-bottom:8px">Приглашение — именной ключ доступа к этому контуру. Показывается один раз: передайте лично (не по открытым каналам). Отозвать можно в любой момент.</div>
+      <div style="display:flex;gap:8px">
+        <input id="teamName" class="sess-select" placeholder="имя (например, Гульжан)" style="flex:1;max-width:none" onkeydown="if(event.key==='Enter')teamInvite()">
+        <button class="btn gold sm" onclick="teamInvite()">Создать приглашение</button>
+      </div>
+      <div id="teamInviteOut" style="margin-top:10px;font-size:13px"></div>
+    </div>
+    <div id="teamList"><div class="empty"><span class="spin"></span> загружаю участников…</div></div>
   </div>
 </div>
 
@@ -618,6 +649,12 @@ var _I18N_DICT = {
   "Визард": "Wizard",
   "Воркспейсес": "Workspaces",
   "Студия языков": "Language Studio",
+  "Команда": "Team",
+  "пригласить в общий контур": "invite into the shared workspace",
+  "общий контур: процессы, витрина и кабинеты — одни на всех участников. Роли и права — на подходе.": "shared workspace: processes, showcase and cabinets are common for all members. Roles and permissions are coming.",
+  "➕ Пригласить": "➕ Invite",
+  "Приглашение — именной ключ доступа к этому контуру. Показывается один раз: передайте лично (не по открытым каналам). Отозвать можно в любой момент.": "An invite is a named access key to this workspace. Shown once: hand it over personally (not via open channels). Can be revoked anytime.",
+  "Создать приглашение": "Create invite",
   "Где исполняется": "Where it runs",
   "По расписанию — ": "On schedule — ",
   "Хостинг Extella (VPS, 24/7)": "Extella hosting (VPS, 24/7)",
@@ -1560,7 +1597,49 @@ function closeCompStudio(){
   var st=el('comp_studio'); if(!st||st.style.display==='none') return;
   st.style.display='none'; document.body.style.overflow='';
 }
-document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeCompStudio(); closeCsplStudio(); } });
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeCompStudio(); closeCsplStudio(); closeTeam(); } });
+// ── Команда v0: приглашение = именной токен контура; отзыв в один клик; роли позже ──
+function openTeam(){ var st=el('team_studio'); if(!st) return; st.style.display='block'; document.body.style.overflow='hidden'; renderTeam(); var n=el('teamName'); if(n) n.focus(); }
+function closeTeam(){ var st=el('team_studio'); if(!st||st.style.display==='none') return; st.style.display='none'; document.body.style.overflow=''; }
+async function renderTeam(){
+  var host=el('teamList'); if(!host) return;
+  var d; try{ d=await jget('/x/team'); }catch(e){ d=null; }
+  var team=(d&&d.team)||[];
+  if(!team.length){ host.innerHTML='<div class="empty">'+(WLANG==='en'?'No members yet — create the first invite above.':'Участников пока нет — создайте первое приглашение выше.')+'</div>'; return; }
+  host.innerHTML='<div class="card">'+_wzH(WLANG==='en'?'Members':'Участники')+team.map(function(m){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--cream-dark);font-size:13.5px">'
+      +'<span style="font-size:16px">'+(m.revoked?'🚫':'👤')+'</span>'
+      +'<b>'+esc(m.name)+'</b>'
+      +'<code style="font-size:11px;color:var(--silver)">'+esc(m.token_mask)+'</code>'
+      +'<span style="color:var(--silver);font-size:11.5px">'+esc((m.created_at||'').slice(0,10))+'</span>'
+      +(m.revoked?'<span class="badge warn" style="margin-left:auto">'+(WLANG==='en'?'revoked':'отозван')+'</span>'
+        :'<button class="btn ghost sm" style="margin-left:auto" onclick="teamRevoke(\''+esc(m.full_name)+'\')">'+(WLANG==='en'?'Revoke':'Отозвать')+'</button>')
+      +'</div>';
+  }).join('')+'</div>';
+}
+async function teamInvite(){
+  var name=((el('teamName')||{}).value||'').trim();
+  var out=el('teamInviteOut');
+  if(name.length<2){ if(out) out.textContent=(WLANG==='en'?'Enter a name':'Введите имя'); return; }
+  var r; try{ r=await jpost('/x/team_invite',{name:name}); }catch(e){ r={status:'error',message:String(e)}; }
+  if(!out) return;
+  if(r&&r.status==='success'){
+    out.innerHTML='<div style="background:rgba(201,163,92,.12);border:1px solid var(--gold);border-radius:10px;padding:12px">'
+      +'✓ '+(WLANG==='en'?'Invite for':'Приглашение для')+' <b>'+esc(r.name)+'</b> '+(WLANG==='en'?'created. The key is shown ONCE:':'создано. Ключ показывается ОДИН раз:')
+      +'<div style="font:600 13px var(--mono,monospace);word-break:break-all;background:var(--paper);border-radius:8px;padding:10px;margin:8px 0" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)" title="клик — скопировать">'+esc(r.token)+'</div>'
+      +'<div style="font-size:12px;color:var(--silver)">'+(WLANG==='en'
+        ?'Hand it over personally. The invitee enters it in their Extella app (token sign-in) — and works in this shared workspace.'
+        :'Передайте лично. Приглашённый вводит его в своём приложении Extella (вход по токену) — и работает в этом общем контуре: те же процессы, витрина и кабинеты.')+'</div></div>';
+    var n=el('teamName'); if(n) n.value='';
+    renderTeam();
+  } else out.innerHTML='<span style="color:var(--bad)">'+esc((r&&r.message)||'ошибка')+'</span>';
+}
+async function teamRevoke(fullName){
+  if(!confirm((WLANG==='en'?'Revoke access for ':'Отозвать доступ: ')+fullName.replace('invite: ','')+'?')) return;
+  var r; try{ r=await jpost('/x/team_revoke',{name:fullName}); }catch(e){ r={status:'error',message:String(e)}; }
+  if(r&&r.status==='success'){ toast((WLANG==='en'?'✓ Access revoked':'✓ Доступ отозван'),'ok'); renderTeam(); }
+  else toast('Ошибка: '+((r&&r.message)||''),'err');
+}
 // ── CSPL Studio S3: языки аккаунта + проба компиляции ──
 function openCsplStudio(){ var st=el('cspl_studio'); if(!st) return; st.style.display='block'; document.body.style.overflow='hidden'; renderCsplStudio(); }
 function closeCsplStudio(){ var st=el('cspl_studio'); if(!st||st.style.display==='none') return; st.style.display='none'; document.body.style.overflow=''; }
