@@ -1190,6 +1190,11 @@ var _I18N_DICT = {
   "⏸ На паузе": "⏸ Paused",
   "▶ Возобновлено": "▶ Resumed",
   "Задание Строителю набрано — отправьте сообщение Помощнику": "The Builder task is drafted — send the message to the Assistant",
+  "🔧 Пересобрать Строителем": "🔧 Rebuild with the Builder",
+  "стройка идёт…": "building…",
+  "Строитель принимает правку…": "The Builder is taking the change…",
+  " — сравните бриф с прежним (он в «Запуске»)": " — compare the brief with the previous one (it's in \"Launch\")",
+  "▶ Пробный прогон": "▶ Trial run",
   "⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: построенный процесс исполняет свой код. Чтобы правило заработало — пересборка через Мастера/Строителя (напишите правку в чат внизу — он направит).": "⚠ Saved, but they DO NOT affect runs yet: the built process executes its own code. To make a rule take effect, rebuild via the Wizard/Builder (type the change into the chat below — it will route you).",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
   "— имя,": "— name,",
@@ -2837,9 +2842,13 @@ async function cabChat(){
     _cabPush(_cabA('Это правка логики — пересоберу композицию на месте (карточка и расписание сохранятся).'+_cabBtns('Пересобрать')));
   } else {
     window._cabAct={op:'master', args:{message:msg}};
-    _cabPush(_cabA((r.depth==='strong'?'Это изменение шагов процесса':'Это правка логики процесса')+' — такие правки делает Строитель с записью решения в сессию.'+_cabBtns('Открыть в Мастере')));
+    _cabPush(_cabA((r.depth==='strong'?'Это изменение шагов процесса':'Это правка логики процесса')+' — такие правки делает Строитель с записью решения в сессию.'+
+      ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="cabApplyKind(\'rebuild\')">🔧 Пересобрать Строителем</button>'+
+      ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabApplyKind(\'master\')">Открыть в Мастере</button>'+
+      ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
   }
 }
+function cabApplyKind(k){ if(window._cabAct) window._cabAct.op=k; cabApply(); }
 function cabCancel(){ window._cabAct=null; _cabPush(_cabA('Отменено.')); }
 async function cabApply(){
   var a=AUTOS[_wzCabI]; var act=window._cabAct; if(!a||!act) return;
@@ -2875,6 +2884,32 @@ async function cabApply(){
       _cabPush(_cabA('✓ '+esc(r5.reply||'Пересобрано.')));
       _wzCabRender();
     } else _cabPush(_cabA('Не вышло: '+esc((r5&&(r5.reply||r5.message))||'')));
+  } else if(act.op==='rebuild'){
+    // C4.2: авто-Строитель — blueprint правится, решение пишется в сессию, штатная пересборка
+    _cabPush('<div id="cabchat_wait" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> Строитель принимает правку…</div>');
+    var rr=await jpost('/x/rebuild',{session_id:a.session_id, change:act.args.message});
+    window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_wait')<0;});
+    var wr=el('cabchat_wait'); if(wr) wr.remove();
+    if(!rr||rr.status!=='success'){ _cabPush(_cabA('Строитель не взял правку: '+esc((rr&&rr.message)||''))); return; }
+    _cabPush(_cabA('🔧 Решение записано: «'+esc(rr.decision||'')+'». Пересобираю стадию «'+esc(rr.stage_title||rr.stage_id||'')+'»'+(rr.paused_for_build?' (процесс на паузе до конца стройки)':'')+' — обычно 1–3 мин…'));
+    _cabPush('<div id="cabchat_build" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> стройка идёт…</div>');
+    var bid=rr.build_id, t0=Date.now();
+    (function pollB(){
+      jget('/x/build_progress?build_id='+encodeURIComponent(bid)).then(function(p){
+        var pr=(p&&p.progress)||{};
+        if(pr.status==='running' && Date.now()-t0<8*60*1000){ setTimeout(pollB,4000); return; }
+        window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_build')<0;});
+        var wb=el('cabchat_build'); if(wb) wb.remove();
+        if(pr.status==='error'){
+          var errStage=(pr.stages||[]).filter(function(s){return s.status==='error';})[0]||{};
+          _cabPush(_cabA('Стройка упала на «'+esc(errStage.title||'')+'»: '+esc((errStage.error||'')).slice(0,140)+'. Настройки процесса не тронуты — прежняя версия работает.'));
+          return;
+        }
+        _cabPush(_cabA('✓ Пересобрано. Решение в сессии, прежние версии — в истории сборок.'+
+          ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="wzCabTab(\'overview\');runProcess(_wzCabI)">▶ Пробный прогон</button>'+
+          '<span style="font-size:11px;color:var(--silver)"> — сравните бриф с прежним (он в «Запуске»)</span>'));
+      });
+    })();
   } else if(act.op==='master'){
     var task=act.args.message;
     closeWzCabinet();
