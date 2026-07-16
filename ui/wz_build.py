@@ -42,6 +42,32 @@ def _audit_experts(names):
     return {"verdict": verdict, "issues": issues}
 
 
+def sample_preflight(session_id):
+    """WZ-07 (ТЗ v2 §9.5): проверка образца ДО стройки. Файловые архетипы без примера данных
+    раньше падали «нет входа для стадии» ПОСЛЕ минут сборки — теперь честный отказ сразу."""
+    _FILE_ARCHETYPES = ("document_processing", "recurring_report", "flow_quality_control")
+    _, sample_file = _inspect_sample(session_id)
+    if sample_file:
+        return {"ok": True, "sample_file": str(sample_file)}
+    arch = ""
+    try:
+        bp = json.loads((SESS_DIR / (session_id + "_blueprint.json")).read_text(encoding="utf-8")).get("blueprint", {})
+        a = bp.get("archetype")
+        arch = str(a.get("id") if isinstance(a, dict) else (a or ""))
+    except Exception:
+        pass
+    src = None
+    try:
+        src = json.loads((SESS_DIR / (session_id + ".json")).read_text(encoding="utf-8")).get("source")
+    except Exception:
+        pass
+    if arch in _FILE_ARCHETYPES and not src:
+        return {"ok": False,
+                "message": "Нет файла-образца данных — стройка упрётся в первую стадию. "
+                           "Приложите пример (вкладка «Файлы») или подключите источник данных."}
+    return {"ok": True, "sample_file": ""}
+
+
 def _inspect_sample(session_id):
     """Реальные колонки загруженного файла-образца для грануднинга кодогена."""
     fdir = SESS_DIR / (session_id + "_files")
@@ -469,8 +495,26 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     except Exception:
         pass
 
-    result = {"status": "success", "summary": summary, "total_count": tc, "total_sum": ts,
+    # WZ-B02 (ТЗ v2 §17): пустой результат при непустом входе — НЕ success.
+    # Легитимное исключение: записи отсеяны правилами владельца (filtered_by_rules).
+    _in_count = None
+    try:
+        _d0 = json.loads((wd / "stage0.json").read_text(encoding="utf-8"))
+        _r0 = _d0 if isinstance(_d0, list) else (_d0.get("records") if isinstance(_d0, dict) else None)
+        _in_count = len(_r0) if isinstance(_r0, list) else None
+    except Exception:
+        pass
+    _status = "success"
+    _reason = ""
+    if _in_count and not tc and not (isinstance(summary, dict) and summary.get("filtered_by_rules")):
+        _status = "needs_review"
+        _reason = ("вход содержит " + str(_in_count) +
+                   " записей, а итоговая сводка пуста — процесс потерял данные, проверьте стадии")
+
+    result = {"status": _status, "summary": summary, "total_count": tc, "total_sum": ts,
               "report_md": str(md), "report_xlsx": str(xlsx), "host": __import__("socket").gethostname()}
+    if _reason:
+        result["needs_review_reason"] = _reason
     # межустройственный слепок последнего прогона в KV — планировщик читает его,
     # т.к. вложенный прогон возвращается отложенным без task_id.
     try:
@@ -669,17 +713,18 @@ def _run_build(session_id, build_id):
                     kp_stage_ids.add(_st.get("id"))
         except Exception:
             pass
-        _KP_KW = ("норм", "кодекс", "статьи", "законодат", "knowledge", "kp_ask", "grounding", "правов", "trud", "grazhd", "nalog")
-
+        # WZ-B03 (ТЗ v2 §16.3): тип knowledge-стадии — ТОЛЬКО из манифеста blueprint
+        # (capability_ids содержит knowledge_grounding). Keyword-эвристика запрещена:
+        # «норм» ловила «нормализованных» и превращала processing-стадию в knowledge.
         def is_kp_task(t):
-            if not kp_pack:
-                return False
-            if t.get("stage_id") in kp_stage_ids:
-                return True
-            blob = (str(t.get("expert_name", "")) + " " + str(t.get("purpose", "")) + " " + str(t.get("title", ""))).lower()
-            return any(k in blob for k in _KP_KW)
+            return bool(kp_pack) and t.get("stage_id") in kp_stage_ids
 
         kp_stage_names = []
+        if kp_pack and not kp_stage_ids:
+            # база объявлена, но НИ ОДНА стадия не помечена knowledge_grounding — манифест неконсистентен;
+            # честно показываем (раньше keyword-эвристика маскировала это, угадывая стадию по словам)
+            stage("kp_manifest", "База " + kp_pack + " объявлена, но стадии-потребители не помечены в blueprint — "
+                  "knowledge-реюз пропущен", "success", warning=True)
         if kp_pack:
             stage("kp_install", "Ставлю базу знаний: " + kp_pack, "running")
             _ki = _kp_install_on(kp_pack, HOST_TARGET)
@@ -786,6 +831,19 @@ def _run_build(session_id, build_id):
         prog["built_experts"] = [n for n in built_names if n]
         stage("audit", "Проверяю процесс перед запуском", "success",
               verdict=aud["verdict"], issues=aud["issues"])
+
+        # WZ-B01 (ТЗ v2 §25): built — ТОЛЬКО по полному обязательному конвейеру.
+        # Любая упавшая/несобранная дата-стадия, сорванный срез или несобранный оркестратор
+        # блокируют built (раньше статус ставился безусловно и маскировал провал стадии).
+        missing = [(t.get("title") or t.get("expert_name") or t.get("id") or "?")
+                   for i, t in enumerate(data_tasks)
+                   if (t.get("expert_name") or (ns + "_" + t.get("id", "t%d" % (i + 1)))) not in built_ok]
+        if missing or not slice_ok or (stage_experts and not orchestrator):
+            prog["status"] = "error"
+            prog["error"] = ("обязательный конвейер не закрыт: не собраны стадии — " + ", ".join(map(str, missing))
+                             if missing else ("оркестратор не собрался" if (stage_experts and not orchestrator)
+                                              else "вертикальный срез не прошёл"))
+            save(); return
 
         prog["status"] = "built"
         save()

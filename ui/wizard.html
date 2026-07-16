@@ -408,7 +408,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <div class="toolbar" style="margin-top:0">
       <button class="btn gold" id="specBtn" onclick="regenerateSpec()">⟳ Обновить ТЗ</button>
       <button class="btn ghost" onclick="askAssistant('Хочу внести изменение в техзадание: ')">💬 Попросить изменение</button>
-      <button class="btn ghost" onclick="gotoStage('test')">Дальше: тест →</button>
+      <button class="btn ghost" onclick="gotoStage('test')">Дальше: стройка →</button>
       <span class="statusline" id="stSpec"></span>
     </div>
     <div class="card" id="specSchemaCard" style="display:none">
@@ -655,6 +655,7 @@ var _I18N_DICT = {
   "Хочу внести изменение в техзадание: ": "I want to make a change to the spec: ",
   "💬 Попросить изменение": "💬 Request a change",
   "Дальше: тест →": "Next: test →",
+  "Дальше: стройка →": "Next: build →",
   "Схема процесса — как это будет работать": "Process diagram — how it will work",
   "Комментарии к ТЗ": "Comments on the spec",
   "Шаг 4 · Стройка": "Step 4 · Build",
@@ -943,6 +944,17 @@ var _I18N_DICT = {
   "Аудит отметил на подтверждение:": "The audit flagged for confirmation:",
   "Запустить процесс?": "Launch the process?",
   "🚀 Процесс запущен": "🚀 Process launched",
+  "✅ Одобрить запуск": "✅ Approve launch",
+  "проверяю и одобряю…": "checking and approving…",
+  "Одобрить запуск процесса?": "Approve the process for launch?",
+  "✅ Процесс одобрен — сделайте первый прогон": "✅ Process approved — do the first run",
+  "✓ Процесс одобрен и готов.": "✓ Process approved and ready.",
+  "Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть реальный результат.": "Components are assembled, the composition is locked. Approval is not a run: do the first run to see the real result.",
+  "▶ Сделать первый прогон": "▶ Do the first run",
+  "прогон идёт…": "run in progress…",
+  "Ошибка прогона:": "Run error:",
+  "✓ Прогон выполнен:": "✓ Run completed:",
+  "Не удалось одобрить:": "Approval failed:",
   "Ошибка:": "Error:",
   "Помощник думает и записывает ответы в проект — это нормально, до ~минуты…": "The assistant is thinking and saving answers to the project — this is normal, up to ~a minute…",
   "Помощник думает и записывает ответы — это нормально, до ~минуты…": "The assistant is thinking and saving answers — this is normal, up to ~a minute…",
@@ -2514,8 +2526,10 @@ function renderLaunch(){
         ${(aud.issues&&aud.issues.length)?`<ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul>`:""}
         ${threadHTML("launch:audit")}
       </div>
-      ${launched ? `<div class="card pack-card"><b>✓ Процесс запущен.</b> Компоненты собраны и одобрены. Для работы 24/7 по расписанию команда Extella один раз настроит машину-исполнитель (Listener) — это последний технический шаг вне вашего пути.</div>`
-        : `<div class="toolbar"><button class="btn gold" id="launchBtn" onclick="doLaunch()" ${v==="escalate"?"disabled":""}>🚀 Запустить процесс</button><span class="statusline" id="stLaunch"></span></div>`}`;
+      ${launched ? `<div class="card pack-card"><b>✓ Процесс одобрен и готов.</b> Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть реальный результат.
+          <div style="margin-top:10px"><button class="btn gold" onclick="doFirstRun()">▶ Сделать первый прогон</button><span class="statusline" id="stFirstRun"></span></div>
+          <div id="firstRunOut" style="margin-top:8px"></div></div>`
+        : `<div class="toolbar"><button class="btn gold" id="launchBtn" onclick="doLaunch()" ${v==="escalate"?"disabled":""}>✅ Одобрить запуск</button><span class="statusline" id="stLaunch"></span></div>`}`;
   }
   // сводка результата прогона (из вертикального среза сборки)
   const sm = lb && lb.slice_summary;
@@ -2553,18 +2567,36 @@ function renderLaunch(){
     ${gate}`;
 }
 async function doLaunch(){
+  // WZ-09/AC-20 (ТЗ v2): одобрение ≠ запуск. Эта кнопка ОДОБРЯЕТ состав; реальный Run — «Первый прогон».
   el("launchBtn").disabled = true;
-  setStatus("stLaunch","<span class='spin'></span>проверяю и запускаю…");
+  setStatus("stLaunch","<span class='spin'></span>проверяю и одобряю…");
   let r = await jpost("/x/deploy",{session_id:S.sessionId});
   if(r.status==="need_confirm"){
-    const msg = (r.issues&&r.issues.length)? "Аудит отметил на подтверждение:\n• "+r.issues.join("\n• ")+"\n\nЗапустить процесс?" : "Запустить процесс?";
+    const msg = (r.issues&&r.issues.length)? "Аудит отметил на подтверждение:\n• "+r.issues.join("\n• ")+"\n\nОдобрить запуск процесса?" : "Одобрить запуск процесса?";
     if(!confirm(msg)){ setStatus("stLaunch",""); el("launchBtn").disabled=false; return; }
     r = await jpost("/x/deploy",{session_id:S.sessionId, confirmed:true});
   }
-  if(r.status!=="success"){ setStatus("stLaunch",""); toast("Не удалось запустить: "+(r.message||""),"err"); el("launchBtn").disabled=false; return; }
+  if(r.status!=="success"){ setStatus("stLaunch",""); toast("Не удалось одобрить: "+(r.message||""),"err"); el("launchBtn").disabled=false; return; }
   setStatus("stLaunch","");
-  toast("🚀 Процесс запущен","ok");
+  toast("✅ Процесс одобрен — сделайте первый прогон","ok");
   await reloadSession(); render();
+}
+async function doFirstRun(){
+  // WZ-09: настоящий Run из мастера — создаёт run-запись в истории, показывает бриф
+  setStatus("stFirstRun","<span class='spin'></span>прогон идёт…");
+  const out = el("firstRunOut");
+  let r; try{ r = await jpost("/x/run_process",{session_id:S.sessionId}); }
+  catch(e){ r = {status:"error", message:String(e)}; }
+  setStatus("stFirstRun","");
+  if(!r || r.status!=="success"){
+    if(out) out.innerHTML = '<span style="color:var(--bad)">Ошибка прогона: '+esc((r&&r.message)||"")+'</span>';
+    return;
+  }
+  const rn = r.run||{};
+  if(out) out.innerHTML = '✓ Прогон выполнен: '+esc((rn.at||"").slice(0,16).replace("T"," "))+
+    (rn.total_count!=null?' · позиций: '+esc(String(rn.total_count)):'')+
+    (rn.status && rn.status!=='success'?' · статус: '+esc(String(rn.status)):'');
+  if(r.digest) showBrief(r.digest, r.findings);
 }
 
 /* ================= chat ================= */
