@@ -58,6 +58,14 @@
 | `goal` | str | flow_save / доводка | описание для карточек |
 | `demo_runs` | list | демо-раннер | исторический артефакт |
 
+
+## Run-record v1 (F3 — единая история исполнения)
+Прогоны пишутся в два хранилища (ручные — `s.runs` мостом; по расписанию — `sched:<sid>.runs` тиком),
+но читаются ТОЛЬКО через `_runs_unified(s, skv)` (мост): dedup по `at[:19]`, нормализация. Контракт записи:
+`{at: ISO, status: success|partial|error|…, trigger: manual|schedule|inbound, …счётчики (findings/total_count/total_sum), digest_source?, flow_id?, report_xlsx?}`.
+Старые записи без `trigger` читаются как `manual`. Дайджест прогона — отдельно в KV `digest:<sid>` (см. KV_REGISTRY).
+Новые читатели истории обязаны использовать `_runs_unified`, не склеивать сами.
+
 ## Сайдкары (та же папка, тот же sid)
 `<sid>_blueprint.json` `{session_id, generated_at, blueprint{process_name, archetype, goal, stages[], …}}` ·
 `<sid>_build_plan.json` · `<sid>_chat.json` (стенограмма Помощника) · `sessions_archive/` (удалённые — архив, не hard-delete).
