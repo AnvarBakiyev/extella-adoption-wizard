@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Extella · Workspace</title>
+<style>
+:root{
+  --paper:#F3EEE3;--paper2:#EEE7D9;--card:#FFFFFF;--card2:#FBF7F0;--inset:#F6F1E8;
+  --ink:#2A2620;--muted:#877B6B;--faint:#B2A68F;--line:#EAE1D0;--line2:#E1D6C1;
+  --orange:#C67A22;--orange2:#B06813;--oink:#FFFFFF;--osoft:#F5E8D6;--tan:#F0E6D5;--tan2:#E7D8C1;
+  --green:#3E9E5E;--amber:#C08A2E;--red:#C25A3C;
+  --grad:linear-gradient(103deg,#6C4FAE 0%,#A87FCE 52%,#DAC1E9 100%);
+  --sans:-apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#221D17;--paper2:#1B1712;--card:#2A241D;--card2:#251F18;--inset:#231D16;
+  --ink:#EFE6D5;--muted:#B1A48D;--faint:#7C7160;--line:#352E24;--line2:#41382B;
+  --orange:#E29B46;--orange2:#EEB162;--oink:#241809;--osoft:rgba(226,155,70,.14);--tan:#332B20;--tan2:#3E3427;
+  --green:#5CB979;--amber:#DBA548;--red:#DE7454;
+  --grad:linear-gradient(103deg,#4A3A78 0%,#6E56A6 58%,#8C70B6 100%);
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1060px;margin:0 auto;padding:0 0 90px}
+.hide{display:none!important}
+.mut{color:var(--muted)}.tiny{font-size:12px;color:var(--muted)}
+button{font-family:var(--sans)}
+.btn{font-size:13.5px;font-weight:650;padding:10px 16px;border-radius:10px;border:1px solid transparent;background:var(--orange);color:var(--oink);cursor:pointer}
+.btn:hover{filter:brightness(1.05)}
+.btn.tan{background:var(--tan);color:var(--ink)}.btn.tan:hover{background:var(--tan2);filter:none}
+.btn.sm{padding:7px 12px;font-size:12.5px}
+.btn.danger{background:transparent;border-color:var(--line2);color:var(--red)}
+.btn:disabled{opacity:.5;cursor:default}
+.field{width:100%;background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-family:var(--sans);font-size:14px;color:var(--ink)}
+.field:focus{outline:none;border-color:var(--orange)}
+textarea.field{resize:vertical;min-height:84px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 22px rgba(60,45,25,.07);padding:22px 24px;margin:0 24px 16px}
+.badge{font-size:11px;font-weight:650;padding:3px 10px;border-radius:20px;background:var(--tan);color:var(--muted);white-space:nowrap}
+.badge.ok{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+.badge.wk{background:var(--osoft);color:var(--orange2)}
+.badge.you{background:color-mix(in srgb,var(--amber) 16%,transparent);color:var(--amber)}
+.badge.q{background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red)}
+.nchip{width:25px;height:25px;flex:0 0 auto;border-radius:50%;background:var(--tan);color:var(--orange);display:grid;place-items:center;font-weight:700;font-size:12.5px}
+.chip{display:inline-block;font-size:12.5px;padding:6px 12px;border-radius:22px;border:1px solid var(--line2);background:var(--card);color:var(--ink);cursor:pointer;user-select:none;margin:0 6px 6px 0}
+.chip:hover{border-color:var(--orange);color:var(--orange)}
+.chip.on{background:var(--orange);border-color:var(--orange);color:var(--oink);font-weight:600}
+.meter{height:7px;border-radius:8px;background:var(--inset);overflow:hidden;margin:10px 0 8px}
+.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--orange),#E8B36A);border-radius:8px}
+.row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row .meta{margin-left:auto;font-size:12px;color:var(--muted)}
+.sechead{font-size:13px;font-weight:700;margin:18px 0 10px;display:flex;align-items:baseline;gap:9px}
+.sechead .c{font-size:11.5px;color:var(--faint);font-weight:600}
+.toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:11px 18px;border-radius:12px;font-size:13.5px;max-width:78%;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.inf{display:inline-block;vertical-align:middle;line-height:0}
+.inf svg{display:block}
+.inf .tr{fill:none;stroke:var(--tan2);stroke-width:7;stroke-linecap:round;opacity:.55}
+.inf .run{fill:none;stroke:url(#infg);stroke-width:7;stroke-linecap:round;stroke-dasharray:46 154;animation:infrun 1.5s linear infinite}
+@keyframes infrun{to{stroke-dashoffset:-200}}
+.inf-center{display:flex;flex-direction:column;align-items:center;gap:14px;padding:64px 0;color:var(--muted);font-size:14px}
+@media (prefers-reduced-motion:reduce){.inf .run{animation:none;stroke-dasharray:none}}
+/* header */
+.top{background:var(--grad);color:#fff;padding:18px 26px;display:flex;align-items:center;gap:14px}
+.top h1{margin:0;font-size:20px;font-weight:700;letter-spacing:-.01em}
+.top .st{font-size:12px;opacity:.92;margin-top:3px;display:flex;gap:8px;align-items:center}
+.top .dot{width:8px;height:8px;border-radius:50%;background:#7CF0A0;box-shadow:0 0 8px #7CF0A0}
+.top .back{background:rgba(255,255,255,.15);border:0;color:#fff;border-radius:8px;padding:8px 13px;font-size:13px;font-weight:600;cursor:pointer}
+.top .back:hover{background:rgba(255,255,255,.24)}
+.top .sp{margin-left:auto}
+/* tabs */
+.tabbar{display:flex;gap:4px;padding:10px 26px 0;background:var(--paper);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabbar button{font-size:14px;font-weight:600;color:var(--muted);padding:9px 15px;border-radius:10px 10px 0 0;border:1px solid transparent;border-bottom:0;background:transparent;cursor:pointer;position:relative;top:1px}
+.tabbar button.on{color:var(--orange);background:var(--card);border-color:var(--line);border-bottom-color:var(--card)}
+.tabbar button .b{font-size:10.5px;background:var(--orange);color:var(--oink);border-radius:20px;padding:0 6px;font-weight:700;margin-left:5px}
+/* list cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;padding:0 24px}
+.wcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;cursor:pointer;position:relative;box-shadow:0 1px 2px rgba(60,45,25,.05)}
+.wcard:hover{box-shadow:0 8px 24px rgba(60,45,25,.10)}
+.wcard h3{margin:0 0 4px;font-size:15.5px}
+.wcard .del{position:absolute;top:10px;right:10px;border:0;background:transparent;color:var(--faint);cursor:pointer;font-size:14px}
+.wcard .del:hover{color:var(--red)}
+.new{border:1.5px dashed var(--line2);background:transparent;border-radius:14px;padding:16px;cursor:pointer;color:var(--muted);display:flex;flex-direction:column;gap:5px}
+.new:hover{border-color:var(--orange);color:var(--orange)}
+/* digest */
+.digest{background:var(--osoft);border:1px solid var(--tan2);border-radius:12px;padding:13px 16px;margin-bottom:16px;font-size:13.5px}
+/* dock */
+.dock{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--paper) 90%,transparent);backdrop-filter:blur(12px);border-top:1px solid var(--line);padding:12px 0;z-index:50}
+.dock .in{max-width:1060px;margin:0 auto;padding:0 24px;display:flex;gap:10px;align-items:center}
+.dock form{flex:1;display:flex;gap:9px;align-items:center;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:4px 4px 4px 14px}
+.dock form:focus-within{border-color:var(--orange)}
+.dock input{flex:1;min-width:0;background:transparent;border:0;color:var(--ink);font-size:13.5px;padding:8px 0}
+.dock input:focus{outline:none}
+.dock .send{width:36px;height:36px;border-radius:9px;border:0;background:var(--orange);color:var(--oink);font-size:15px;cursor:pointer}
+/* preview card (write/doc gate) */
+.gate{border:1px solid var(--tan2);background:var(--card2);border-radius:12px;padding:14px 16px;margin-top:12px}
+.gate pre{white-space:pre-wrap;font-family:var(--sans);font-size:13px;background:var(--inset);border:1px solid var(--line);border-radius:9px;padding:10px 12px;max-height:260px;overflow:auto;margin:10px 0}
+.gate table{border-collapse:collapse;width:100%;font-size:12px;margin:10px 0}
+.gate th,.gate td{border:1px solid var(--line);padding:5px 8px;text-align:left}
+.gate th{background:var(--inset)}
+/* picker */
+.pick{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--inset)}
+.pick .pi{padding:8px 12px;border-top:1px solid var(--line);cursor:pointer;font-size:13.5px;display:flex;gap:8px}
+.pick .pi:first-child{border-top:0}
+.pick .pi:hover{background:var(--tan)}
+.q{border:1px solid var(--line);border-radius:12px;padding:14px 15px;margin-bottom:11px;background:var(--card)}
+.fact{display:inline-flex;align-items:baseline;gap:8px;padding:6px 10px;background:var(--inset);border:1px solid var(--line);border-radius:9px;margin:0 6px 6px 0;font-size:13px}
+.fact .k{color:var(--muted);font-size:12px}
+.fact .ed{cursor:pointer;color:var(--faint)}.fact .ed:hover{color:var(--orange)}
+.goalline{display:flex;align-items:center;gap:10px}
+.goalline .ic{border:0;background:transparent;color:var(--faint);cursor:pointer;font-size:13px}
+.goalline .ic:hover{color:var(--orange)}
+.tk{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.tk:first-child{border-top:0}
+.tk .ck{width:19px;height:19px;flex:0 0 auto;border-radius:6px;border:2px solid var(--line2);cursor:pointer;position:relative}
+.tk.done .ck{background:var(--green);border-color:var(--green);cursor:default}
+.tk.done .ck::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.tk.done .tt{color:var(--muted)}
+.tk .who{margin-left:auto}
+h2.pt{margin:0 0 4px;font-size:21px;font-weight:700}
+.lane{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin:16px 0 4px;display:flex;gap:8px;align-items:center}
+.lane .l{flex:1;height:1px;background:var(--line)}
+@media (max-width:700px){.panel{margin:0 12px 14px;padding:16px}.cards{padding:0 12px}.top{padding:14px 14px}.tabbar{padding:8px 14px 0}.dock .in{padding:0 12px}}
+</style></head><body>
+<div class="wrap" id="app">
+
+  <!-- ============ HEADER ============ -->
+  <div class="top" id="hdr">
+    <button class="back hide" id="backBtn" onclick="showList()">‹ Все воркспейсы</button>
+    <div>
+      <h1 id="hTitle">Твои воркспейсы</h1>
+      <div class="st" id="hSub">каждый — рабочая среда: компьютер понял проект и настроился</div>
+    </div>
+    <div class="sp"></div>
+  </div>
+
+  <!-- ============ LIST ============ -->
+  <div id="vList">
+    <div style="padding:18px 24px 12px;display:flex;gap:10px;align-items:center">
+      <button class="btn" onclick="showNew()">＋ Новый проект</button>
+      <span class="tiny">🔒 приватно: понимание — только по именам файлов</span>
+    </div>
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <!-- ============ NEW PROJECT ============ -->
+  <div id="vNew" class="hide">
+    <div class="panel">
+      <h2 class="pt">Новый проект</h2>
+      <p class="mut" style="margin:0 0 14px">Расскажи, что за проект — любым способом.</p>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <span class="chip on" data-mode="folder" onclick="newMode('folder',this)">📁 Из папки</span>
+        <span class="chip" data-mode="words" onclick="newMode('words',this)">✍️ Словами</span>
+        <span class="chip" data-mode="files" onclick="newMode('files',this)">📎 Файлами</span>
+      </div>
+
+      <div id="nmFolder">
+        <div class="tiny" style="margin-bottom:8px">Выбери папку проекта: <b id="pickPath"></b></div>
+        <div class="pick" id="pickList"></div>
+        <div style="display:flex;gap:9px;margin-top:12px">
+          <button class="btn" id="btnUnderstand" onclick="doUnderstand()">Понять проект →</button>
+          <span class="tiny" id="undSpin"></span>
+        </div>
+        <div id="undBox" class="hide" style="margin-top:16px">
+          <div class="digest" id="undText"></div>
+          <div id="undMulti" class="hide" style="margin-bottom:10px"></div>
+          <div class="tiny" style="margin-bottom:6px">Похожие цели (выбери или напиши свою):</div>
+          <div id="undCands"></div>
+          <input class="field" id="undIntent" placeholder="Своя цель / ответ на вопрос — одной фразой" style="margin-top:8px">
+          <button class="btn" style="margin-top:10px" onclick="doBuild('folder')">Собрать воркспейс</button>
+        </div>
+      </div>
+
+      <div id="nmWords" class="hide">
+        <textarea class="field" id="wordsIntent" placeholder="Например: веду переговоры по аренде офиса — собрать документы, согласовать договор с юристом, подписать до конца месяца"></textarea>
+        <input class="field" id="wordsName" placeholder="Короткое имя проекта (необязательно)" style="margin-top:8px">
+        <button class="btn" style="margin-top:10px" onclick="doBuild('words')">Создать проект</button>
+      </div>
+
+      <div id="nmFiles" class="hide">
+        <input type="file" id="filePick" multiple style="margin:4px 0 10px">
+        <div class="tiny" style="margin-bottom:8px">Файлы сохранятся в «Прикреплённые» и станут источниками проекта.</div>
+        <input class="field" id="filesIntent" placeholder="Что с ними сделать? (например: проверь вложения и сведи цифры)">
+        <button class="btn" style="margin-top:10px" onclick="doBuild('files')">Создать проект</button>
+      </div>
+
+      <div id="buildWait" class="hide" style="margin-top:14px;display:flex;align-items:center;gap:10px"><span id="buildInf"></span> <span id="buildMsg">Собираю воркспейс — понимаю проект…</span></div>
+      <div style="margin-top:14px"><button class="btn tan sm" onclick="showList()">Отмена</button></div>
+    </div>
+  </div>
+
+  <!-- ============ COCKPIT ============ -->
+  <div id="vWs" class="hide">
+    <div class="tabbar" id="tabs">
+      <button class="on" data-t="over" onclick="tab('over')">📊 Обзор <span class="b hide" id="bQ"></span></button>
+      <button data-t="task" onclick="tab('task')">✅ Задачи</button>
+      <button data-t="mat" onclick="tab('mat')">📁 Материалы</button>
+      <button data-t="set" onclick="tab('set')">⚙️ Настройки</button>
+    </div>
+
+    <div style="padding:18px 0 0">
+      <!-- ОБЗОР -->
+      <div id="tOver">
+        <div class="panel">
+          <div id="digestBox" class="digest hide"></div>
+          <div class="sechead">Цели <span class="c" id="goalsC"></span><span style="margin-left:auto"><button class="btn tan sm" onclick="goalAdd()">＋ цель</button></span></div>
+          <div id="goals"></div>
+          <div class="digest" style="margin-top:14px"><b>Что дальше:</b> <span id="nextTxt">—</span></div>
+          <div class="sechead">Воркспейс спрашивает <span class="c" id="qC"></span></div>
+          <div id="quests"><div class="tiny">вопросов нет</div></div>
+        </div>
+      </div>
+
+      <!-- ЗАДАЧИ -->
+      <div id="tTask" class="hide">
+        <div class="panel">
+          <div class="sechead">Задачи <span class="c">клик по чекбоксу = сделано</span></div>
+          <div id="tasks"></div>
+          <div class="sechead">Журнал</div>
+          <div id="ledger" class="tiny"></div>
+        </div>
+      </div>
+
+      <!-- МАТЕРИАЛЫ -->
+      <div id="tMat" class="hide">
+        <div class="panel">
+          <div class="sechead">Источники <span class="c" id="srcC"></span>
+            <span style="margin-left:auto;display:flex;gap:8px">
+              <button class="btn tan sm" onclick="syncSrc()">↻ Подхватить новые</button>
+              <label class="btn tan sm" style="cursor:pointer">📎 Добавить файлы<input type="file" multiple style="display:none" onchange="addFiles(this)"></label>
+            </span></div>
+          <div id="sources"></div>
+          <div class="sechead">Что я знаю <span class="c">факты · правятся</span></div>
+          <div class="tiny" style="margin-bottom:6px">Про тебя (везде):</div><div id="factsMe"></div>
+          <div class="tiny" style="margin:10px 0 6px">Про проект:</div><div id="factsWs"></div>
+        </div>
+      </div>
+
+      <!-- НАСТРОЙКИ -->
+      <div id="tSet" class="hide">
+        <div class="panel">
+          <div class="sechead">Пак способностей</div>
+          <div id="pack" class="tiny"></div>
+          <div class="sechead">Выращенные способности <span class="c">система вырастила их сама — под твоим «разрешаю»</span></div>
+          <div id="capList" class="tiny">—</div>
+          <div class="sechead">Автопилот</div>
+          <div class="row" style="border:0;padding-top:0">
+            <span>Делает задачи сам, останавливается где нужен ты</span>
+            <span style="margin-left:auto;display:flex;gap:8px">
+              <button class="btn tan sm" id="apToggle" onclick="apToggle()">…</button>
+              <button class="btn sm" id="apRunBtn" onclick="apRun()">▶ Запустить</button>
+            </span>
+          </div>
+          <div id="apLog" class="tiny hide" style="font-family:var(--mono);white-space:pre-wrap;background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:6px"></div>
+          <div class="sechead">Не сканируется (приватность)</div>
+          <div id="exclList" class="tiny"></div>
+          <div class="sechead" style="color:var(--red)">Опасная зона</div>
+          <button class="btn danger sm" onclick="delWs()">Удалить воркспейс</button>
+          <span class="tiny"> — файлы не тронутся, уйдёт только рабочая среда</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CHAT DOCK ============ -->
+<div class="dock hide" id="dock">
+  <div class="in">
+    <form onsubmit="chatSend();return false">
+      <input id="chatIn" placeholder="Скажи, что сделать… «собери реестр», «запиши в таблицу», «подготовь черновик письма…»">
+      <button class="send" type="submit">↑</button>
+    </form>
+  </div>
+</div>
+
+<script>
+var WS=null, WSID=null, PICK='', SEL=[], toastT=null;
+var INF_PATH='M25,25 C25,11 43,11 50,25 C57,39 75,39 75,25 C75,11 57,11 50,25 C43,39 25,39 25,25 Z';
+function INF(w){w=w||56;return '<span class="inf" style="width:'+w+'px"><svg viewBox="0 0 100 50" width="'+w+'" height="'+(w/2)+'">'+
+ '<defs><linearGradient id="infg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--orange)"/><stop offset="1" stop-color="#E8B36A"/></linearGradient></defs>'+
+ '<path class="tr" d="'+INF_PATH+'" pathLength="200"/><path class="run" d="'+INF_PATH+'" pathLength="200"/></svg></span>'}
+function INFC(msg){return '<div class="inf-center">'+INF(84)+'<div>'+msg+'</div></div>'}
+function $(id){return document.getElementById(id)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function toast(m,long){m=String(m==null?'':m).trim();if(!m)m='готово';var t=document.querySelector('.toast');if(t)t.remove();var d=document.createElement('div');d.className='toast';d.textContent=m;document.body.appendChild(d);clearTimeout(toastT);toastT=setTimeout(function(){d.remove()},long?9000:4500)}
+async function api(path,body){var r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});return r.json()}
+async function ws(params,wait){return api('/ws',{params:params,wait:wait||180})}
+
+/* ============ HEALTH (сторож тулбара ждёт etb_ui_health в первые 12с) ============ */
+var _healthSent=false;
+function etbHealth(ok,error){
+  if(_healthSent)return;_healthSent=true;
+  try{
+    if(window.parent&&window.parent!==window){
+      var msg={type:'etb_ui_health',ok:!!ok};if(error)msg.error=String(error);
+      window.parent.postMessage(msg,'*');
+    }
+  }catch(e){}
+}
+window.addEventListener('error',function(e){etbHealth(false,(e&&e.message)||'script error')});
+
+/* ============ LIST ============ */
+async function showList(){
+  $('vNew').classList.add('hide');$('vWs').classList.add('hide');$('dock').classList.add('hide');$('backBtn').classList.add('hide');
+  $('vList').classList.remove('hide');$('hTitle').textContent='Твои воркспейсы';$('hSub').textContent='каждый — рабочая среда: компьютер понял проект и настроился';
+  $('cards').innerHTML=INFC('Загружаю воркспейсы…');
+  var d=await ws({op:'list'});var idx=d.workspaces||[];
+  var h='';
+  idx.forEach(function(e){
+    h+='<div class="wcard" onclick="openWs(\''+e.ws_id+'\')"><button class="del" onclick="event.stopPropagation();delFromList(\''+e.ws_id+'\',\''+esc(e.name)+'\')">🗑</button>'+
+       '<h3>'+esc(e.name)+'</h3><div class="tiny">'+esc((e.folder||'').split('/').slice(-2).join('/')||(e.kind==='curated'?'контуры':'из описания'))+'</div>'+
+       (e.blockers?'<div style="margin-top:8px"><span class="badge q">'+e.blockers+' блокера</span></div>':'')+'</div>';
+  });
+  $('cards').innerHTML=h||'<div class="tiny" style="padding:20px">пока пусто — создай первый проект</div>';
+}
+async function delFromList(id,name){
+  if(!confirm('Удалить воркспейс «'+name+'»? Файлы не тронутся — уйдёт только рабочая среда.'))return;
+  var d=await ws({op:'delete',ws_id:id});toast('✓ Удалён · осталось: '+(d.remaining!=null?d.remaining:'—'));showList();
+}
+
+/* ============ NEW ============ */
+function showNew(){$('vList').classList.add('hide');$('vNew').classList.remove('hide');$('backBtn').classList.remove('hide');
+  $('hTitle').textContent='Новый проект';$('hSub').textContent='папкой · словами · файлами';newMode('folder',document.querySelector('[data-mode=folder]'));browseTo('')}
+function newMode(m,el){document.querySelectorAll('[data-mode]').forEach(function(c){c.classList.remove('on')});el.classList.add('on');
+  $('nmFolder').classList.toggle('hide',m!=='folder');$('nmWords').classList.toggle('hide',m!=='words');$('nmFiles').classList.toggle('hide',m!=='files')}
+async function browseTo(p){var d=await api('/browse',{path:p});PICK=d.path;$('pickPath').textContent=PICK;
+  var h='';if(d.parent)h+='<div class="pi" onclick="browseTo(\''+esc(d.parent)+'\')">⬑ вверх</div>';
+  (d.dirs||[]).forEach(function(n){h+='<div class="pi" onclick="browseTo(\''+esc(d.path+'/'+n)+'\')">📁 '+esc(n)+'</div>'});
+  h+='<div class="pi" style="color:var(--orange);font-weight:600" onclick="void(0)">✓ выбрана: '+esc(PICK.split('/').pop())+' ('+(d.files_count||0)+' файлов)</div>';
+  $('pickList').innerHTML=h}
+async function doUnderstand(){
+  $('undSpin').innerHTML=INF(44)+' понимаю проект (~30с, только имена файлов)…';$('btnUnderstand').disabled=true;
+  var d=await ws({op:'understand',folder:PICK},240);
+  $('undSpin').textContent='';$('btnUnderstand').disabled=false;
+  if(d.status!=='success'){toast(d.message||'не получилось');return}
+  $('undBox').classList.remove('hide');
+  $('undText').innerHTML='<b>Понял:</b> '+esc(d.understood)+'<br><b>Вопрос:</b> '+esc(d.question||'');
+  if(d.multi_project){$('undMulti').classList.remove('hide');
+    $('undMulti').innerHTML='<span class="badge q">несколько проектов</span> '+ (d.projects||[]).map(function(p){return '<span class="chip" onclick="$(\'undIntent\').value=\'собери воркспейс по проекту: '+esc(p.name)+'\'">'+esc(p.name)+'</span>'}).join('')+
+      ' <span class="chip" onclick="$(\'undIntent\').value=\'сначала приберись в папке\'">🧹 сначала прибраться</span>';
+  } else {$('undMulti').classList.add('hide')}
+  $('undCands').innerHTML=(d.candidates||[]).map(function(c){return '<span class="chip" onclick="$(\'undIntent\').value=this.textContent">'+esc(c.intent)+'</span>'}).join('')||'<span class="tiny">—</span>';
+}
+async function doBuild(mode){
+  var params={op:'build'};
+  if(mode==='folder'){params.folder=PICK;params.intent=$('undIntent').value||''}
+  if(mode==='words'){params.intent=$('wordsIntent').value.trim();params.name=$('wordsName').value.trim();if(!params.intent){toast('опиши проект словами');return}}
+  if(mode==='files'){
+    var inp=$('filePick');if(!inp.files.length){toast('выбери файлы');return}
+    $('buildWait').classList.remove('hide');$('buildInf').innerHTML=INF(48);$('buildMsg').textContent='Сохраняю файлы…';
+    var paths=[];
+    for(var i=0;i<inp.files.length;i++){var f=inp.files[i];var b64=await new Promise(function(res){var r=new FileReader();r.onload=function(){res(r.result.split(',')[1])};r.readAsDataURL(f)});
+      var u=await api('/upload',{folder:'',filename:f.name,b64:b64});if(u.path)paths.push(u.path)}
+    params.files=JSON.stringify(paths);params.intent=$('filesIntent').value||'';
+  }
+  $('buildWait').classList.remove('hide');$('buildInf').innerHTML=INF(48);$('buildMsg').textContent='Собираю воркспейс — понимаю проект, строю цели и план (~40с)…';
+  var d=await ws(params,300);
+  $('buildWait').classList.add('hide');
+  if(d.status!=='success'){toast(d.message||'не собралось — повтори',1);return}
+  toast('✓ Воркспейс собран');openWs(d.workspace.ws_id,true);
+}
+
+/* ============ COCKPIT ============ */
+async function openWs(id,fresh){
+  WSID=id;$('vList').classList.add('hide');$('vNew').classList.add('hide');$('vWs').classList.remove('hide');
+  $('dock').classList.remove('hide');$('backBtn').classList.remove('hide');
+  $('tOver').querySelector('.panel').insertAdjacentHTML('afterbegin','<div id="wsLoad">'+INFC('Открываю проект…')+'</div>');
+  var d=await ws({op:'get',ws_id:id});
+  var _wl=$('wsLoad');if(_wl)_wl.remove();
+  if(d.status!=='success'){toast('воркспейс не найден');showList();return}
+  WS=d.workspace;renderHead();renderAll();
+  if(!fresh){ // живой проект: дайджест + подхват новых файлов
+    ws({op:'digest',ws_id:id}).then(function(g){if(g.status==='success')renderDigest(g)});
+    ws({op:'sync_sources',ws_id:id}).then(function(s){if(s.new_count){toast('↻ подхватил новых файлов: '+s.new_count);refresh()}});
+  }
+}
+async function refresh(){var d=await ws({op:'get',ws_id:WSID});if(d.status==='success'){WS=d.workspace;renderHead();renderAll()}}
+function renderHead(){
+  $('hTitle').textContent=WS.name||'Воркспейс';
+  var t=WS.project_type?(' · '+WS.project_type.name):'';
+  $('hSub').innerHTML='<span class="dot"></span>'+esc((WS.understood||'').slice(0,90))+esc(t);
+}
+function renderDigest(g){
+  var parts=[];
+  if((g.actions||[]).length)parts.push('<b>Пока тебя не было:</b> '+g.actions.map(function(a){return esc(a.action)}).join(' · '));
+  if(g.new_files_count)parts.push('новых файлов: '+g.new_files_count);
+  if(g.questions_open)parts.push('вопросов ждёт: '+g.questions_open);
+  if(parts.length){$('digestBox').classList.remove('hide');$('digestBox').innerHTML=parts.join(' — ')}
+}
+function tab(t){document.querySelectorAll('#tabs button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});
+  $('tOver').classList.toggle('hide',t!=='over');$('tTask').classList.toggle('hide',t!=='task');
+  $('tMat').classList.toggle('hide',t!=='mat');$('tSet').classList.toggle('hide',t!=='set')}
+function renderAll(){
+  // цели
+  var gs=WS.goals||[];$('goalsC').textContent=gs.length;
+  $('goals').innerHTML=gs.map(function(g,i){return '<div style="padding:12px 0;border-top:'+(i?'1px solid var(--line)':'0')+'">'+
+    '<div class="goalline"><span class="nchip">'+(i+1)+'</span><b style="flex:1">'+esc(g.title)+'</b>'+
+    '<span class="badge">'+esc(g.tool||'')+'</span><b>'+(g.progress||0)+'%</b>'+
+    '<button class="ic" title="переименовать" onclick="goalEdit('+i+')">✎</button><button class="ic" title="удалить" onclick="goalDel('+i+')">🗑</button></div>'+
+    (g.outcome?'<div class="tiny" style="margin:4px 0 0 35px">→ '+esc(g.outcome)+'</div>':'')+
+    '<div class="meter" style="margin-left:35px"><i style="width:'+(g.progress||0)+'%"></i></div></div>'}).join('')||'<div class="tiny">целей нет — добавь</div>';
+  $('nextTxt').textContent=(WS.state&&WS.state.next)||'—';
+  // результаты-файлы (манифест записей)
+  var wr=WS.writes||[];var rb=$('results');
+  if(!rb){rb=document.createElement('div');rb.id='results';$('goals').parentNode.insertBefore(rb,$('goals').nextSibling)}
+  rb.innerHTML=wr.length?('<div class="sechead">Файлы-результаты <span class="c">'+wr.length+'</span></div>'+wr.slice(-6).reverse().map(function(w){
+    var nm=(w.path||'').split('/').pop();
+    return '<div class="row"><span>📄 '+esc(nm)+'</span><span style="margin-left:auto;display:flex;gap:7px">'+
+      '<button class="btn tan sm" onclick="reveal(\''+esc(w.path)+'\',\'file\')">Открыть</button>'+
+      '<button class="btn tan sm" onclick="reveal(\''+esc(w.path)+'\',\'folder\')">В папке</button></span></div>'}).join('')):'';
+  // вопросы
+  var qs=(WS.questions||[]).filter(function(q){return q.status!=='answered'});
+  $('qC').textContent=qs.length;$('bQ').textContent=qs.length;$('bQ').classList.toggle('hide',!qs.length);
+  $('quests').innerHTML=qs.map(function(q){
+    var chips=(q.candidates||[]).map(function(c){return '<span class="chip" onclick="this.classList.toggle(\'on\')">'+esc(c)+'</span>'}).join('');
+    return '<div class="q" data-key="'+esc(q.key)+'" data-scope="'+esc(q.scope||'workspace')+'">'+
+      '<div style="font-weight:600;margin-bottom:8px">'+esc(q.question)+'</div>'+
+      (chips?'<div>'+chips+'</div>':'')+
+      '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'+
+      '<input class="field" style="flex:1;min-width:140px" placeholder="или свой ответ">'+
+      '<label class="btn tan sm" style="cursor:pointer">📎 файлом<input type="file" style="display:none" onchange="answerFile(this)"></label>'+
+      '<button class="btn sm" onclick="answerQ(this)">Ответить</button></div></div>'}).join('')||'<div class="tiny">вопросов нет — всё ясно</div>';
+  // задачи
+  var tks=WS.tasks||[];var lanes={doing:'В работе',todo:'Дальше',done:'Готово'};var h='';
+  ['doing','todo','done'].forEach(function(st){
+    var arr=tks.filter(function(t){return (t.status||'todo')===st});if(!arr.length)return;
+    h+='<div class="lane">'+lanes[st]+' · '+arr.length+'<span class="l"></span></div>';
+    arr.forEach(function(t){
+      var who=t.kind==='capability'?'<span class="badge wk">я делаю</span>':(t.kind==='question'?'<span class="badge q">вопрос</span>':'<span class="badge you">за тобой</span>');
+      h+='<div class="tk '+(st==='done'?'done':'')+'"><span class="ck" onclick="taskDone(\''+t.id+'\','+(st==='done')+')"></span><span class="tt">'+esc(t.title)+'</span><span class="who">'+who+'</span></div>'});
+  });
+  $('tasks').innerHTML=h||'<div class="tiny">задач нет</div>';
+  $('ledger').innerHTML=(WS.ledger||[]).slice(-8).reverse().map(function(e){return '• '+esc(e.action)+(e.detail?' — '+esc(e.detail):'')}).join('<br>')||'—';
+  // материалы
+  $('srcC').textContent=(WS.sources_total!=null?WS.sources_total:(WS.sources||[]).length)+' файлов';
+  $('sources').innerHTML=(WS.sources||[]).slice(0,30).map(function(s){return '<div class="row"><span>'+esc(s.name)+'</span><span class="meta">'+esc(s.ext||'')+'</span></div>'}).join('')||'<div class="tiny">источников нет</div>';
+  ws({op:'get_me'}).then(function(m){$('factsMe').innerHTML=factChips(m.facts||{},'me')});
+  $('factsWs').innerHTML=factChips(WS.facts||{},'workspace');
+  // настройки
+  $('pack').textContent=((WS.pack&&WS.pack.name)||'')+': '+(((WS.pack&&WS.pack.capabilities)||[]).join(' · ')||'—');
+  $('apToggle').textContent=(WS.autopilot&&WS.autopilot.enabled)?'Выключить дежурство':'Включить дежурство';
+  renderCaps();
+  $('exclList').textContent=((WS.scope_exclude||[]).join(', ')||'стандартный набор (паспорта, пароли, ключи)');
+}
+function factChips(f,scope){var h='';Object.keys(f).forEach(function(k){h+='<span class="fact"><span class="k">'+esc(k)+'</span><b>'+esc(String(f[k]).slice(0,40))+'</b><span class="ed" onclick="factEdit(\''+esc(k)+'\',\''+scope+'\')">✎</span></span>'});return h||'<span class="tiny">—</span>'}
+
+/* actions */
+async function goalAdd(){var v=prompt('Новая цель:');if(!v)return;var d=await ws({op:'set_goal',ws_id:WSID,n:'new',value:v});if(d.status==='success'){WS=d.workspace;renderAll();toast('✓ цель добавлена')}}
+async function goalEdit(i){var v=prompt('Название цели:',WS.goals[i].title);if(!v)return;var d=await ws({op:'set_goal',ws_id:WSID,n:String(i),value:v});if(d.status==='success'){WS=d.workspace;renderAll()}}
+async function goalDel(i){if(!confirm('Удалить цель «'+WS.goals[i].title+'» вместе с её задачами?'))return;var d=await ws({op:'set_goal',ws_id:WSID,n:String(i)});if(d.status==='success'){WS=d.workspace;renderAll()}}
+async function taskDone(id,already){if(already)return;var d=await ws({op:'set_task',ws_id:WSID,key:id,value:'done'});if(d.status==='success'){WS=d.workspace;renderAll();toast('✓ задача закрыта · дальше: '+((WS.state&&WS.state.next)||'—'))}}
+async function factEdit(k,scope){var v=prompt('Значение «'+k+'»:');if(v==null)return;var d=await ws({op:'set_fact',ws_id:WSID,key:k,value:v,scope:scope});if(d.status==='success'){refresh();toast('✓ запомнил')}}
+async function answerQ(btn){
+  var box=btn.closest('.q');var key=box.dataset.key,scope=box.dataset.scope;
+  var sel=[].map.call(box.querySelectorAll('.chip.on'),function(c){return c.textContent}).join(', ');
+  var txt=box.querySelector('input.field').value.trim();
+  var val=[sel,txt].filter(Boolean).join(', ');if(!val){toast('выбери вариант или напиши ответ');return}
+  if(key&&key.indexOf('cap_')===0){ // предложение способности: отрицание главнее; движок сам различает «разрешаю»/«не надо»/непонятное
+    btn.disabled=true;btn.textContent='…';
+    try{
+      var vlow=val.toLowerCase();
+      if(vlow.indexOf('не надо')>=0||/(^|[\s,])(не|нет)([\s,]|$)/.test(vlow)){
+        var dd=await ws({op:'cap_dismiss',ws_id:WSID});toast(dd.note||'убрано');refresh();return}
+      if(vlow.indexOf('разреш')>=0||vlow.indexOf('подтвержда')>=0){
+        var dc=await ws({op:'cap_apply',ws_id:WSID,apply:true,key:key},120);
+        if(dc.status==='success'){capAfterGrow(dc)}else{toast(dc.message||'не получилось',1)}return}
+      toast('не понял — скажи «разрешаю» или «не надо»',1);return;
+    }catch(e){toast('сервер не ответил — повтори',1);return}
+    finally{btn.disabled=false;btn.textContent='Ответить'}
+  }
+  var d=await ws({op:'set_fact',ws_id:WSID,key:key,value:val,scope:scope});
+  if(d.status==='success'){toast(d.advanced?('✓ запомнил · закрыл задачу «'+d.advanced+'»'):'✓ запомнил');refresh()}
+}
+async function answerFile(inp){
+  var box=inp.closest('.q');var key=box.dataset.key,scope=box.dataset.scope;var f=inp.files[0];if(!f)return;
+  var b64=await new Promise(function(res){var r=new FileReader();r.onload=function(){res(r.result.split(',')[1])};r.readAsDataURL(f)});
+  var u=await api('/upload',{folder:WS.folder||'',filename:f.name,b64:b64});
+  if(!u.path){toast('не удалось сохранить файл');return}
+  var d=await ws({op:'set_fact',ws_id:WSID,key:key,scope:scope,files:JSON.stringify([u.path])});
+  if(d.status==='success'){toast('✓ файл принят как ответ и источник');refresh()}
+}
+async function addFiles(inp){
+  for(var i=0;i<inp.files.length;i++){var f=inp.files[i];
+    var b64=await new Promise(function(res){var r=new FileReader();r.onload=function(){res(r.result.split(',')[1])};r.readAsDataURL(f)});
+    var u=await api('/upload',{folder:WS.folder||'',filename:f.name,b64:b64});
+    if(u.path)await ws({op:'add_files',ws_id:WSID,files:JSON.stringify([u.path])});}
+  toast('✓ материалы добавлены');refresh();
+}
+async function reveal(p,mode){var d=await api('/reveal',{path:p,mode:mode});if(d.status!=='success')toast(d.message||'файл не найден')}
+async function syncSrc(){var d=await ws({op:'sync_sources',ws_id:WSID});toast(d.new_count?('↻ подхватил: '+d.new_count):'новых файлов нет');refresh()}
+async function apToggle(){var en=!(WS.autopilot&&WS.autopilot.enabled);var d=await ws({op:'set_autopilot',ws_id:WSID,enabled:en});if(d.status==='success'){WS=d.workspace;renderAll();toast(en?'✓ дежурство включено':'дежурство выключено')}}
+var AP_IV=null;
+function apRunDone(){var b=$('apRunBtn');if(b){b.disabled=false;b.textContent='▶ Запустить'}}
+async function apRun(){
+  if(!(WS.autopilot&&WS.autopilot.enabled)){toast('сначала включи дежурство');return}
+  var b=$('apRunBtn');if(b.disabled)return;
+  b.disabled=true;b.innerHTML=INF(30)+' работает…';
+  $('apLog').classList.remove('hide');$('apLog').innerHTML='▶ Запускаю автопилот — ход будет виден здесь…';
+  var st=await api('/autopilot',{ws_id:WSID});
+  if(st.status!=='success'){toast(st.message||'не удалось запустить автопилот',1);apRunDone();return}
+  toast(st.already?'Автопилот уже работает — показываю его журнал':'✓ Автопилот запущен — работает сам, ход ниже',1);
+  var id=WSID,n=0;clearInterval(AP_IV);
+  AP_IV=setInterval(async function(){
+    n++;
+    if(WSID!==id){clearInterval(AP_IV);apRunDone();return}
+    var l=await api('/autopilot_log',{ws_id:id});
+    var lines=l.lines||[];
+    $('apLog').innerHTML=esc(lines.join('\n'))+(l.running?'\n'+INF(30):'');
+    if(!l.running||n>200){
+      clearInterval(AP_IV);apRunDone();
+      var last=lines.filter(function(s){return s.trim()}).pop()||'автопилот завершил прогон';
+      toast('🤖 '+last.slice(0,140),1);refresh();
+    }
+  },2500);
+}
+async function delWs(){if(!confirm('Удалить воркспейс «'+WS.name+'»? Файлы не тронутся.'))return;await ws({op:'delete',ws_id:WSID});toast('✓ удалён');showList()}
+
+/* ============ CHAT ============ */
+async function chatSend(){
+  var inp=$('chatIn');var text=inp.value.trim();if(!text)return;inp.value='';
+  toast('⏳ '+text.slice(0,60)+'…',1);
+  var d=await ws({op:'run_capability',ws_id:WSID,capability:text},300);
+  if(d.status==='error'){toast(d.message||'ошибка',1);return}
+  if(d.clarify){toast('❓ воркспейс уточняет — смотри «Воркспейс спрашивает»',1);refresh();tab('over');return}
+  if(d.kind==='write_preview'||d.kind==='doc_preview'){showGate(d);return}
+  if(d.kind==='written'||d.kind==='doc_written'){toast('✓ '+(d.note||'записано'),1);refresh();return}
+  if(d.kind==='registry'){showRegistry(d);return}
+  if(d.kind==='tax_check'){showTax(d);return}
+  if(d.kind==='cap_preview'){showCap(d);refresh();return}
+  if(d.kind==='cap_added'){toast('🧠 '+(d.note||'способность выращена'),1);refresh();return}
+  if(d.kind==='cap_run'){toast('⚙️ '+(d.note||'способность отработала'),1);
+    if(d.advanced)setTimeout(function(){toast('✓ закрыл задачу «'+d.advanced+'» · дальше: '+(d.task_next||'—'),1)},1800);refresh();return}
+  if(d.queued){ // способность не распознана → настоящий разговор с воркспейсом
+    var c=await ws({op:'chat',ws_id:WSID,value:text},240);
+    if(c.kind==='chat'){showChat(text,c);return}
+    toast((c.message||d.note||'готово'),1);return;
+  }
+  toast((d.note||'готово'),1);
+  if(d.advanced)setTimeout(function(){toast('✓ закрыл задачу «'+d.advanced+'» · дальше: '+(d.task_next||'—'),1)},1600);
+  refresh();
+}
+function gateBox(){var g=$('gateBox');if(!g){g=document.createElement('div');g.id='gateBox';$('tOver').querySelector('.panel').prepend(g)}return g}
+function showGate(d){
+  tab('over');var g=gateBox();
+  var body='';
+  if(d.kind==='write_preview'){
+    body='<table><tr><th>Актив</th><th>Класс</th><th>Сумма</th><th>Вал.</th></tr>'+(d.rows||[]).slice(0,12).map(function(r){return '<tr><td>'+esc(r.asset)+'</td><td>'+esc(r.class)+'</td><td>'+esc(r.amount)+'</td><td>'+esc(r.currency)+'</td></tr>'}).join('')+'</table>'+
+      ((d.rows||[]).length>12?'<div class="tiny">…и ещё '+((d.rows||[]).length-12)+'</div>':'');
+  } else { body='<pre>'+esc(d.body||'')+'</pre>'; }
+  g.innerHTML='<div class="gate"><b>'+(d.kind==='write_preview'?'Превью записи реестра':'Черновик: '+esc(d.title||''))+'</b>'+
+    '<div class="tiny" style="margin:4px 0">'+esc(d.note||'')+'</div>'+body+
+    '<div style="display:flex;gap:9px"><button class="btn sm" onclick="gateConfirm()">✓ Подтвердить и записать</button>'+
+    '<button class="btn tan sm" onclick="$(\'gateBox\').innerHTML=\'\'">Отмена</button></div></div>';
+}
+async function gateConfirm(){
+  $('gateBox').innerHTML='<div class="gate" style="display:flex;align-items:center;gap:10px">'+INF(44)+' записываю…</div>';
+  try{
+    var d=await ws({op:'run_capability',ws_id:WSID,capability:'запиши, подтверждаю',apply:true},240);
+    if(d.kind==='written'||d.kind==='doc_written'){toast('✓ '+(d.note||'записано'),1);refresh()}else{toast(d.message||d.note||'не записалось',1)}
+  }catch(e){toast('сервер не ответил — файл мог не записаться, проверь папку Extella и повтори',1)}
+  finally{$('gateBox').innerHTML=''}
+}
+function showRegistry(d){
+  tab('over');var g=gateBox();
+  g.innerHTML='<div class="gate"><b>Реестр собран · '+(d.rows||[]).length+' позиций</b><div class="tiny" style="margin:4px 0">'+esc(d.note||'')+'</div>'+
+    '<table><tr><th>Актив</th><th>Класс</th><th>Сумма</th><th>Вал.</th><th>Инстр.</th></tr>'+(d.rows||[]).slice(0,15).map(function(r){return '<tr><td>'+esc(r.asset)+'</td><td>'+esc(r.class)+'</td><td>'+esc(r.amount)+'</td><td>'+esc(r.currency)+'</td><td>'+esc(r.instrument)+'</td></tr>'}).join('')+'</table>'+
+    '<button class="btn sm" onclick="chatQuick(\'запиши реестр в таблицу\')">📊 Записать в таблицу</button></div>';
+  if(d.advanced)toast('✓ закрыл задачу «'+d.advanced+'»');
+  refresh();
+}
+function chatQuick(t){$('chatIn').value=t;chatSend()}
+var CAPSLUG='',CAPSHA='';
+function showCap(d){
+  tab('over');var g=gateBox();CAPSLUG=d.slug||'';CAPSHA=d.sha||'';
+  g.innerHTML='<div class="gate"><div style="font-weight:700">🧠 Новая способность: '+esc(d.cap_name||'')+'</div>'+
+    '<div style="margin:6px 0">'+esc(d.what||'')+'</div>'+
+    '<div class="tiny">читает: '+esc(d.reads||'—')+' · пишет: '+esc(d.writes||'только KV')+' · сеть: '+esc((d.network||[]).join(', ')||'нет')+'</div>'+
+    '<details style="margin:8px 0"><summary class="tiny" style="cursor:pointer">показать код</summary>'+
+    '<pre class="tiny" style="overflow:auto;max-height:260px;background:var(--inset);padding:10px;border-radius:8px">'+esc(d.code||'')+'</pre></details>'+
+    '<div class="tiny" style="margin:4px 0 8px">Код написала сама система. Ничего не запускается без твоего слова.</div>'+
+    '<div style="display:flex;gap:9px"><button class="btn sm" onclick="capApply()">✓ Разрешаю — учись</button>'+
+    '<button class="btn tan sm" onclick="capDismiss()">Не надо</button></div></div>';
+}
+async function capAfterGrow(d){ // ПОСЛЕ «разрешаю»: способность одобрена → сразу один прогон → показать результат
+  toast('🧠 '+(d.note||'способность выращена'),1);
+  var cap=d.cap||{};
+  if(!cap.expert_name){ // нет данных для прогона — старое поведение
+    if(WS&&WS.autopilot&&WS.autopilot.enabled){setTimeout(function(){tab('set');apRun()},1200)}
+    refresh();return;
+  }
+  tab('over');var g=gateBox();
+  g.innerHTML='<div class="gate" style="display:flex;align-items:center;gap:10px">'+INF(44)+' проверяю «'+esc(cap.cap_name||'')+'» на твоих данных…</div>';
+  var r;try{r=await api('/cap_sanity',{expert_name:cap.expert_name,ws_id:WSID});}catch(e){r={status:'error',message:'сервер не ответил'}}
+  showSanity(cap,r);refresh();
+}
+var SANITY_CAP=null;
+function showSanity(cap,r){
+  tab('over');var g=gateBox();SANITY_CAP=cap||{};   // храним cap в переменной — не встраиваем имя в onclick (апостроф ломал кнопку)
+  var ok=r&&r.status==='success';
+  var body=ok?('<div style="margin:6px 0;padding:10px 12px;border-radius:10px;background:var(--osoft);border:1px solid var(--tan2)">'+
+      '<div class="tiny" style="font-weight:700;margin-bottom:3px">🔍 Что выдала способность</div>'+
+      '<div style="white-space:pre-wrap">'+esc(r.note||'')+'</div></div>'+
+      '<div class="tiny" style="margin:6px 0 8px">Смотри на числа. Верно — оставь. Похоже на ошибку — разучись, и способность удалится.</div>')
+    :('<div style="margin:6px 0;color:var(--red)">⚠️ Прогон не удался: '+esc((r&&r.message)||'')+'</div>'+
+      '<div class="tiny" style="margin:0 0 8px">Способность не отработала — лучше разучиться.</div>');
+  g.innerHTML='<div class="gate"><div style="font-weight:700">✓ Способность «'+esc(cap.cap_name||'')+'» одобрена</div>'+body+
+    '<div style="display:flex;gap:9px"><button class="btn sm" onclick="sanityKeep()">Оставить</button>'+
+    '<button class="btn danger sm" onclick="sanityForget()">Разучиться</button></div></div>';
+}
+function sanityForget(){var c=SANITY_CAP||{};capForget(c.slug||'',c.cap_name||'')}
+function sanityKeep(){
+  gateBox().innerHTML='';toast('✓ оставил',1);
+  if(WS&&WS.autopilot&&WS.autopilot.enabled){setTimeout(function(){tab('set');apRun();toast('▶ продолжаю план автопилотом…',1)},800)}
+}
+async function capApply(){
+  var g=gateBox();g.innerHTML='<div class="gate" style="display:flex;align-items:center;gap:10px">'+INF(44)+' регистрирую способность…</div>';
+  try{
+    var d=await ws({op:'cap_apply',ws_id:WSID,apply:true,key:('cap_'+CAPSLUG),n:CAPSHA},120);
+    g.innerHTML='';
+    if(d.status==='success'){capAfterGrow(d)}else{toast(d.message||'не получилось',1);refresh()}
+  }catch(e){
+    g.innerHTML='<div class="gate">Не удалось связаться с сервером — способность могла не зарегистрироваться. '+
+      '<div style="margin-top:8px"><button class="btn sm" onclick="capApply()">Повторить</button> '+
+      '<button class="btn tan sm" onclick="gateBox().innerHTML=\'\'">Закрыть</button></div></div>';
+  }
+}
+async function capDismiss(){try{var d=await ws({op:'cap_dismiss',ws_id:WSID});toast(d.note||'убрано')}catch(e){toast('сервер не ответил — повтори',1)}gateBox().innerHTML='';refresh()}
+async function renderCaps(){
+  var el=$('capList');if(!el)return;
+  try{
+    var d=await ws({op:'cap_list',ws_id:WSID},60);
+    var h=(d.caps||[]).map(function(c){
+      return '<div class="row"><span>🧠 <b>'+esc(c.cap_name)+'</b> <span class="mut">· сеть: '+esc((c.network||[]).join(', ')||'нет')+' · '+esc((c.at||'').slice(0,10))+'</span></span>'+
+        '<span class="meta"><button class="btn danger sm" onclick="capForget(\''+esc(c.slug)+'\',\''+esc(c.cap_name)+'\')">разучиться</button></span></div>'}).join('');
+    if(d.pending)h+='<div class="row"><span>⏳ <b>'+esc(d.pending.cap_name)+'</b> <span class="mut">— ждёт твоего «разрешаю» (вопрос в Обзоре)</span></span></div>';
+    el.innerHTML=h||'пока нет — воркспейс предложит новую, когда упрётся в задачу, которую не умеет (или скажи «научись: …»)';
+  }catch(e){el.textContent='не загрузились — обнови'}
+}
+async function capForget(slug,name){
+  if(!confirm('Разучиться «'+name+'»? Задачи она больше выполнять не будет (вырастить заново — «научись: …»).'))return;
+  var d=await ws({op:'cap_forget',ws_id:WSID,key:slug});
+  toast(d.status==='success'?('✓ '+(d.note||'разучился')):(d.message||'не получилось'),1);
+  gateBox().innerHTML='';
+  if(d.status==='success'&&d.workspace){WS=d.workspace;renderAll()}else{renderCaps()}
+}
+function showChat(q,c){
+  tab('over');var g=gateBox();
+  g.innerHTML='<div class="gate"><div class="tiny" style="margin-bottom:6px">Ты: '+esc(q)+'</div>'+
+    '<div style="white-space:pre-wrap">'+esc(c.answer||'')+'</div>'+
+    (c.suggested_action?('<div style="margin-top:10px"><button class="btn sm" onclick="chatQuick(\''+esc(c.suggested_action)+'\')">▶ '+esc(c.suggested_action)+'</button></div>'):'')+
+    '</div>';
+}
+function showTax(d){
+  tab('over');var g=gateBox();
+  var miss=(d.missing_in_declaration||[]);
+  g.innerHTML='<div class="gate"><b>Сверка с декларацией: '+esc(d.declaration||'')+'</b>'+
+    '<div class="tiny" style="margin:6px 0">'+esc(d.note||'')+'</div>'+
+    (miss.length?('<div style="font-weight:600;margin:8px 0 4px;color:var(--red)">Не найдено в декларации:</div>'+
+      '<table><tr><th>Актив</th><th>Сумма</th></tr>'+miss.map(function(m){return '<tr><td>'+esc(m.asset)+'</td><td>'+esc(m.amount)+' '+esc(m.currency||'')+'</td></tr>'}).join('')+'</table>'):'<div class="tiny">расхождений нет 🎉</div>')+
+    ((d.covered||[]).length?'<div class="tiny" style="margin-top:6px">Покрыто: '+d.covered.map(esc).join(', ')+'</div>':'')+
+    '<div class="tiny" style="margin-top:8px">Это сверка данных, не налоговая консультация — решение по допке за тобой и бухгалтером.</div></div>';
+  if(d.advanced)toast('✓ закрыл задачу «'+d.advanced+'»');
+  refresh();
+}
+
+showList().then(function(){etbHealth(true)}).catch(function(e){etbHealth(false,(e&&e.message)||'init failed')});
+</script>
+</body></html>
