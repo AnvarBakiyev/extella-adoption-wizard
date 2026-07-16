@@ -853,6 +853,9 @@ var _I18N_DICT = {
   "Диагностика технической проблемы": "Diagnosing a technical problem",
   "Загрузка ядра…": "Loading the core…",
   "отраслевые надстройки: ": "industry add-ons: ",
+  "— выберите отрасль —": "— choose an industry —",
+  "отрасль не определена — выберите вручную": "industry not detected — choose manually",
+  "Отрасль процесса не определяется автоматически (в плане нет явного домена) — выберите её из списка, и библиотека покажет отраслевой чек-лист, таксономию и регуляторику. Без выбора демо-прогон идёт на базовом чек-листе из 9 критериев.": "The process industry is not detected automatically (the plan has no explicit domain) — choose it from the list, and the library will show the industry checklist, taxonomy and regulations. Without a choice, the demo run uses the base checklist of 9 criteria.",
   "работает во всех отраслях как есть": "works across all industries as is",
   "процессных модулей": "process modules",
   "критериев-заготовок в ядре": "template criteria in the core",
@@ -2222,7 +2225,8 @@ async function renderProcessCore(){
 /* ================= отраслевая библиотека (синтетический посев) ================= */
 async function renderLibraryPanel(){
   const host = el("libraryPanel"); if(!host) return;
-  if(!S.libIndustry) S.libIndustry = "airline";
+  // WZ-05 (ТЗ v2 §25): НЕ автовыбирать отрасль (дефолт airline показывался финансовому кейсу).
+  // Пока blueprint не несёт явный domain id, уверенность низкая → отрасль выбирает пользователь.
   // список отраслей из манифеста (один раз)
   if(!S.libManifest){
     try{ const m = await jget("/x/library"); S.libManifest = (m && m.manifest) || {industries:[]}; }
@@ -2231,9 +2235,12 @@ async function renderLibraryPanel(){
   const inds = (S.libManifest.industries)||[];
   // данные выбранной отрасли
   let d = null;
-  try{ d = await jget("/x/library?industry="+encodeURIComponent(S.libIndustry)); }catch(e){ d = null; }
+  if(S.libIndustry){
+    try{ d = await jget("/x/library?industry="+encodeURIComponent(S.libIndustry)); }catch(e){ d = null; }
+  }
   S.libData = d;
-  const opts = inds.map(it=>`<option value="${esc(it.id)}" ${it.id===S.libIndustry?"selected":""}>${esc(it.title)}${it.available?"":" — не засеяна"}</option>`).join("");
+  const opts = (S.libIndustry?"":`<option value="" selected>— выберите отрасль —</option>`)
+    + inds.map(it=>`<option value="${esc(it.id)}" ${it.id===S.libIndustry?"selected":""}>${esc(it.title)}${it.available?"":" — не засеяна"}</option>`).join("");
   const head = `
     <div class="kicker" style="margin-top:26px">Отраслевая библиотека</div>
     <div class="card">
@@ -2241,10 +2248,21 @@ async function renderLibraryPanel(){
         <label style="font-size:12px;color:var(--nav)">Отрасль
           <select id="libIndustry" class="sess-select" style="max-width:200px;margin-left:6px"
             onchange="S.libIndustry=this.value; renderLibraryPanel();">${opts}</select></label>
-        ${d&&d.available?`<span class="badge ok">библиотека засеяна · ${esc(d.validated_on||"")}</span>
+        ${!S.libIndustry?`<span class="badge warn">отрасль не определена — выберите вручную</span>`
+          :d&&d.available?`<span class="badge ok">библиотека засеяна · ${esc(d.validated_on||"")}</span>
           ${d.reuse_from_core_pct?`<span class="badge">переиспользование ядра ${d.reuse_from_core_pct}%</span>`:""}`
           :`<span class="badge warn">библиотека ещё не засеяна</span>`}
       </div>`;
+  if(!S.libIndustry){
+    host.innerHTML = head + `
+      <div style="font-size:13.5px;color:var(--silver);margin-top:10px">
+        Отрасль процесса не определяется автоматически (в плане нет явного домена) — выберите её из списка,
+        и библиотека покажет отраслевой чек-лист, таксономию и регуляторику. Без выбора демо-прогон идёт
+        на базовом чек-листе из 9 критериев.
+      </div></div>`;
+    renderDemoRunner();
+    return;
+  }
   if(!d || !d.available){
     host.innerHTML = head + `
       <div style="font-size:13.5px;color:var(--silver);margin-top:10px">
@@ -2343,7 +2361,7 @@ function renderDemoRunner(){
 async function startDemo(){
   if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
   const r = await jpost("/x/demo_run",{session_id:S.sessionId,
-    industry:(S.libIndustry||"airline"),
+    industry:(S.libIndustry||""),   // WZ-05: отрасль не выбрана → базовый чек-лист, не навязанный airline
     n_dialogues:parseInt(el("demoN").value),
     sample_n:parseInt(el("demoSample").value)});
   if(r.status!=="success"){ toast("Не удалось запустить: "+(r.message||""), "err"); return; }
