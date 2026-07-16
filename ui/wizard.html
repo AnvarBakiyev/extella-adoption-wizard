@@ -1174,6 +1174,23 @@ var _I18N_DICT = {
   "Этапы процесса": "Process stages",
   "▶ Собрать сейчас": "▶ Run now",
   "⚙ Изменить словами": "⚙ Change in words",
+  "Скажи, что поменять: «шли ещё на email» · «поставь еженедельно» · «добавь колонку…»": "Say what to change: \"also send to email\" · \"make it weekly\" · \"add a column…\"",
+  "разбираю…": "thinking…",
+  "Отменено.": "Cancelled.",
+  "Это правка логики — пересоберу композицию на месте (карточка и расписание сохранятся).": "This changes the logic — I'll rebuild the composition in place (card and schedule are kept).",
+  "Это изменение шагов процесса": "This changes the process steps",
+  "Это правка логики процесса": "This changes the process logic",
+  " — такие правки делает Строитель с записью решения в сессию.": " — such changes are made by the Builder with the decision recorded in the session.",
+  "Пересобрать": "Rebuild",
+  "Открыть в Мастере": "Open in Wizard",
+  "Применить": "Apply",
+  "Отмена": "Cancel",
+  "✓ Шаблон сообщения обновлён": "✓ Message template updated",
+  "✓ Расписание снято": "✓ Schedule removed",
+  "⏸ На паузе": "⏸ Paused",
+  "▶ Возобновлено": "▶ Resumed",
+  "Задание Строителю набрано — отправьте сообщение Помощнику": "The Builder task is drafted — send the message to the Assistant",
+  "⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: построенный процесс исполняет свой код. Чтобы правило заработало — пересборка через Мастера/Строителя (напишите правку в чат внизу — он направит).": "⚠ Saved, but they DO NOT affect runs yet: the built process executes its own code. To make a rule take effect, rebuild via the Wizard/Builder (type the change into the chat below — it will route you).",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
   "— имя,": "— name,",
   "— позиций,": "— items,",
@@ -2775,7 +2792,98 @@ function _wzCabRender(){
       '</div>'+
     '</div>'+
     '<div style="display:flex;gap:4px;padding:10px 20px;border-bottom:1px solid var(--cream-dark);background:var(--paper)">'+tabBar+'</div>'+
-    '<div style="flex:1;overflow-y:auto;padding:22px 26px" id="wz_cab_body">'+_wzCabBody(a)+'</div>';
+    '<div style="flex:1;overflow-y:auto;padding:22px 26px" id="wz_cab_body">'+_wzCabBody(a)+'</div>'+
+    // C4: чат автоматизации — док-бар на всех вкладках (единое окно допиливания, CABINET_TZ §5.1)
+    '<div id="wz_cab_chatdock" style="flex-shrink:0;border-top:1px solid var(--cream-dark);background:var(--paper);padding:10px 22px 12px">'+
+      '<div id="cabchat_thread" style="max-height:170px;overflow-y:auto"></div>'+
+      '<div style="display:flex;gap:8px;margin-top:6px">'+
+        '<input id="cabchat_in" class="sess-select" style="flex:1;max-width:none" placeholder="Скажи, что поменять: «шли ещё на email» · «поставь еженедельно» · «добавь колонку…»" onkeydown="if(event.key===\'Enter\')cabChat()">'+
+        '<button class="btn gold sm" onclick="cabChat()">Отправить</button></div></div>';
+  _cabChatRestore();
+}
+// ── C4: чат автоматизации — классификация глубины и маршрутизация с подтверждением ──
+window._cabChat={sid:null, items:[]};
+function _cabChatRestore(){
+  var a=AUTOS[_wzCabI]; if(!a) return;
+  if(window._cabChat.sid!==a.session_id) window._cabChat={sid:a.session_id, items:[]};
+  var th=el('cabchat_thread'); if(th){ th.innerHTML=window._cabChat.items.join(''); th.scrollTop=th.scrollHeight; }
+}
+function _cabPush(html){
+  window._cabChat.items.push(html);
+  if(window._cabChat.items.length>30) window._cabChat.items=window._cabChat.items.slice(-30);
+  var th=el('cabchat_thread'); if(th){ th.innerHTML=window._cabChat.items.join(''); th.scrollTop=th.scrollHeight; }
+}
+function _cabU(t){ return '<div style="text-align:right;margin:5px 0"><span style="display:inline-block;background:var(--gold-bg,#f3e6d5);color:#7a4a12;border-radius:11px 11px 2px 11px;padding:5px 10px;font-size:12.5px;max-width:78%">'+esc(t)+'</span></div>'; }
+function _cabA(t){ return '<div style="margin:5px 0"><span style="display:inline-block;background:var(--cream);border:1px solid var(--cream-dark);border-radius:11px 11px 11px 2px;padding:5px 10px;font-size:12.5px;max-width:82%">'+t+'</span></div>'; }
+function _cabBtns(applyLabel){
+  return ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="cabApply()">'+esc(applyLabel)+'</button>'+
+         ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>';
+}
+async function cabChat(){
+  var a=AUTOS[_wzCabI]; if(!a) return;
+  var inp=el('cabchat_in'); var msg=(inp&&inp.value||'').trim(); if(!msg) return;
+  inp.value='';
+  _cabPush(_cabU(msg));
+  _cabPush('<div id="cabchat_wait" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> разбираю…</div>');
+  var r=await jpost('/x/cab_chat',{session_id:a.session_id, message:msg});
+  var w=el('cabchat_wait'); if(w) w.remove();
+  window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_wait')<0;});
+  if(!r||r.status!=='success'){ _cabPush(_cabA('Не разобрал: '+esc((r&&r.message)||'попробуйте иначе'))); return; }
+  if(r.depth==='light' && r.op!=='other'){
+    window._cabAct={op:r.op, args:r.args, msg:msg};
+    _cabPush(_cabA(esc(r.summary||'Сделаю.')+_cabBtns('Применить')));
+  } else if(a.flow_id){
+    window._cabAct={op:'compose', args:{message:msg}};
+    _cabPush(_cabA('Это правка логики — пересоберу композицию на месте (карточка и расписание сохранятся).'+_cabBtns('Пересобрать')));
+  } else {
+    window._cabAct={op:'master', args:{message:msg}};
+    _cabPush(_cabA((r.depth==='strong'?'Это изменение шагов процесса':'Это правка логики процесса')+' — такие правки делает Строитель с записью решения в сессию.'+_cabBtns('Открыть в Мастере')));
+  }
+}
+function cabCancel(){ window._cabAct=null; _cabPush(_cabA('Отменено.')); }
+async function cabApply(){
+  var a=AUTOS[_wzCabI]; var act=window._cabAct; if(!a||!act) return;
+  window._cabAct=null;
+  var MAP={'Каждый час':60,'Ежедневно':1440,'Еженедельно':10080,'Ежемесячно':43200};
+  if(act.op==='recipients'){
+    var r=await jpost('/x/recipients',{session_id:a.session_id, recipients:act.args.recipients||[]});
+    if(r&&r.status==='success'){ a.recipients=act.args.recipients||[]; _cabPush(_cabA('✓ Получатели: '+(a.recipients.join(', ')||'никого'))); _wzCabRender(); }
+    else _cabPush(_cabA('Ошибка: '+esc((r&&r.message)||'')));
+  } else if(act.op==='schedule'){
+    var p=act.args.period||'';
+    var r2=await jpost('/x/schedule',{session_id:a.session_id, period:p, interval_min:MAP[p]||0});
+    if(r2&&r2.status==='success'){ a.schedule=p?{period:p,interval_min:MAP[p]}:null; _cabPush(_cabA(p?('✓ Расписание: '+esc(p)):'✓ Расписание снято')); _wzCabRender(); }
+    else _cabPush(_cabA('Ошибка: '+esc((r2&&r2.message)||'')));
+  } else if(act.op==='template'){
+    var r3=await jpost('/x/message_template',{session_id:a.session_id, template:act.args.template||''});
+    if(r3&&r3.status==='success'){ a.message_template=act.args.template||''; _cabPush(_cabA('✓ Шаблон сообщения обновлён')); }
+    else _cabPush(_cabA('Ошибка: '+esc((r3&&r3.message)||'')));
+  } else if(act.op==='pause'||act.op==='resume'){
+    var r4=await jpost('/x/pause',{session_id:a.session_id, paused:act.op==='pause'});
+    if(r4&&r4.status==='success'){ a.paused=(act.op==='pause'); _cabPush(_cabA(a.paused?'⏸ На паузе':'▶ Возобновлено')); _wzCabRender(); }
+    else _cabPush(_cabA('Ошибка: '+esc((r4&&r4.message)||'')));
+  } else if(act.op==='compose'){
+    _cabPush('<div id="cabchat_wait" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> пересобираю… (до 2 мин)</div>');
+    var r5=await jpost('/x/compose_chat',{flow_id:a.flow_id, session_id:a.session_id, message:act.args.message});
+    window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_wait')<0;});
+    var w5=el('cabchat_wait'); if(w5) w5.remove();
+    if(r5&&r5.status==='success'){
+      var card=r5.card||{};
+      if(card.name){ a.client_name=card.name; a.process_name=card.name; }
+      if(card.description) a.goal=card.description;
+      if(card.components) a.components=card.components;
+      _cabPush(_cabA('✓ '+esc(r5.reply||'Пересобрано.')));
+      _wzCabRender();
+    } else _cabPush(_cabA('Не вышло: '+esc((r5&&(r5.reply||r5.message))||'')));
+  } else if(act.op==='master'){
+    var task=act.args.message;
+    closeWzCabinet();
+    await loadSession(a.session_id);
+    if(!el('chat').classList.contains('open')) toggleChat();
+    var ci=el('chatInput');
+    if(ci){ ci.value='Прошу изменить процесс «'+(a.process_name||a.client_name||'')+'»: '+task+'. Пересобери соответствующую стадию и запиши решение в сессию.'; ci.focus(); }
+    toast('Задание Строителю набрано — отправьте сообщение Помощнику','ok');
+  }
 }
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
@@ -3117,7 +3225,7 @@ function _wzCabRules(a){
   var isFlow = (a.orchestrator==='wz_flow_run');
   var applyNote = isFlow
     ? 'Применяются сразу: при каждом прогоне Qwen собирает бриф, строго соблюдая эти правила.'
-    : 'Сохраняются в проект процесса. Применяются к LLM-шагам процесса; при пересборке через Мастера правила учитываются в постройке.';
+    : '⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: построенный процесс исполняет свой код. Чтобы правило заработало — пересборка через Мастера/Строителя (напишите правку в чат внизу — он направит).';
   var ruleRows = rules.length ? rules.map(function(r,ri){
     return '<div style="display:flex;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:8px 12px;margin-bottom:6px">'+
       '<span style="font-size:14px;flex:1">'+esc(r)+'</span>'+
