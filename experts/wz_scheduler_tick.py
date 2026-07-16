@@ -548,5 +548,47 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
     except Exception:
         pass
 
+    # Мультитаргет T3: heartbeat устройств = периодический ПЕРЕ-ПАСПОРТ (раз в 6 часов).
+    # Свежесть паспорта — сигнал «устройство живо»: протухший паспорт (>48ч) блокирует
+    # прогоны с требованиями к устройству (preflight моста) — не запускаем в никуда.
+    # Устройства: дефолтный листенер (без target) + уникальные target'ы активных расписаний.
+    try:
+        gb = requests.post(base + "/api/kv/get", headers=headers,
+                           json={"key": "target:passports:last_beat"}, timeout=30).json()
+        _hb = str(gb.get("value") or "")
+        _hb_stale = True
+        if _hb:
+            try:
+                from datetime import datetime as _bdt
+                _hb_stale = (now() - _bdt.fromisoformat(_hb.replace("Z", "+00:00"))).total_seconds() > 6 * 3600
+            except Exception:
+                _hb_stale = True
+        if _hb_stale:
+            _tset = [None]
+            try:
+                gi = requests.post(base + "/api/kv/get", headers=headers,
+                                   json={"key": "sched:__index__"}, timeout=30).json()
+                for _sid2 in (json.loads(gi.get("value") or "{}") or {}).get("sids", [])[:20]:
+                    gc = requests.post(base + "/api/kv/get", headers=headers,
+                                       json={"key": "sched:" + str(_sid2)}, timeout=30).json()
+                    _cfg2 = json.loads(gc.get("value") or "{}")
+                    if _cfg2.get("target") and _cfg2["target"] not in _tset:
+                        _tset.append(_cfg2["target"])
+            except Exception:
+                pass
+            for _t in _tset[:6]:
+                bb = {"expert_name": "wz_target_passport", "global": True, "params": {}}
+                if _t:
+                    bb["target"] = _t
+                try:
+                    requests.post(base + "/api/expert/run", headers=headers, json=bb, timeout=30)
+                except Exception:
+                    pass   # устройство молчит → его паспорт протухнет — это и есть сигнал
+            requests.post(base + "/api/kv/set", headers=headers,
+                          json={"key": "target:passports:last_beat", "value": now().isoformat(),
+                                "description": "device heartbeat marker"}, timeout=30)
+    except Exception:
+        pass
+
     return {"status": "success", "checked": checked, "fired": fired,
             "inbound": inbound_fired, "inbound_dbg": _dbg, "tick_at": now().isoformat()}

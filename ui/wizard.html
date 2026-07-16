@@ -3610,6 +3610,15 @@ function _wzCabSettings(a){
      '<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">'+((a.source&&a.source.kind)? esc(_srcName(a.source.kind))+' <span style="color:#2f9e56">✓</span>' : '<span style="color:var(--silver)">файл загружается вручную при запуске</span>')+'</div>'+
      '<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">'+((a.source&&a.source.kind)?'Сменить источник':'Привязать источник')+'</button> '+
      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>');
+  // Мультитаргет T2: требования к устройству — preflight не пустит прогон, если они не выполнены
+  var tr=a.target_requirements||{};
+  var trCard = _wzCard(_wzH('Требования к устройству')+
+     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Проверяются ДО каждого прогона: нет требуемого приложения или устройство молчит — честный отказ, а не падение внутри.</div>'+
+     '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:8px"><input type="checkbox" id="wz_tr_local-'+_wzCabI+'" '+(tr.local_only?'checked':'')+'> данные не покидают устройство (local_only — расписание на хостинге запрещено)</label>'+
+     '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+     '<input id="wz_tr_apps-'+_wzCabI+'" class="sess-select" placeholder="приложения через запятую (напр. 1C, Microsoft Excel)" value="'+esc((tr.apps||[]).join(', '))+'" style="flex:1;min-width:220px;max-width:none">'+
+     '<input id="wz_tr_dev-'+_wzCabI+'" class="sess-select" placeholder="устройство (slug из паспортов)" value="'+esc(tr.device||'')+'" style="flex:0 0 220px;max-width:none">'+
+     '<button class="btn ghost sm" onclick="saveTargetReq('+_wzCabI+')">Сохранить</button></div>');
   var scCard = _wzCard(_wzH('Расписание')+
      '<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">'+((a.schedule&&a.schedule.period)? '<b>'+esc(a.schedule.period)+'</b>' : '<span style="color:var(--silver)">запуск вручную</span>')+'</div>'+
      '<button class="btn ghost sm" onclick="scheduleProcess('+_wzCabI+')">Настроить расписание</button>');
@@ -3635,7 +3644,17 @@ function _wzCabSettings(a){
      '<div style="font:700 12px var(--sans);color:#c0392b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Опасная зона</div>'+
      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Убрать автоматизацию из списка. Уходит в архив (можно вернуть), расписание снимается.</div>'+
      '<button class="btn ghost sm" style="color:#c0392b;border-color:#e0a0a0" onclick="deleteAutomation('+_wzCabI+')">🗑 Удалить автоматизацию</button>');
-  return recipientsCard+srcCard+scCard+deployCard+advCard+verCard+dangerCard;
+  return recipientsCard+srcCard+trCard+scCard+deployCard+advCard+verCard+dangerCard;
+}
+async function saveTargetReq(i){
+  var a=AUTOS[i]; if(!a) return;
+  var apps=((el('wz_tr_apps-'+i)||{}).value||'').split(',').map(function(x){return x.trim();}).filter(Boolean);
+  var body={session_id:a.session_id, apps:apps,
+            local_only:!!(el('wz_tr_local-'+i)||{}).checked,
+            device:((el('wz_tr_dev-'+i)||{}).value||'').trim()};
+  var r=await jpost('/x/target_requirements', body);
+  if(r&&r.status==='success'){ a.target_requirements=r.target_requirements||null; toast('✓ Требования к устройству сохранены','ok'); }
+  else toast('Ошибка: '+((r&&r.message)||''),'err');
 }
 async function rollbackProcess(i){
   var a=AUTOS[i]; if(!a) return;
