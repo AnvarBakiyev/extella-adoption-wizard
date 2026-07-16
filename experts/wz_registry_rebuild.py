@@ -119,7 +119,18 @@ def wz_registry_rebuild(api_token: str = "", api_base: str = "https://api.extell
     except Exception as ex:
         problems.append("composer:catalog: " + str(ex)[:80])
 
-    # 5. локальные модели ЭТОГО устройства (на хостинге ollama нет — молча пропускаем)
+    # 5. CSPL-языки аккаунта (Studio: cspl:registry)
+    try:
+        creg = kv_get_sharded("cspl:registry") or {}
+        for hid, h in (creg.get("handlers") or {}).items():
+            add(hid, "cspl_handler", hid + " v" + str(h.get("version", "?")),
+                h.get("description"), ["chat", "wizard", "composer", "workspace"], "cspl:registry",
+                {"compiles_to": h.get("compiles_to"),
+                 "fixtures_ok": all(f.get("ok") for f in (h.get("fixtures") or []))})
+    except Exception as ex:
+        problems.append("cspl:registry: " + str(ex)[:80])
+
+    # 6. локальные модели ЭТОГО устройства (на хостинге ollama нет — молча пропускаем)
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=4) as f:
             tags = json.loads(f.read().decode("utf-8"))

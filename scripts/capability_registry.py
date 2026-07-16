@@ -141,7 +141,17 @@ def collect(tok):
     except Exception as ex:
         print("  ! composer:catalog:", str(ex)[:100])
 
-    # 5. Локальные модели устройства (ollama)
+    # 5. CSPL-языки (Studio: cspl:registry — свои предметные языки аккаунта)
+    try:
+        creg = kv_get_sharded("cspl:registry") or {}
+        for hid, h in (creg.get("handlers") or {}).items():
+            add(hid, "cspl_handler", hid + " v" + str(h.get("version", "?")),
+                h.get("description"), ["chat", "wizard", "composer", "workspace"], "cspl:registry",
+                {"compiles_to": h.get("compiles_to"), "fixtures_ok": all(f.get("ok") for f in (h.get("fixtures") or []))})
+    except Exception as ex:
+        print("  ! cspl:registry:", str(ex)[:100])
+
+    # 6. Локальные модели устройства (ollama)
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as f:
             tags = json.loads(f.read().decode("utf-8"))
