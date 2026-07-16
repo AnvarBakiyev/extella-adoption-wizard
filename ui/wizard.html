@@ -1191,6 +1191,8 @@ var _I18N_DICT = {
   "Эта сборка может стать паком-продуктом — публикация композиций появится позже.": "This build can become a product pack — publishing compositions is coming later.",
   "Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.": "Publishing a composition as a pack is in development; packs are currently published from Wizard processes.",
   "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
+  "Стройка прервана перезапуском сервиса — прежняя версия работает. Повторите правку.": "The build was interrupted by a service restart — the previous version keeps working. Repeat the change.",
+  "Откат прерван перезапуском сервиса — повторите откат.": "The rollback was interrupted by a service restart — repeat the rollback.",
   "Версии и правки": "Versions & changes",
   "Правок пока не было — процесс в исходной версии.": "No changes yet — the process is in its original version.",
   "↩ Откатить последнюю правку": "↩ Roll back the last change",
@@ -2947,6 +2949,10 @@ async function cabApply(){
           _cabPush(_cabA('Стройка упала на «'+esc(errStage.title||'')+'»: '+esc((errStage.error||'')).slice(0,140)+'. Настройки процесса не тронуты — прежняя версия работает.'));
           return;
         }
+        if(pr.status==='orphaned'){
+          _cabPush(_cabA('Стройка прервана перезапуском сервиса — прежняя версия работает. Повторите правку.'));
+          return;
+        }
         _cabPush(_cabA('✓ Пересобрано. Решение в сессии, прежние версии — в истории сборок.'+
           ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="wzCabTab(\'overview\');runProcess(_wzCabI)">▶ Пробный прогон</button>'+
           '<span style="font-size:11px;color:var(--silver)"> — сравните бриф с прежним (он в «Запуске»)</span>'));
@@ -3324,6 +3330,7 @@ async function rollbackProcess(i){
       window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_build')<0;});
       var wb=el('cabchat_build'); if(wb) wb.remove();
       if(pr.status==='error'){ _cabPush(_cabA('Откат-пересборка упала — прежняя версия продолжает работать.')); return; }
+      if(pr.status==='orphaned'){ _cabPush(_cabA('Откат прерван перезапуском сервиса — повторите откат.')); return; }
       a.can_rollback=false;   // уточнится при следующей загрузке списка
       _cabPush(_cabA('✓ '+esc(r.decision||'Откат готов.')+' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="wzCabTab(\'overview\');runProcess(_wzCabI)">▶ Пробный прогон</button>'));
       _wzCabRender();
