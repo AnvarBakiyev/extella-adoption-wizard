@@ -39,6 +39,7 @@ def wz_session(
     if action == "create":
         sid = "wz_" + datetime.now(timezone.utc).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
         s = {"session_id": sid,
+             "schema": 1,   # F4: версия контракта сессии (docs/SESSION_SCHEMA.md)
              "client_name": client_name or "Без названия",
              "created_at": now(), "updated_at": now(),
              "stage": "interview",

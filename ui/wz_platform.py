@@ -116,3 +116,39 @@ def run_expert(expert_name, params, wait=300, target=None, glob=False):
                 return parse_expert_result(st)
         return {"status": "timeout", "task_id": task_id}
     return parse_expert_result(res)   # СИНХРОННЫЙ результат (task_id пуст)
+
+
+# ── F5 (KV_REGISTRY): дисциплина скоупов KV ─────────────────────────────────────────────
+# Global-семейства ключей (см. docs/KV_REGISTRY.md). Всё остальное — per-account.
+# Урок трёх багов одного класса (Мергуль-500, карточки-тени _mkt_, тест в чужом скоупе):
+# скоуп определяет РЕЕСТР, а не память автора кода.
+KV_GLOBAL_PREFIXES = ("_mkt_", "composer:catalog")
+
+
+def kv_is_global(key):
+    return any(str(key).startswith(p) for p in KV_GLOBAL_PREFIXES)
+
+
+def kv_get(key, timeout=60):
+    """Чтение KV со скоупом из реестра. Возвращает распарсенное значение или None."""
+    payload = {"key": key}
+    if kv_is_global(key):
+        payload["global"] = True
+    r = api("/api/kv/get", payload, timeout=timeout)
+    v = r.get("value") if isinstance(r, dict) else None
+    if not v:
+        return None
+    try:
+        return json.loads(v)
+    except Exception:
+        return v
+
+
+def kv_set(key, value, description="", timeout=60):
+    """Запись KV со скоупом из реестра. value — dict/list (сериализуется) или строка."""
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False)
+    payload = {"key": key, "value": value, "description": description or key}
+    if kv_is_global(key):
+        payload["global"] = True
+    return api("/api/kv/set", payload, timeout=timeout)
