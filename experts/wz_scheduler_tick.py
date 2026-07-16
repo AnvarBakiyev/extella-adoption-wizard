@@ -354,6 +354,15 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             run_params = {"api_token": api_token, "source_file": src}
             if skey:
                 run_params["source_key"] = skey     # резолвер материализует файл из общего стора
+            # F2 (контракт параметров): rules/fields — ТОЛЬКО контрактным оркестраторам
+            # (params_contract пишет /x/schedule из builds; старые процессы упали бы на лишних kwargs)
+            if int(cfg.get("params_contract", 0) or 0) >= 1:
+                # текстовые правила (кодогенным стадиям) + структурные фильтры (оркестратор применяет сам)
+                _rp = list(cfg.get("rules") or []) + [r for r in (cfg.get("rules_struct") or []) if isinstance(r, dict)]
+                if _rp:
+                    run_params["rules_json"] = json.dumps(_rp, ensure_ascii=False)
+                if cfg.get("fields"):
+                    run_params["fields_json"] = json.dumps(cfg["fields"], ensure_ascii=False)
         if tgt:
             run_params["target"] = tgt          # оркестратор пинит свои стадии на то же устройство
         run_body = {"expert_name": orch, "params": run_params, "global": True}
@@ -450,7 +459,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         if isinstance(_fresh, dict):
             # C2: +flow_id/agent_id — иначе write-back тика откатывал бы чат-доводку композиции,
             # сделанную во время прогона (ревью CABINET_TZ: гонка «тик затирает правку владельца»)
-            for _own in ("rules", "fields", "recipients", "deliver", "message_template", "active", "interval_min", "period", "source", "flow_id", "agent_id"):
+            for _own in ("rules", "rules_struct", "fields", "recipients", "deliver", "message_template", "active", "interval_min", "period", "source", "flow_id", "agent_id", "params_contract"):
                 if _own in _fresh:
                     cfg[_own] = _fresh[_own]
             runs = (_fresh.get("runs") or cfg.get("runs") or [])   # прогоны — из свежего (могли дописаться ручным запуском)

@@ -86,7 +86,11 @@ _BUILD_SYS = """Ты — генератор кода СТАДИИ КОНВЕЙЕ
 {"code":"<полный код>", "description":"<англ.: что делает>"}
 
 ЖЁСТКИЙ КОНТРАКТ СТАДИИ (соблюдать точно):
-- Сигнатура РОВНО: def <ИМЯ>(input_path: str = "", output_path: str = "") -> dict. НИКАКИХ других параметров.
+- Сигнатура РОВНО: def <ИМЯ>(input_path: str = "", output_path: str = "", rules_json: str = "", fields_json: str = "") -> dict. НИКАКИХ других параметров.
+- ПРАВИЛА ВЛАДЕЛЬЦА (F2-контракт): rules_json — JSON-список правил словами, fields_json — JSON-словарь полей.
+  Если непусты и НЕ начинаются с "{{" — распарси (json.loads в try) и ПРИМЕНИ релевантные правила к своей работе
+  (фильтры порогов, пометки, доп-колонки, сортировка, что исключить); нерелевантные твоей стадии — игнорируй молча.
+  Пустые/непарсящиеся — работай как обычно (обратная совместимость).
 - ВХОД: читай из input_path. %(INPUT_DESC)s
 - РАБОТА: %(PURPOSE)s
 - ВЫХОД: запиши результат в output_path как JSON. %(OUTPUT_DESC)s Если это отчётная стадия — можешь дополнительно писать .md/.docx рядом (import docx через include), но JSON в output_path обязателен.
@@ -254,7 +258,7 @@ include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
-def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "") -> dict:
+def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "") -> dict:
     """Автосгенерированный оркестратор процесса. Гоняет контрактную цепочку стадий
     (input_path -> output_path) на исходном файле, чистит заголовки, возвращает сводку
     и рисует отчёт .md + .xlsx. Параметры: source_file, work_dir, api_token, target
@@ -337,6 +341,12 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     for i, name in enumerate(STAGES):
         outp = str(wd / ("stage%%d.json" %% i))
         _params = {"input_path": prev, "output_path": outp}
+        # F2 (контракт параметров): правила/поля владельца доступны КАЖДОЙ стадии этой сборки
+        # (кодоген генерит стадии с этими kwargs; менять поведение обязана только та, кому релевантно)
+        if not (rules_json or "").startswith("{{") and rules_json:
+            _params["rules_json"] = rules_json
+        if not (fields_json or "").startswith("{{") and fields_json:
+            _params["fields_json"] = fields_json
         if name in KP_STAGES:   # knowledge-стадия реюзает kp_ask — нужен target (где лежит база) и токен
             _params["target"] = target
             _params["api_token"] = api_token
@@ -361,6 +371,73 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
         summary = data.get("summary", {}) if isinstance(data, dict) else {}
     except Exception:
         pass
+
+    # F2: структурные правила владельца ({"field","op","value"} внутри rules_json) применяются
+    # ЗДЕСЬ детерминированно — фильтр записей последней стадии + честный пересчёт сводки.
+    # Текстовые правила из того же списка — дело кодогенных стадий; строки просто пропускаем.
+    _structs = []
+    try:
+        if rules_json and not rules_json.startswith("{{"):
+            _structs = [r for r in json.loads(rules_json)
+                        if isinstance(r, dict) and r.get("field") and r.get("op")]
+    except Exception:
+        _structs = []
+    if _structs:
+        try:
+            _fd = json.loads(Path(last_out).read_text(encoding="utf-8"))
+            _recs = _fd if isinstance(_fd, list) else (_fd.get("records") if isinstance(_fd, dict) else None)
+            if isinstance(_recs, list) and _recs and isinstance(_recs[0], dict):
+                def _fkey(rec, fld):
+                    fl = str(fld).casefold().strip()
+                    for k in rec.keys():
+                        if fl == str(k).casefold().strip() or fl in str(k).casefold():
+                            return k
+                    return None
+                def _fnum(v):
+                    try:
+                        return float(str(v).replace(" ", "").replace(",", "."))
+                    except Exception:
+                        return None
+                def _passes(rec):
+                    for ru in _structs:
+                        k = _fkey(rec, ru.get("field"))
+                        if k is None:
+                            continue   # поля нет в записи — правило её не душит (не наш разрез)
+                        op, val = str(ru.get("op")), ru.get("value")
+                        if op == "contains":
+                            if str(val).casefold() not in str(rec.get(k, "")).casefold():
+                                return False
+                            continue
+                        a, b = _fnum(rec.get(k)), _fnum(val)
+                        if a is None or b is None:
+                            continue
+                        if (op == ">" and not a > b) or (op == ">=" and not a >= b) or \
+                           (op == "<" and not a < b) or (op == "<=" and not a <= b) or \
+                           (op in ("==", "=") and not a == b):
+                            return False
+                    return True
+                _flt = [r for r in _recs if _passes(r)]
+                if len(_flt) != len(_recs):
+                    _new = {"total_count": len(_flt), "filtered_by_rules": len(_recs) - len(_flt)}
+                    # колонка суммы: по имени + в ней реально есть числа (анонимизация могла замаскировать в ***)
+                    _sumcol = next((c for c in _recs[0].keys()
+                                    if ("сумм" in str(c).casefold() or "amount" in str(c).casefold() or "итог" in str(c).casefold())
+                                    and any(_fnum(r.get(c)) is not None for r in _flt)), None)
+                    if _sumcol:
+                        _new["total_sum"] = sum((_fnum(r.get(_sumcol)) or 0) for r in _flt)
+                    for k in list(summary.keys()):
+                        if str(k).startswith("by_"):
+                            _cnt = {}
+                            for r in _flt:
+                                ck = _fkey(r, str(k)[3:])
+                                if ck is not None:
+                                    v = str(r.get(ck))
+                                    _cnt[v] = _cnt.get(v, 0) + 1
+                            _new[k] = _cnt
+                    summary = _new
+        except Exception:
+            pass   # применение правил не должно ронять прогон — сводка останется полной
+
     try:
         (wd / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, default=str), encoding="utf-8")
     except Exception:
@@ -417,7 +494,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
 _KP_STAGE_TEMPLATE = '''$extens("include.py")
 include("import urllib.request", [])
 
-def %(NAME)s(input_path="", output_path="", target="", api_token="", api_base="https://api.extella.ai") -> dict:
+def %(NAME)s(input_path="", output_path="", target="", api_token="", api_base="https://api.extella.ai", rules_json="", fields_json="") -> dict:   # rules/fields — контракт F2 (заглушки: kp-стадия ищет нормы)
     import json
     from pathlib import Path
 
@@ -508,7 +585,7 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None)
                                   "description": "Auto-generated process orchestrator: runs the contract pipeline ("
                                                  + " -> ".join(stage_names) + ") on a source file, cleans headers, "
                                                  "returns summary and renders .md/.xlsx report. Params: source_file, work_dir, api_token, target, source_key.",
-                                  "code": code, "kwargs": {"source_file": "", "work_dir": work_dir,
+                                  "code": code, "kwargs": {"source_file": "", "work_dir": work_dir, "rules_json": "", "fields_json": "",
                                                            "api_token": "", "api_base": "https://api.extella.ai",
                                                            "target": "", "source_key": ""},
                                   "cspl": "fython", "global": True})
@@ -719,6 +796,7 @@ def _run_build(session_id, build_id):
             s["stage"] = "built"
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
+                                               "params_contract": 1,   # F2: оркестратор+стадии принимают rules_json/fields_json
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
                                                "source_file": sample_file})

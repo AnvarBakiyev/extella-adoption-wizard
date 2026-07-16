@@ -48,6 +48,7 @@
 | `recipients` | list | /x/recipients | каналы доставки `[telegram, email, …]` |
 | `message_template` | str | /x/message_template | шаблон доставки, плейсхолдеры `{name}{count}{sum}{date}` |
 | `rules`/`fields` | list/dict | /x/rules | правила словами + поля владельца (композиции применяют на лету; Мастер-процессы — при пересборке) |
+| `rules_struct` | list | /x/rules (F2) | скомпилированные из `rules` машинные фильтры `[{field, op: >|>=|<|<=|==|contains, value}]` — Qwen интерпретирует ОДИН раз при записи, оркестратор применяет детерминированно на каждом прогоне |
 | `source` | dict/None | /x/source_bind | привязанный источник данных `{kind, …}` |
 | `inbound` | dict | /x/inbound | приём входящих `{mode, channel, target, …}`; исполнение — KV `inbound:<sid>` |
 | `runs` | list | /x/run_process | ручные прогоны `{at, status, findings?/total_*?, digest_source?}`; расписание пишет в `sched:<sid>.runs` |

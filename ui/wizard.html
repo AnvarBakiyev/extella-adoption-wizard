@@ -1089,6 +1089,7 @@ var _I18N_DICT = {
   "значение (напр. тенге)": "value (e.g. tenge)",
   "Сохраняю правила…": "Saving rules…",
   "✓ Правила сохранены": "✓ Rules saved",
+  "✓ Правила сохранены · понято как фильтр: ": "✓ Rules saved · understood as filter: ",
   "✅ Extella: {name} — процесс отработал.\nПозиций: {count}\nСумма: {sum} ₸": "✅ Extella: {name} — process has run.\nItems: {count}\nTotal: {sum} ₸",
   "Шаблон сообщения получателям": "Message template for recipients",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры: <code>{name}</code> — имя, <code>{count}</code> — позиций, <code>{sum}</code> — сумма, <code>{date}</code> — дата. Пусто — стандартный текст.": "Text sent to recipients after each run (manual and scheduled). Placeholders: <code>{name}</code> — name, <code>{count}</code> — items, <code>{sum}</code> — total, <code>{date}</code> — date. Empty — standard text.",
@@ -1193,6 +1194,8 @@ var _I18N_DICT = {
   "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
   "Стройка прервана перезапуском сервиса — прежняя версия работает. Повторите правку.": "The build was interrupted by a service restart — the previous version keeps working. Repeat the change.",
   "Откат прерван перезапуском сервиса — повторите откат.": "The rollback was interrupted by a service restart — repeat the rollback.",
+  "Применяются при каждом прогоне: стадии процесса получают правила и поля владельца (контракт параметров).": "Applied on every run: the process stages receive the owner's rules and fields (params contract).",
+  "⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: процесс собран до контракта параметров. Любая пересборка (чат внизу → Строитель) обновит его — после этого правила заработают сразу.": "⚠ Saved, but they DO NOT affect runs yet: the process was built before the params contract. Any rebuild (chat below → Builder) upgrades it — after that, rules apply immediately.",
   "Версии и правки": "Versions & changes",
   "Правок пока не было — процесс в исходной версии.": "No changes yet — the process is in its original version.",
   "↩ Откатить последнюю правку": "↩ Roll back the last change",
@@ -3343,7 +3346,9 @@ function _wzCabRules(a){
   var isFlow = (a.orchestrator==='wz_flow_run');
   var applyNote = isFlow
     ? 'Применяются сразу: при каждом прогоне Qwen собирает бриф, строго соблюдая эти правила.'
-    : '⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: построенный процесс исполняет свой код. Чтобы правило заработало — пересборка через Мастера/Строителя (напишите правку в чат внизу — он направит).';
+    : ((a.params_contract>=1)
+       ? 'Применяются при каждом прогоне: стадии процесса получают правила и поля владельца (контракт параметров).'
+       : '⚠ Сохраняются, но НА ПРОГОНЫ ПОКА НЕ ВЛИЯЮТ: процесс собран до контракта параметров. Любая пересборка (чат внизу → Строитель) обновит его — после этого правила заработают сразу.');
   var ruleRows = rules.length ? rules.map(function(r,ri){
     return '<div style="display:flex;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:8px 12px;margin-bottom:6px">'+
       '<span style="font-size:14px;flex:1">'+esc(r)+'</span>'+
@@ -3371,7 +3376,13 @@ async function _saveRules(a){
   busy('Сохраняю правила…');
   var r=await jpost('/x/rules',{session_id:a.session_id, rules:a.rules||[], fields:a.fields||{}});
   busyOff();
-  if(r&&r.status==='success'){ a.rules=r.rules; a.fields=r.fields; toast('✓ Правила сохранены','ok'); if(_wzCabI>=0) _wzCabRender(); }
+  if(r&&r.status==='success'){
+    a.rules=r.rules; a.fields=r.fields; a.rules_struct=r.rules_struct||[];
+    // F2: показать владельцу, как система поняла правило (скомпилированный фильтр)
+    var st=(r.rules_struct||[]).map(function(f){return f.field+' '+f.op+' '+f.value;}).join('; ');
+    toast(st ? ('✓ Правила сохранены · понято как фильтр: '+st) : '✓ Правила сохранены','ok');
+    if(_wzCabI>=0) _wzCabRender();
+  }
   else toast('Ошибка: '+((r&&r.message)||''),'err');
 }
 async function addRule(i){ var a=AUTOS[i]; if(!a) return; var inp=el('wz_newrule-'+i); var v=(inp&&inp.value||'').trim(); if(!v) return; a.rules=(a.rules||[]).concat([v]); await _saveRules(a); }

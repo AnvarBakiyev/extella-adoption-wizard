@@ -22,7 +22,7 @@ KNOWN = {
     "builds": list, "decisions": list, "blueprint_history": list, "building": str,
     "audit": dict, "data_check": dict, "tasks": dict,
     "schedule": dict, "paused": bool, "paused_at": str, "resumed_at": str,
-    "recipients": list, "message_template": str, "rules": list, "fields": dict,
+    "recipients": list, "message_template": str, "rules": list, "rules_struct": list, "fields": dict,
     "source": (dict, type(None)), "inbound": dict, "runs": list,
     "production_agent": dict, "panel_url": str, "panel_name": str, "panel_manifest": dict,
     "published": dict, "goal": str, "demo_runs": list,
