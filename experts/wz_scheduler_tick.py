@@ -462,6 +462,17 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         cfg["next_due_ts"] = (now() + timedelta(minutes=max(1, interval))).isoformat()
         kv("set", {"key": key, "value": json.dumps(cfg, ensure_ascii=False),
                    "description": "schedule " + key.split(":", 1)[-1]})
+        # C3 (виджет «Последний результат» кабинета): дайджест прогона по расписанию раньше НИГДЕ
+        # не сохранялся (в канал уходило 600 симв, файл оставался на исполняющем устройстве) —
+        # теперь последний дайджест перезаписью живёт в digest:<sid> (один, не копим — потолок KV)
+        _dgp = (out or {}).get("digest_md") or (out or {}).get("digest") or ""
+        if _dgp:
+            try:
+                kv("set", {"key": "digest:" + key.split(":", 1)[-1],
+                           "value": json.dumps({"at": run["at"], "digest": str(_dgp)[:12000]}, ensure_ascii=False),
+                           "description": "last digest"})
+            except Exception:
+                pass
         # доставка результата в каналы-получатели (telegram/email/…) — коннектор wz_connector_<канал> на хостинге.
         # Несколько получателей: cfg['recipients'] (список); обратная совместимость — одиночный cfg['deliver'].
         _rc = cfg.get("recipients")

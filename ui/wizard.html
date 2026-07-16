@@ -1165,6 +1165,15 @@ var _I18N_DICT = {
   "Эта сборка может стать паком-продуктом — публикация композиций появится позже.": "This build can become a product pack — publishing compositions is coming later.",
   "Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.": "Publishing a composition as a pack is in development; packs are currently published from Wizard processes.",
   "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
+  "Бриф последнего прогона": "Latest run brief",
+  "📄 Открыть бриф целиком": "📄 Open the full brief",
+  "Что будет делать эта автоматизация": "What this automation will do",
+  "▶ Сделать первый прогон": "▶ Do the first run",
+  "После первого прогона здесь появится живой результат.": "After the first run, the live result will appear here.",
+  "Процесс собран и готов к первому прогону.": "The process is built and ready for its first run.",
+  "Этапы процесса": "Process stages",
+  "▶ Собрать сейчас": "▶ Run now",
+  "⚙ Изменить словами": "⚙ Change in words",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
   "— имя,": "— name,",
   "— позиций,": "— items,",
@@ -2856,12 +2865,27 @@ function _wzCabProcess(a){
       '<div style="flex:0 0 26px;height:26px;border-radius:50%;background:'+(isLast?'var(--gold,#c60)':_wzAcc(a))+';color:#fff;display:flex;align-items:center;justify-content:center;font:700 13px var(--sans)">'+(si+1)+'</div>'+
       '<div style="flex:1;min-width:0"><div style="font:600 14px var(--sans)">'+esc(st.title||('Шаг '+(si+1)))+(isLast?' <span style="font-size:11px;color:var(--gold,#c60)">· результат</span>':'')+'</div>'+ins+outs+'</div></div>';
   }).join('');
+  // C3: нулевое состояние — свежесобранный процесс не пустая витрина, а «что я буду делать + первый прогон»
+  if(!lr && !(a.runs_count>0)){
+    return _wzCard(
+      _wzH('Что будет делать эта автоматизация')+
+      '<div style="font-size:14px;color:var(--ink-soft);line-height:1.55;margin-bottom:14px">'+esc(a.goal||a.slice_summary||'Процесс собран и готов к первому прогону.')+'</div>'+
+      '<button class="btn gold" style="font-size:15px;padding:10px 22px" onclick="wzCabTab(\'overview\')">▶ Сделать первый прогон</button>'+
+      '<div style="font-size:12px;color:var(--silver);margin-top:8px">После первого прогона здесь появится живой результат.</div>')
+      + _wzCard(_wzH('Этапы процесса')+stageCards);
+  }
   var resultCard = lr ? _wzCard(
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('Последний результат')+'<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
       ((lr.total_count!=null||lr.total_sum!=null)?'<div style="display:flex;gap:24px">'+
         (lr.total_count!=null?'<div><div style="font:700 22px var(--sans)">'+fmt(lr.total_count)+'</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>':'')+
         (lr.total_sum!=null?'<div><div style="font:700 22px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+'</div>'
-        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')) : '';
+        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
+      '<div id="wz_digest_box" style="margin-top:8px"></div>'+
+      '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="btn gold sm" onclick="runProcess('+i+');wzCabTab(\'overview\')">▶ Собрать сейчас</button>'+
+        '<button class="btn ghost sm" onclick="configureProcess('+i+')">⚙ Изменить словами</button>'+
+      '</div>') : '';
+  if(lr) setTimeout(function(){ _wzDigestLoad(a.session_id); }, 40);
   // §7bis ступень 3: сгенерированные Строителем доменные поля (значения живут в a.fields → кормят синтез)
   var pm=a.panel_manifest, flds=a.fields||{};
   var panelCard;
@@ -2933,6 +2957,19 @@ async function deleteAutomation(i){
     else toast("Ошибка: "+((r&&r.message)||""),"err");
   });
 }
+// C3: сохранённый дайджест последнего прогона (KV digest:<sid> — пишут тик и /x/run_process).
+// Раньше бриф жил только в HTTP-ответе и умирал с закрытием модалки; по расписанию не сохранялся вовсе.
+async function _wzDigestLoad(sid){
+  var box=el('wz_digest_box'); if(!box||!sid) return;
+  var d=await jpost('/x/digest',{session_id:sid});
+  if(!d||d.status!=='success'||!d.digest) return;
+  window._wzLastDigest=d.digest;
+  var prev=String(d.digest).split('\n').slice(0,10).join('\n');
+  box.innerHTML='<div style="border-top:1px dashed var(--cream-dark);padding-top:10px;margin-top:2px">'+
+    '<div style="font-size:11px;color:var(--silver);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Бриф последнего прогона</div>'+
+    '<div style="font-size:12.5px;color:var(--ink-soft);white-space:pre-wrap;max-height:150px;overflow:hidden">'+esc(prev)+'</div>'+
+    '<button class="btn ghost sm" style="margin-top:8px" onclick="showBrief(window._wzLastDigest)">📄 Открыть бриф целиком</button></div>';
+}
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
   var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
@@ -2951,8 +2988,10 @@ function _wzCabLaunch(a){
         (lr.total_sum!=null?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
         '</div>'
         : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
-      (lr.report_xlsx?'<div style="margin-top:8px"><a href="/x/download?path='+encodeURIComponent(lr.report_xlsx)+'" target="_blank" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')
+      (lr.report_xlsx?'<div style="margin-top:8px"><a href="/x/download?path='+encodeURIComponent(lr.report_xlsx)+'" target="_blank" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')+
+      '<div id="wz_digest_box" style="margin-top:10px"></div>'
     ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
+  if(lr) setTimeout(function(){ _wzDigestLoad(a.session_id); }, 40);   // C3: подтянуть сохранённый дайджест
   var panelCard = a.panel_url ? _wzCard(
       _wzH('Рабочая панель пака')+
       '<div style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">Вся доменная работа — лиды, подборки, рассылки, договоры — на вкладке «🧳 Работа».</div>'+
