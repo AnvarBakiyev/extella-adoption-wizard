@@ -222,7 +222,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 <div class="topbar">
   <div class="wordmark">EXTELLA<span class="dot">.</span></div>
   <div class="nav-toggle">
-    <button id="navComposer" class="on" onclick="setMode('composer')">＋ Создать</button>
+    <button id="navComposer" class="on" onclick="setMode('composer')">⌂ Рабочий стол</button>
     <button id="navMy" onclick="setMode('my')">📦 Мои</button>
     <button id="navWizard" onclick="setMode('wizard')" style="display:none">Мастер</button>
     <button id="navAuto" onclick="setMode('automations')">🗂 Автоматизации</button>
@@ -247,40 +247,63 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 </div>
 
 <div class="main" id="mainComposer" style="display:none">
-  <div class="kicker">Создать автоматизацию</div>
+  <div class="kicker">Рабочий стол</div>
   <h1>Что хотите поручить Extella?</h1>
-  <!-- Две РАВНОПРАВНЫЕ двери (не fallback): задача → Композитор, бизнес-процесс → Мастер. Кадр Анвара 12.07.
-       Единый шаблон карточки: заголовок → описание → примеры-чипы (растяжимая зона) → действие ВНИЗУ на одном уровне. -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin:16px 0;align-items:stretch">
-    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff);display:flex;flex-direction:column">
-      <div style="font:700 15px var(--sans);margin-bottom:6px">⚡ Собрать задачу из готовых блоков</div>
-      <div style="font-size:13px;color:var(--silver,#889);line-height:1.5;margin-bottom:12px">Разбор файлов, дайджесты, поиск, отчёты. Композитор подберёт блоки из вашей библиотеки, доустановит недостающее — и сразу запустит.</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;flex:1;margin-bottom:14px">
+  <!-- Рабочий стол (кадр Анвара 16.07): вместо двух баннеров — СИСТЕМНЫЕ иконки-приложения.
+       Системные = нельзя удалить (нет ✕). Композитор открывает Студию (отдельное окно создания,
+       симметрично Мастеру); Визард — интервью; Воркспейсес — кокпит рабочих сред (плагин :34767). -->
+  <div style="display:flex;gap:26px;flex-wrap:wrap;margin:30px 0 10px">
+    <div class="sysapp" onclick="openCompStudio()" title="Системное приложение — нельзя удалить"
+         style="width:180px;cursor:pointer;text-align:center;padding:18px 12px;border-radius:16px;transition:background .15s"
+         onmouseover="this.style.background='var(--paper,#fff)'" onmouseout="this.style.background='transparent'">
+      <div style="width:84px;height:84px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#c9a35c,#a97e35);display:flex;align-items:center;justify-content:center;font-size:42px;box-shadow:0 6px 18px rgba(169,126,53,.25)">🧩</div>
+      <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Композитор</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">задачи из готовых блоков</div>
+    </div>
+    <div class="sysapp" onclick="setMode('wizard');newSession()" title="Системное приложение — нельзя удалить"
+         style="width:180px;cursor:pointer;text-align:center;padding:18px 12px;border-radius:16px;transition:background .15s"
+         onmouseover="this.style.background='var(--paper,#fff)'" onmouseout="this.style.background='transparent'">
+      <div style="width:84px;height:84px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#2a6f77,#1b4f55);display:flex;align-items:center;justify-content:center;font-size:42px;box-shadow:0 6px 18px rgba(27,79,85,.25)">🏢</div>
+      <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Визард</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">бизнес-процессы под ключ</div>
+    </div>
+    <div class="sysapp" onclick="openWorkspaces()" title="Системное приложение — нельзя удалить"
+         style="width:180px;cursor:pointer;text-align:center;padding:18px 12px;border-radius:16px;transition:background .15s"
+         onmouseover="this.style.background='var(--paper,#fff)'" onmouseout="this.style.background='transparent'">
+      <div style="width:84px;height:84px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#3a3f4a,#14171e);display:flex;align-items:center;justify-content:center;font-size:42px;box-shadow:0 6px 18px rgba(20,23,30,.3)">🗂️</div>
+      <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Воркспейсес</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">рабочие среды проектов</div>
+    </div>
+  </div>
+</div>
+
+<!-- Студия Композитора: отдельное полноэкранное окно создания (симметрия с Мастером).
+     ВАЖНО: composerInput/composerOut живут ЗДЕСЬ — вся механика composeNow/доводки работает без правок. -->
+<div id="comp_studio" style="display:none;position:fixed;inset:0;z-index:9990;background:var(--cream,#f4f1ea);overflow:auto">
+  <div style="max-width:980px;margin:0 auto;padding:26px 28px 70px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+      <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#c9a35c,#a97e35);display:flex;align-items:center;justify-content:center;font-size:26px">🧩</div>
+      <div>
+        <div style="font:700 20px var(--sans);color:var(--ink,#0a0a0a)">Студия Композитора</div>
+        <div style="font-size:12.5px;color:var(--silver,#889)">задача словами → сборка из блоков → результат</div>
+      </div>
+      <button class="btn ghost" style="margin-left:auto;padding:8px 16px" onclick="closeCompStudio()">✕ Закрыть</button>
+    </div>
+    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff)">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
         <span class="chip-ex" onclick="composerFill(this)">найти забытые подписки в банковских выписках</span>
         <span class="chip-ex" onclick="composerFill(this)">следить за конкурентами и слать дайджест</span>
         <span class="chip-ex" onclick="composerFill(this)">превратить папку PDF в базу знаний</span>
       </div>
-      <div style="display:flex;gap:8px;margin-top:auto">
+      <div style="display:flex;gap:8px">
         <input id="composerInput" placeholder="опишите задачу одной фразой…"
           style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
           onkeydown="if(event.key==='Enter')composeNow()">
         <button id="composeBtn" class="btn gold" style="padding:0 18px;font-size:14px" onclick="composeNow()">Собрать</button>
       </div>
     </div>
-    <div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:18px 20px;background:var(--paper,#fff);display:flex;flex-direction:column">
-      <div style="font:700 15px var(--sans);margin-bottom:6px">🏢 Спроектировать бизнес-процесс</div>
-      <div style="font-size:13px;color:var(--silver,#889);line-height:1.5;margin-bottom:12px">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;flex:1;margin-bottom:14px">
-        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">дебиторка 28 филиалов каждый понедельник директору</span>
-        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">сводка заявок на закуп из 1С</span>
-        <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">отвечать клиентам в Telegram 24/7</span>
-      </div>
-      <div style="display:flex;margin-top:auto">
-        <button class="btn gold" style="padding:12px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
-      </div>
-    </div>
+    <div id="composerOut" style="margin-top:14px"></div>
   </div>
-  <div id="composerOut"></div>
 </div>
 
 <div class="main" id="mainMy" style="display:none">
@@ -560,6 +583,19 @@ function applyWLang(){
 /* ===== i18n EN: ретро-локализация через словарь + правила + MutationObserver (US-демо) ===== */
 var _I18N_DICT = {
   "＋ Создать": "＋ Create",
+  "⌂ Рабочий стол": "⌂ Desktop",
+  "Рабочий стол": "Desktop",
+  "Композитор": "Composer",
+  "Визард": "Wizard",
+  "Воркспейсес": "Workspaces",
+  "задачи из готовых блоков": "tasks from ready-made blocks",
+  "бизнес-процессы под ключ": "turnkey business processes",
+  "рабочие среды проектов": "project work environments",
+  "Системное приложение — нельзя удалить": "System app — cannot be removed",
+  "Студия Композитора": "Composer Studio",
+  "задача словами → сборка из блоков → результат": "task in words → assembly from blocks → result",
+  "✕ Закрыть": "✕ Close",
+  "Workspace-сервер спит — откройте карточку Workspace в тулбаре, она его поднимет": "The Workspace server is asleep — open the Workspace card in the toolbar to wake it up",
   "📦 Мои": "📦 My",
   "Мастер": "Wizard",
   "🗂 Автоматизации": "🗂 Automations",
@@ -1456,10 +1492,33 @@ function setMode(m){
   if(my) loadMyLibrary();
 }
 function composerFill(el2){ el("composerInput").value = el2.textContent; el("composerInput").focus(); }
+// ── Студия Композитора: отдельное окно создания (кадр Анвара 16.07, симметрия с Мастером) ──
+function openCompStudio(){
+  var st=el('comp_studio'); if(!st) return;
+  st.style.display='block'; document.body.style.overflow='hidden';
+  var ci=el('composerInput'); if(ci) ci.focus();
+}
+function closeCompStudio(){
+  var st=el('comp_studio'); if(!st||st.style.display==='none') return;
+  st.style.display='none'; document.body.style.overflow='';
+}
+document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeCompStudio(); });
+// Воркспейсес — кокпит рабочих сред (плагин workspace, локальный сервер :34767).
+// Сервер может спать после ребута — проверяем health и честно подсказываем, где поднять.
+async function openWorkspaces(){
+  try{
+    await fetch('http://127.0.0.1:34767/health',{mode:'no-cors'});
+    var w=window.open('http://127.0.0.1:34767/','_blank');
+    if(!w) toast('Откройте вручную: http://127.0.0.1:34767/','err');
+  }catch(e){
+    toast('Workspace-сервер спит — откройте карточку Workspace в тулбаре, она его поднимет','err');
+  }
+}
 // Handoff «Достроить Мастером»: пробел компоновки → интервью по недостающему блоку → кодоген → в библиотеку → пересборка.
 async function buildGapWithWizard(){
   var task = window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
   var gaps = window._composerCapQ || "";
+  closeCompStudio();
   setMode("wizard");
   var nm = (task||"Новый процесс").slice(0,40);
   busy("Создаю проект «"+nm+"»…");
@@ -1521,6 +1580,7 @@ async function classifyIntent(task){
 // taskArg — из клика по чипу-примеру; иначе фраза из поля/последней компоновки.
 async function buildProcessFromTask(taskArg){
   var task = (typeof taskArg==="string" && taskArg.trim()) || window._composerTask || (el("composerInput")&&el("composerInput").value) || "";
+  closeCompStudio();
   setMode("wizard");
   var nm=(task||"Новый процесс").slice(0,40);
   busy("Создаю проект «"+nm+"»…");
