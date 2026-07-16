@@ -2464,12 +2464,14 @@ function renderTest(){
   const bp = S.blueprint && S.blueprint.blueprint;
   const running = !!S.buildId && !S.buildDone;
   const lb = lastBuild();
+  const noFiles = !((S.session&&S.session.files)||[]).length;
   el("buildRunner").innerHTML = `
     <div class="kicker">Сборка процесса</div>
     <div style="font-size:14px;margin-bottom:10px">${bp? "Процесс: <b>"+esc(bp.process_name)+"</b>" : "Сначала соберите план процесса (шаг «План»)."}</div>
     <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running)?"disabled":""}>${running?"Идёт сборка…":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
+    ${noFiles&&bp?`<button class="btn ghost" style="margin-left:8px" onclick="genSample()">⚗️ Сгенерировать пример данных</button>`:""}
     <span class="statusline" id="stBuild" style="margin-left:10px"></span>
-    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, построит компоненты и проверит их. Это займёт несколько минут — можно не ждать у экрана, прогресс сохраняется.</div>`;
+    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, построит компоненты и проверит их. Это займёт несколько минут — можно не ждать у экрана, прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
   if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
   else if(running){ pollBuild(); }
   else el("buildProgress").innerHTML = "";
@@ -2479,10 +2481,30 @@ async function startBuild(){
   el("buildBtn").disabled = true;
   setStatus("stBuild","<span class='spin'></span>запускаю сборку…");
   const r = await jpost("/x/build",{session_id:S.sessionId});
-  if(r.status!=="success"){ setStatus("stBuild",""); toast("Не удалось запустить сборку: "+(r.message||""),"err"); el("buildBtn").disabled=false; return; }
+  if(r.status!=="success"){
+    setStatus("stBuild","");
+    if(r.code==="sample_required"){
+      // WZ-07 → §20.3: мгновенный отказ превращаем в действие — синтетический пример в один клик
+      if(confirm((r.message||"Нет файла-образца.")+"\n\nСгенерировать синтетический пример данных по интервью? (помечается как synthetic)")){
+        el("buildBtn").disabled=false; await genSample(); return;
+      }
+    } else toast("Не удалось запустить сборку: "+(r.message||""),"err");
+    el("buildBtn").disabled=false; return;
+  }
   S.buildId = r.build_id; S.buildDone = false; setStatus("stBuild","");
   el("buildFoot").style.display="none";
   renderTest(); pollBuild();
+}
+async function genSample(){
+  // §20.3: синтетический файл-образец из интервью (Qwen); маркируется synthetic
+  if(!S.sessionId){ toast("Сначала создайте сессию","err"); return; }
+  busy("Генерирую синтетический пример данных…");
+  let r; try{ r = await jpost("/x/gen_sample",{session_id:S.sessionId}); }
+  catch(e){ r={status:"error",message:String(e)}; }
+  busyOff();
+  if(!r || r.status!=="success"){ toast("Не удалось сгенерировать: "+((r&&r.message)||""),"err"); return; }
+  toast("⚗️ Пример создан: "+r.name+" ("+r.rows+" строк, синтетика) — можно строить","ok");
+  await reloadSession(); render();
 }
 async function pollBuild(){
   if(!S.buildId || S.buildDone) return;
@@ -2837,6 +2859,26 @@ async function renderMonitor(){
   const su=d.summary||{}, ps=d.processes||[];
   // C1 Пульт: здоровье по sid — источник статуса «нужна помощь» для шапки кабинета и плиток
   window.MONITOR_BY_SID={}; ps.forEach(function(p){ if(p&&p.session_id) window.MONITOR_BY_SID[p.session_id]=p; });
+  // Exception Inbox (ТЗ v2 §18.2, срез v0): наверху — ТОЛЬКО то, что требует человека.
+  // Источник — тот же монитор: health error/warn + needs_review-прогоны с причиной словами.
+  var exc = ps.filter(function(p){ return p.health && p.health!=="ok"; });
+  var excHtml = "";
+  if(exc.length){
+    excHtml = '<div class="card" style="border-left:3px solid #C0392B;margin-bottom:10px">'
+      + '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px">⚠️ '
+      + (WLANG==='en'?('Needs your decision ('+exc.length+')'):('Требуют вашего решения ('+exc.length+')'))+'</div>'
+      + exc.map(function(p){
+          var nr = p.last_run && p.last_run.needs_review_reason;
+          var why = (p.reasons||[]).join("; ") + (nr?(" — "+nr):"");
+          return '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--cream-dark);font-size:13px">'
+            + '<span>'+(p.health==="error"?"🔴":"🟡")+'</span>'
+            + '<b style="flex:0 0 auto">'+esc(p.process_name||p.session_id)+'</b>'
+            + '<span style="color:var(--silver);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(why)+'</span>'
+            + '<button class="btn ghost sm" style="margin-left:auto;flex:none" onclick="openWzCabinetBySid(\''+esc(p.session_id)+'\')">'
+            + (WLANG==='en'?'Open cabinet':'Открыть кабинет')+'</button></div>';
+        }).join("")
+      + '</div>';
+  }
   const dot = h => h==="error"?"🔴":(h==="warn"?"🟡":"🟢");
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n||"");
   const tm = t => t ? esc(String(t).slice(0,16).replace("T"," ")) : "—";
@@ -2865,7 +2907,7 @@ async function renderMonitor(){
     const why=(p.reasons&&p.reasons.length)?`<div style="font-size:11.5px;color:var(--bad,#c33);margin-top:2px">${p.reasons.map(esc).join(" · ")}</div>`:"";
     return `<div style="display:flex;gap:8px;padding:6px 0;border-top:1px solid rgba(128,128,128,.15)"><span>${dot(p.health)}</span><div style="flex:1;min-width:0"><b style="font-size:13px">${esc(p.process_name||p.session_id)}</b><div style="font-size:12px;color:var(--silver,#889)">${bits.join(" &nbsp;·&nbsp; ")}</div>${why}</div></div>`;
   }).join("");
-  bar.innerHTML = `<details style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px 14px;margin:0 0 16px"${allOk?"":" open"}>${head}${credRow}<div style="margin-top:8px">${rows}</div></details>`;
+  bar.innerHTML = excHtml + `<details style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px 14px;margin:0 0 16px"${allOk?"":" open"}>${head}${credRow}<div style="margin-top:8px">${rows}</div></details>`;
 }
 /* ── Личность агента (обложка) + Кабинет — самодостаточный вид Визарда ── */
 var _WZ_PAL=['#3A6EA5','#8F4E1E','#57A773','#8E4AA8','#C57E33','#2E7D5B','#D65CA8','#4E8FDB'];
@@ -2889,6 +2931,13 @@ function _wzHeroHTML(a){
 var _wzCabI=-1, _wzCabTab='overview';
 function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : (a&&a.stages_meta&&a.stages_meta.length ? 'process' : 'overview'); }
 function openWzCabinet(i){ _wzCabI=i; _wzCabTab=_wzDomainTab(AUTOS[i]); _wzCabRender(); }
+// Exception Inbox: открытие кабинета по session_id (инбокс рендерится раньше, чем загрузились AUTOS)
+async function openWzCabinetBySid(sid){
+  if(!(AUTOS||[]).length){ try{ var d=await jget("/x/automations"); AUTOS=(d&&d.automations)||[]; }catch(e){} }
+  var i=(AUTOS||[]).findIndex(function(a){ return a.session_id===sid; });
+  if(i<0){ toast(WLANG==='en'?'Process not found among automations':'Процесс не найден среди автоматизаций','err'); return; }
+  openWzCabinet(i);
+}
 function closeWzCabinet(){ _wzCabI=-1; var o=el('wz_cab'); if(o)o.remove(); }
 function wzCabTab(t){ _wzCabTab=t; _wzCabRender(); }
 // ── C1 Пульт: честный статус жизни — из реальности (сессия/расписание/монитор), не из витрины ──
@@ -3066,7 +3115,23 @@ async function cabApply(){
           _cabPush(_cabA('Стройка прервана перезапуском сервиса — прежняя версия работает. Повторите правку.'));
           return;
         }
-        _cabPush(_cabA('✓ Пересобрано. Решение в сессии, прежние версии — в истории сборок.'+
+        // Shadow-diff (ТЗ v2 §19.2, срез v0): «что изменится» ДО включения — срез новой сборки
+        // на файле-образце против последнего живого прогона. Дешёвая половина shadow-run:
+        // срез уже прогнан стройкой, сравниваем счётчики и показываем честную оговорку.
+        var sdiff='';
+        try{
+          var ss=pr.slice_summary||{}, lr=(AUTOS[_wzCabI]||{}).last_run||null;
+          var fmtN=function(n){ return (typeof n==='number')?n.toLocaleString('ru-RU'):(n==null?'—':esc(String(n))); };
+          if(ss && (ss.total_count!=null || ss.total_sum!=null)){
+            sdiff='<div style="background:rgba(128,128,128,.07);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12.5px">'+
+              '📊 <b>Что изменится</b> (срез новой версии на файле-образце):<br>'+
+              'позиций: '+(lr?fmtN(lr.total_count)+' → ':'')+fmtN(ss.total_count)+
+              (ss.total_sum!=null||lr&&lr.total_sum!=null?' · сумма: '+(lr?fmtN(lr.total_sum)+' → ':'')+fmtN(ss.total_sum):'')+
+              (ss.filtered_by_rules?' · отсеяно правилами: '+fmtN(ss.filtered_by_rules):'')+
+              '<div style="color:var(--silver);font-size:11px;margin-top:3px">Сравнение с последним живым прогоном — данные могли отличаться; включение по-прежнему за вами.</div></div>';
+          }
+        }catch(e){ sdiff=''; }
+        _cabPush(_cabA('✓ Пересобрано. Решение в сессии, прежние версии — в истории сборок.'+sdiff+
           ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="wzCabTab(\'overview\');runProcess(_wzCabI)">▶ Пробный прогон</button>'+
           '<span style="font-size:11px;color:var(--silver)"> — сравните бриф с прежним (он в «Запуске»)</span>'));
       });
