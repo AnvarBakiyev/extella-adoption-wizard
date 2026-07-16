@@ -330,6 +330,16 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <div class="kicker">Шаг 1 · Интервью</div>
     <h1>Расскажите о вашем процессе</h1>
     <p class="lede">Главный способ — разговор с Помощником справа: он проведёт интервью и сам заполнит конспект ниже. Любой пункт конспекта можно поправить руками — кликните по нему. Приложите файлы-образцы (выгрузки, шаблоны) — это сильно ускоряет проектирование.</p>
+    <!-- P2: адаптивный конспект — вопросы генерируются Qwen под конкретную задачу -->
+    <div class="card">
+      <div class="kicker">Вопросы под вашу задачу</div>
+      <div style="font-size:12.5px;color:var(--silver);margin:-4px 0 8px">Опишите задачу одной фразой — конспект перестроится под неё (вместо стандартного списка).</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="qtask" class="sess-select" style="flex:1;max-width:none;min-width:240px" placeholder="напр.: контроль дебиторки 28 филиалов из 1С с еженедельной сводкой директору">
+        <button class="btn gold sm" onclick="genQuestions()">⚡ Подобрать вопросы</button>
+      </div>
+      <span class="statusline" id="stQGen"></span>
+    </div>
     <div class="card">
       <div class="kicker">Конспект интервью <span id="briefCount" style="color:var(--silver);font-weight:400;text-transform:none;letter-spacing:0"></span></div>
       <div style="font-size:12.5px;color:var(--silver);margin:-4px 0 8px">Заполняется сам по ходу разговора с Помощником. Руками правьте, когда хотите уточнить формулировку или добавить то, о чём он не спросил.</div>
@@ -460,6 +470,22 @@ const QUESTIONS = [
   {id:"knowledge_base", q:"Правовая / справочная база", hint:"На какой документ опирается процесс: Трудовой / Гражданский / Налоговый кодекс РК, регламент, стандарт, политика — или ничего"},
   {id:"owner", q:"Владелец процесса", hint:"Кто отвечает, кого можно привлечь на калибровку"}
 ];
+// P2: адаптивный конспект — вопросы из сессии (сгенерены Qwen под задачу), фолбэк — статичный список
+function _qs(){ var qn=S.session&&S.session.questionnaire; return (qn&&qn.length)?qn:QUESTIONS; }
+async function genQuestions(){
+  if(!S.sessionId){ toast('Сначала создайте сессию процесса','err'); return; }
+  var t=(el('qtask')&&el('qtask').value||'').trim();
+  if(!t){ toast('Опишите задачу одной фразой','err'); return; }
+  el('stQGen').innerHTML='<span class="spin"></span> подбираю вопросы под задачу…';
+  var r=await jpost('/x/gen_questions',{session_id:S.sessionId, task:t});
+  if(r&&r.status==='success'){
+    await reloadSession();
+    el('stQGen').textContent='✓ конспект перестроен: '+r.count+' вопросов под вашу задачу';
+    render();
+  } else {
+    el('stQGen').textContent='не вышло: '+((r&&r.message)||'')+' — остался стандартный конспект';
+  }
+}
 const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch"};
 const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
 let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
@@ -1165,6 +1191,13 @@ var _I18N_DICT = {
   "Эта сборка может стать паком-продуктом — публикация композиций появится позже.": "This build can become a product pack — publishing compositions is coming later.",
   "Публикация композиции как пака — в разработке; сейчас паком издаются процессы Мастера.": "Publishing a composition as a pack is in development; packs are currently published from Wizard processes.",
   "шаги не записаны (композиция старой версии — отправьте любую доводку, состав запишется)": "steps not recorded (an older composition — send any refinement and the makeup will be saved)",
+  "Вопросы под вашу задачу": "Questions tailored to your task",
+  "Опишите задачу одной фразой — конспект перестроится под неё (вместо стандартного списка).": "Describe the task in one phrase — the brief will be rebuilt around it (instead of the standard list).",
+  "напр.: контроль дебиторки 28 филиалов из 1С с еженедельной сводкой директору": "e.g.: receivables control for 28 branches from 1C with a weekly summary to the director",
+  "⚡ Подобрать вопросы": "⚡ Tailor the questions",
+  "подбираю вопросы под задачу…": "tailoring questions to the task…",
+  "Сначала создайте сессию процесса": "Create a process session first",
+  "Опишите задачу одной фразой": "Describe the task in one phrase",
   "Бриф последнего прогона": "Latest run brief",
   "📄 Открыть бриф целиком": "📄 Open the full brief",
   "Что будет делать эта автоматизация": "What this automation will do",
@@ -1735,9 +1768,9 @@ function toggleThread(ref){ S.openThreads[ref]=!S.openThreads[ref]; render(); }
 /* ================= конспект интервью ================= */
 function renderBrief(){
   const a = S.session.answers||{};
-  const filled = QUESTIONS.filter(q=>{ const r=a[q.id]; return r && (typeof r==="string" ? r : (r.answer||"")).trim(); }).length;
-  el("briefCount").textContent = ` · заполнено ${filled} из ${QUESTIONS.length}`;
-  el("qlist").innerHTML = QUESTIONS.map(q=>{
+  const filled = _qs().filter(q=>{ const r=a[q.id]; return r && (typeof r==="string" ? r : (r.answer||"")).trim(); }).length;
+  el("briefCount").textContent = ` · заполнено ${filled} из ${_qs().length}`;
+  el("qlist").innerHTML = _qs().map(q=>{
     const raw = a[q.id];
     const saved = typeof raw === "string" ? raw : ((raw && raw.answer) || "");
     const ans = (S.drafts[q.id] !== undefined) ? S.drafts[q.id] : saved;
@@ -1756,6 +1789,8 @@ function renderBrief(){
       </div>
     </div>`;
   }).join("");
+  var qt=el('qtask');   // P2: показать задачу, под которую сгенерён конспект
+  if(qt && !qt.value && S.session && S.session.questionnaire_task) qt.value=S.session.questionnaire_task;
 }
 function toggleBrief(id){
   // без полного перерендера — набранный текст в других пунктах не теряется
@@ -1765,7 +1800,7 @@ function toggleBrief(id){
 }
 async function saveAnswers(){
   const payload = {};
-  QUESTIONS.forEach(q=>{
+  _qs().forEach(q=>{
     const t = el("ans-"+q.id);
     const prev = (S.session.answers||{})[q.id];
     const v = (S.drafts[q.id] !== undefined ? S.drafts[q.id] : (t ? t.value : (typeof prev === "string" ? prev : (prev||{}).answer)) || "").trim();
