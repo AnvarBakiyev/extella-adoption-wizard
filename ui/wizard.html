@@ -2876,22 +2876,54 @@ async function afterBotReply(bubble, text){
     // на шаге ТЗ: после ответа помощника сам пересобираю ТЗ, чтобы правка была видна без лишних кнопок
     if(S.view==="spec"){ render(); regenerateSpec(); }
   }
-  // контракт «интервью завершено»: кнопка переноса
+  // контракт «интервью завершено»: кнопка переноса с готовым JSON
   const m = text.match(/ИНТЕРВЬЮ ЗАВЕРШЕНО[\s\S]*?```json\s*([\s\S]*?)```/);
   if(m){
     try{
       const answers = JSON.parse(m[1]);
-      const btn = document.createElement("button");
-      btn.className = "btn gold sm apply"; btn.textContent = "⤵ Перенести ответы в конспект";
-      btn.onclick = async ()=>{
-        if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
-        await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(answers)}});
-        await reloadSession(); S.view="interview"; render();
-        btn.textContent = "✓ Перенесено"; btn.disabled = true;
-      };
-      bubble.appendChild(btn);
+      _addTransferBtn(bubble, answers);
     }catch(e){}
   }
+  // Надёжный фолбэк: помощник сам сказал «Перенести ответы в конспект», но JSON не приложил
+  // (баг: автосохранение агента упало). Показываем кнопку, которая ИЗВЛЕЧЁТ ответы из разговора
+  // по запросу и сохранит — раньше кнопки просто не было, и клиент застревал.
+  else if(/Перенести ответы в конспект|перенести ответы/i.test(text)){
+    var btn = document.createElement("button");
+    btn.className = "btn gold sm apply"; btn.textContent = "⤵ Перенести ответы в конспект";
+    btn.onclick = ()=> _extractAndSaveAnswers(btn);
+    bubble.appendChild(btn);
+  }
+}
+function _addTransferBtn(bubble, answers){
+  var btn = document.createElement("button");
+  btn.className = "btn gold sm apply"; btn.textContent = "⤵ Перенести ответы в конспект";
+  btn.onclick = async ()=>{
+    if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
+    await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(answers)}});
+    await reloadSession(); S.view="interview"; render();
+    btn.textContent = "✓ Перенесено"; btn.disabled = true;
+  };
+  bubble.appendChild(btn);
+}
+async function _extractAndSaveAnswers(btn){
+  if(!S.sessionId){ toast("Сначала создайте сессию", "err"); return; }
+  btn.disabled = true; var old = btn.textContent; btn.innerHTML = "<span class='spin'></span> собираю ответы…";
+  var ask = "Собери ВСЕ ответы клиента из нашего разговора и верни СТРОГО JSON без пояснений и без markdown-заборов: "
+    + '{"pain":{"question":"боль","answer":"…"},"process_today":{"question":"как сейчас","answer":"…"},'
+    + '"volumes":{"question":"объёмы","answer":"…"},"data_sources":{"question":"данные","answer":"…"},'
+    + '"pii":{"question":"ПДн","answer":"…"},"frequency":{"question":"частота","answer":"…"},'
+    + '"success":{"question":"успех","answer":"…"},"owner":{"question":"владелец","answer":"…"}}. '
+    + "Заполняй только то, что клиент реально сказал; неизвестное пропусти.";
+  var r; try{ r = await jpost("/x/chat",{input:ask, previous_response_id:S.chatRespId, session_id:S.sessionId}); }
+  catch(e){ r=null; }
+  var answers=null;
+  try{ var mm=(r&&r.text||"").match(/\{[\s\S]*\}/); answers = mm ? JSON.parse(mm[0]) : null; }catch(e){ answers=null; }
+  if(!answers || !Object.keys(answers).length){
+    btn.disabled=false; btn.textContent=old; toast("Не удалось собрать ответы — попробуйте ещё раз","err"); return;
+  }
+  await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(answers)}});
+  await reloadSession(); S.view="interview"; render();
+  btn.textContent = "✓ Перенесено ("+Object.keys(answers).length+")";
 }
 
 /* ================= автоматизации ================= */
