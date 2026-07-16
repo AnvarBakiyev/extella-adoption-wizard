@@ -1519,8 +1519,15 @@ function closeCompStudio(){
 }
 document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeCompStudio(); });
 // Воркспейсес — кокпит рабочих сред (плагин workspace, локальный сервер :34767).
-// Сервер может спать после ребута — проверяем health и честно подсказываем, где поднять.
+// Внутри Extella Desktop window.open уводит 127.0.0.1 во внешний браузер
+// (setWindowOpenHandler хоста) — поэтому, когда мы встроены в тулбар (iframe),
+// просим хост открыть плагин Workspace ЕГО окном (тулбар v3.94+ понимает
+// etb_plugin_action open и сам поднимет сервер, если тот спит).
+// window.open остаётся фолбэком для чистого браузера.
 async function openWorkspaces(){
+  if(window.parent!==window){
+    try{ window.parent.postMessage({type:'etb_plugin_action', action:'open', pluginId:'workspace'}, '*'); return; }catch(_){ }
+  }
   try{
     await fetch('http://127.0.0.1:34767/health',{mode:'no-cors'});
     var w=window.open('http://127.0.0.1:34767/','_blank');
