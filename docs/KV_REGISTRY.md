@@ -21,6 +21,7 @@
 | `_mkt_installed` | wz_capability_install | вкладка «Мои» | `{items:[…60]}` — установленное Композитором (per-account по смыслу, живёт global — легаси) |
 | `_mkt_models`, `_mkt_cli_catalog`, `_mkt_programs`, `_mkt_skills`, … | харвестеры VPS | тулбар | каталоги витрины (шардированы) |
 | `composer:catalog` | сидер | wz_auto_compose | whitelist блоков Композитора |
+| `capability:registry` (+`:0..N`) | scripts/capability_registry.py | /x/registry (мост → все 4 поверхности) | Capability Registry v0: meta `{chunks, enc:"b64", count, generated_at}` + b64-шарды по 8000 (kv/set строит эмбеддинг — крупные значения бьются об его лимит); зеркало для людей — docs/CAPABILITIES.md |
 
 ## Per-account скоуп (без global; писатель указан)
 | Ключ | Писатели | Читатели | Значение |

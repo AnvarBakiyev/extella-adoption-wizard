@@ -796,6 +796,33 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "success", "client": client, "secrets": out})
         elif path == "/x/catalog":
             self._send(json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
+        elif path == "/x/registry":
+            # Capability Registry v0 (ТЗ v2 §8.9, версия «MD+KV» по решению Анвара): единый реестр
+            # возможностей для четырёх поверхностей. Пишет scripts/capability_registry.py в KV
+            # capability:registry (b64-шарды по 8000 — паттерн файлового стора); мост только читает.
+            try:
+                g = api("/api/kv/get", {"key": "capability:registry"})
+                meta = json.loads(g.get("value") or "{}")
+                buf = ""
+                for i in range(int(meta.get("chunks", 0))):
+                    c = api("/api/kv/get", {"key": "capability:registry:" + str(i)})
+                    buf += c.get("value") or ""
+                if meta.get("enc") == "b64" and buf:
+                    import base64 as _b64r
+                    buf = _b64r.b64decode(buf).decode("utf-8")
+                doc = json.loads(buf) if buf else {}
+                caps = doc.get("capabilities") or []
+                t = qs.get("type", "")
+                if t:
+                    caps = [c for c in caps if c.get("type") == t]
+                self._send({"status": "success", "count": len(caps),
+                            "generated_at": doc.get("generated_at"), "capabilities": caps})
+            except Exception as e:
+                self._send({"status": "error",
+                            "message": "реестр не собран — запустите scripts/capability_registry.py: "
+                                       + _scrub(str(e)[:120])}, 503)
+            return
+
         elif path == "/x/library":
             # Industry library for the UI depth panel: checklist + taxonomy + regulatory.
             # ?industry=<id> returns one industry; no arg returns the manifest only.
