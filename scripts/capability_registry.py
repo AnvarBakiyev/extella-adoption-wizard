@@ -151,7 +151,22 @@ def collect(tok):
     except Exception as ex:
         print("  ! cspl:registry:", str(ex)[:100])
 
-    # 6. Локальные модели устройства (ollama)
+    # 6. Устройства (мультитаргет T1: паспорта пишет wz_target_passport на каждом устройстве)
+    try:
+        g = api("/api/kv/get", {"key": "target:passports:__index__"}, tok)
+        for sl in (json.loads(g.get("value") or "{}") or {}).get("slugs", [])[:20]:
+            p = api("/api/kv/get", {"key": "target:passport:" + str(sl)}, tok)
+            pp = json.loads(p.get("value") or "{}")
+            if pp:
+                add(pp.get("slug"), "target", pp.get("label") or pp.get("hostname"),
+                    (pp.get("os", "") + " " + pp.get("os_version", "")).strip() +
+                    " · моделей: " + str(len(pp.get("ollama_models") or [])),
+                    ["wizard", "composer", "workspace"], "target:passports",
+                    {"passport_at": pp.get("passport_at"), "apps": pp.get("apps")})
+    except Exception as ex:
+        print("  ! targets:", str(ex)[:100])
+
+    # 7. Локальные модели устройства (ollama)
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5) as f:
             tags = json.loads(f.read().decode("utf-8"))

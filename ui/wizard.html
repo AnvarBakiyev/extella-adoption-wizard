@@ -618,6 +618,13 @@ var _I18N_DICT = {
   "Визард": "Wizard",
   "Воркспейсес": "Workspaces",
   "Студия языков": "Language Studio",
+  "Где исполняется": "Where it runs",
+  "По расписанию — ": "On schedule — ",
+  "Хостинг Extella (VPS, 24/7)": "Extella hosting (VPS, 24/7)",
+  "Вручную — ": "Manually — ",
+  "это устройство": "this device",
+  "паспортов устройств пока нет": "no device passports yet",
+  "Паспорта устройств": "Device passports",
   "✨ Создать язык словами": "✨ Create a language in words",
   "✨ Спроектировать и зарегистрировать": "✨ Design and register",
   "Опишите, какой отчётный язык нужен: какие колонки обязательны, какой фильтр по умолчанию, что считать итогом. Проектировщик соберёт спецификацию поверх проверенного ядра и зарегистрирует язык ТОЛЬКО после контрольных прогонов.": "Describe the reporting language you need: which columns are mandatory, the default filter, what counts as the total. The designer builds a specification on top of the verified core and registers the language ONLY after control runs.",
@@ -3485,12 +3492,33 @@ function _wzCabLaunch(a){
       _wzH('Рабочая панель пака')+
       '<div style="font-size:13.5px;color:var(--ink-soft);margin-bottom:10px">Вся доменная работа — лиды, подборки, рассылки, договоры — на вкладке «🧳 Работа».</div>'+
       '<button class="btn gold" style="font-size:14px;padding:10px 20px" onclick="wzCabTab(\'panel\')">🧳 К работе →</button>') : '';
+  // Мультитаргет T1: «Где исполняется» — карта из фактов (расписание→VPS, ручной→мост)
+  // + живые паспорта устройств (/x/targets), дозагрузка асинхронно
+  var execCard = _wzCard(
+      _wzH('Где исполняется')+
+      '<div style="font-size:13px">'+
+      (a.schedule&&a.schedule.period?'⏰ По расписанию — <b>Хостинг Extella (VPS, 24/7)</b><br>':'')+
+      '▶ Вручную — <b>это устройство</b> (мост визарда)'+
+      (a.knowledge_pack&&a.knowledge_pack.pack_id?'<br>📚 База знаний <code>'+esc(a.knowledge_pack.pack_id)+'</code> — на устройстве прогона':'')+
+      '</div><div id="wz_targets_'+i+'" style="margin-top:8px;font-size:12px;color:var(--silver)"><span class="spin"></span></div>');
+  setTimeout(function(){ _wzTargetsLoad(i); }, 60);
   return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
       '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
       '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
     + result
+    + execCard
     + '<details style="max-width:720px;margin-bottom:14px"><summary style="cursor:pointer;color:var(--nav);font:600 13px var(--sans);padding:6px 0;list-style:none">⚙ Под капотом — как устроено</summary><div style="margin-top:8px">'+_wzCabOverview(a)+'</div></details>';
+}
+async function _wzTargetsLoad(i){
+  var box=el('wz_targets_'+i); if(!box) return;
+  var d; try{ d=await jget('/x/targets'); }catch(e){ d=null; }
+  var ts=(d&&d.targets)||[];
+  if(!ts.length){ box.innerHTML=(WLANG==='en'?'no device passports yet':'паспортов устройств пока нет'); return; }
+  box.innerHTML=(WLANG==='en'?'Device passports':'Паспорта устройств')+': '+ts.map(function(t){
+    return '<span class="badge" title="'+esc((t.os||'')+' '+(t.os_version||'')+' · python '+(t.python||'')+' · '+(t.ollama_models||[]).length+' локальных моделей')+'">'
+      +esc(t.label||t.hostname)+' · '+esc(t.os||'')+' · '+esc((t.passport_at||'').slice(0,10))+'</span>';
+  }).join(' ');
 }
 function _wzCabOverview(a){
   var caps=_wzCaps(a), comps=a.components||[], kp=a.knowledge_pack&&a.knowledge_pack.pack_id;

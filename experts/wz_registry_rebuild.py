@@ -130,7 +130,22 @@ def wz_registry_rebuild(api_token: str = "", api_base: str = "https://api.extell
     except Exception as ex:
         problems.append("cspl:registry: " + str(ex)[:80])
 
-    # 6. локальные модели ЭТОГО устройства (на хостинге ollama нет — молча пропускаем)
+    # 6. устройства (мультитаргет T1: паспорта target:passport:*)
+    try:
+        g = api("/api/kv/get", {"key": "target:passports:__index__"})
+        for sl in (json.loads(g.get("value") or "{}") or {}).get("slugs", [])[:20]:
+            p = api("/api/kv/get", {"key": "target:passport:" + str(sl)})
+            pp = json.loads(p.get("value") or "{}")
+            if pp:
+                add(pp.get("slug"), "target", pp.get("label") or pp.get("hostname"),
+                    (pp.get("os", "") + " " + pp.get("os_version", "")).strip() +
+                    " · моделей: " + str(len(pp.get("ollama_models") or [])),
+                    ["wizard", "composer", "workspace"], "target:passports",
+                    {"passport_at": pp.get("passport_at"), "apps": pp.get("apps")})
+    except Exception as ex:
+        problems.append("targets: " + str(ex)[:80])
+
+    # 7. локальные модели ЭТОГО устройства (на хостинге ollama нет — молча пропускаем)
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=4) as f:
             tags = json.loads(f.read().decode("utf-8"))

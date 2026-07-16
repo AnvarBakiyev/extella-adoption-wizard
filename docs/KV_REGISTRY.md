@@ -23,6 +23,8 @@
 | `composer:catalog` | сидер | wz_auto_compose | whitelist блоков Композитора |
 | `capability:registry` (+`:0..N`) | эксперт wz_registry_rebuild (у клиента; событийно из моста `_registry_refresh_async` + суточно тиком) | /x/registry (мост → все 4 поверхности) | Capability Registry v0: meta `{chunks, enc:"b64", count, generated_at}` + b64-шарды по 8000 (kv/set строит эмбеддинг — крупные значения бьются об его лимит). Скоуп: под default-агентом БЕЗ флага global (писатель и читатель в одном скоупе). Зеркала для людей: docs/CAPABILITIES.md (наш git) и `~/extella_wizard/registry/CAPABILITIES.md` (устройство клиента) |
 | `registry:last_rebuild` | wz_registry_rebuild | тик (суточная страховка пересбора) | ISO ts последнего полного пересбора реестра |
+| `cspl:registry` | scripts/cspl_register.py, /x/cspl_create (derived-языки) | /x/cspl_compile, генераторы Capability Registry | CSPL Studio: `{handlers:{id:{version, kind: report|pipeline|derived, spec?, fixtures, ...}}}` |
+| `target:passport:<slug>` (+`target:passports:__index__`) | wz_target_passport (исполняется НА устройстве) | /x/targets, генераторы Capability Registry | мультитаргет T1: честный паспорт устройства `{os, python, apps, ollama_models, disk_free_gb, passport_at}` |
 
 ## Per-account скоуп (без global; писатель указан)
 | Ключ | Писатели | Читатели | Значение |
