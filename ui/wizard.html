@@ -1143,6 +1143,18 @@ var _I18N_DICT = {
   "Понадобится: домен и долгосрочный токен": "Needed: domain and long-lived token",
   "Понадобится: путь к файлу выгрузки": "Needed: path to the export file",
   "Понадобится: адрес сервера и логин WinRM": "Needed: server address and WinRM login",
+  "⏸ на паузе": "⏸ paused",
+  "🟡 нужна помощь": "🟡 needs attention",
+  "● работает": "● running",
+  "○ запуск вручную": "○ manual runs",
+  "⏳ прогон идёт…": "⏳ run in progress…",
+  "⏸ Пауза": "⏸ Pause",
+  "▶ Возобновить": "▶ Resume",
+  "Обновить токен": "Update token",
+  "Запустить снова": "Run again",
+  "⏸ На паузе — автозапуски остановлены, настройки сохранены": "⏸ Paused — auto-runs stopped, settings kept",
+  "▶ Возобновлено — следующий запуск через интервал": "▶ Resumed — next run in one interval",
+  "На паузе входящие обращения обрабатываться НЕ будут (накопленные за паузу не получат ответов). Поставить на паузу?": "While paused, incoming messages will NOT be processed (backlog accumulated during the pause will not be answered). Pause now?",
   "Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры:": "Text sent to recipients after every run (manual and scheduled). Placeholders:",
   "— имя,": "— name,",
   "— позиций,": "— items,",
@@ -1199,6 +1211,9 @@ var _I18N_RULES = [
   ["шаг «(.+?)» ждёт данные «(.+?)» с предыдущего шага — их нет; уточните порядок словами", "step «$1» expects data «$2» from the previous step — it's missing; clarify the order in words"],
   ["блок «(.+?)» не в вашей библиотеке — доустановите или достройте Мастером", "block «$1» isn't in your library — install it or finish with the Wizard"],
   ["не удалось поставить модель: ([\\s\\S]+)", "couldn't install the model: $1"],
+  ["след\\. запуск (.+)", "next run $1"],
+  ["токен Tourvisor истекает через (\\d+) дн\\.", "Tourvisor token expires in $1 days"],
+  ["последний прогон: (.+)", "last run: $1"],
   ["⏰ Каждый час", "⏰ Every hour"],
   ["⏰ Ежедневно", "⏰ Daily"],
   ["⏰ Еженедельно", "⏰ Weekly"],
@@ -2622,6 +2637,8 @@ async function renderMonitor(){
   let d; try{ d = await jget("/x/monitor"); }catch(e){ d=null; }
   if(!d || d.status!=="success" || !((d.processes||[]).length)){ bar.innerHTML=""; return; }
   const su=d.summary||{}, ps=d.processes||[];
+  // C1 Пульт: здоровье по sid — источник статуса «нужна помощь» для шапки кабинета и плиток
+  window.MONITOR_BY_SID={}; ps.forEach(function(p){ if(p&&p.session_id) window.MONITOR_BY_SID[p.session_id]=p; });
   const dot = h => h==="error"?"🔴":(h==="warn"?"🟡":"🟢");
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n||"");
   const tm = t => t ? esc(String(t).slice(0,16).replace("T"," ")) : "—";
@@ -2676,11 +2693,49 @@ function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : (a&&a.stages_meta&&a
 function openWzCabinet(i){ _wzCabI=i; _wzCabTab=_wzDomainTab(AUTOS[i]); _wzCabRender(); }
 function closeWzCabinet(){ _wzCabI=-1; var o=el('wz_cab'); if(o)o.remove(); }
 function wzCabTab(t){ _wzCabTab=t; _wzCabRender(); }
+// ── C1 Пульт: честный статус жизни — из реальности (сессия/расписание/монитор), не из витрины ──
+function _wzLife(a){
+  var sid=(a&&a.session_id)||'';
+  if(window._runningSid===sid) return {k:'running', label:'⏳ прогон идёт…', color:'#F5C26B'};
+  if(a.paused) return {k:'paused', label:'⏸ на паузе', color:'#F5C26B'};
+  var mon=(window.MONITOR_BY_SID||{})[sid];
+  if(mon && mon.health && mon.health!=='ok')
+    return {k:'attention', label:'🟡 нужна помощь', color:'#F5C26B', reason:(mon.reasons&&mon.reasons[0])||''};
+  if((a.schedule&&a.schedule.period)||a.inbound) return {k:'active', label:'● работает', color:'#7ee2a1'};
+  return {k:'manual', label:'○ запуск вручную', color:'rgba(255,255,255,.8)'};
+}
+function _wzLifeRow(a){
+  var L=_wzLife(a);
+  var bits=['<span style="color:'+L.color+';font-weight:700">'+L.label+'</span>'];
+  if(L.k==='active'&&a.next_due_ts){ var t=String(a.next_due_ts).slice(5,16).replace('T',' '); bits.push('<span style="color:rgba(255,255,255,.75)">след. запуск '+esc(t)+'</span>'); }
+  var canPause=(a.schedule&&a.schedule.period)||a.inbound;
+  if(canPause||a.paused){
+    bits.push('<button onclick="pauseProcess(_wzCabI)" style="border:1px solid rgba(255,255,255,.45);background:rgba(255,255,255,.14);color:#fff;border-radius:8px;padding:3px 12px;cursor:pointer;font:600 11.5px var(--sans)">'+(a.paused?'▶ Возобновить':'⏸ Пауза')+'</button>');
+  }
+  var html='<div id="wz_cab_life" style="margin-top:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;font:600 12px var(--sans)">'+bits.join('<span style="opacity:.5">·</span>')+'</div>';
+  if(L.k==='attention'&&L.reason){
+    var act='';
+    if(/tourvisor|токен/i.test(L.reason)) act='<button onclick="closeWzCabinet();setMode(\'automations\');setTimeout(function(){var e=document.querySelector(\'#connBar details\');if(e){e.open=true;e.scrollIntoView({block:\'center\'});}},400)" style="border:none;background:rgba(255,255,255,.92);color:#7a5b1a;border-radius:8px;padding:3px 12px;cursor:pointer;font:700 11.5px var(--sans)">Обновить токен</button>';
+    else if(/прогон/i.test(L.reason)) act='<button onclick="wzCabTab(\'overview\')" style="border:none;background:rgba(255,255,255,.92);color:#7a5b1a;border-radius:8px;padding:3px 12px;cursor:pointer;font:700 11.5px var(--sans)">Запустить снова</button>';
+    html+='<div style="margin-top:7px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(0,0,0,.22);border-radius:10px;padding:7px 12px;font:600 12px var(--sans);color:#FFE9C2">⚠ '+esc(L.reason)+' '+act+'</div>';
+  }
+  return html;
+}
+async function pauseProcess(i){
+  var a=AUTOS[i]; if(!a) return;
+  var toPause=!a.paused;
+  if(toPause && a.inbound && !confirm('На паузе входящие обращения обрабатываться НЕ будут (накопленные за паузу не получат ответов). Поставить на паузу?')) return;
+  var r=await jpost('/x/pause',{session_id:a.session_id, paused:toPause});
+  if(r&&r.status==='success'){
+    a.paused=toPause;
+    toast(toPause?'⏸ На паузе — автозапуски остановлены, настройки сохранены':'▶ Возобновлено — следующий запуск через интервал','ok');
+    if(_wzCabI>=0) _wzCabRender();
+  } else toast('Ошибка: '+((r&&r.message)||''),'err');
+}
 function _wzCabRender(){
   var a=AUTOS[_wzCabI]; if(!a){ closeWzCabinet(); return; }
   var o=el('wz_cab'); if(!o){ o=document.createElement('div'); o.id='wz_cab'; o.style.cssText='position:fixed;inset:0;background:var(--cream);z-index:99998;display:flex;flex-direction:column;overflow:hidden'; document.body.appendChild(o); }
-  var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс'), st=_wzStatus(a);
-  var stBadge={active:['● активен','#2f9e56'],paused:['⏸ пауза','#C57E33'],frozen:['🔒 заморожен','#3A6EA5']}[st]||['● активен','#2f9e56'];
+  var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс');
   // доменная вкладка ПЕРВОЙ: ручная панель пака (Travel «🧳 Работа») ИЛИ генерируемый вид процесса из blueprint
   var domainTab = a.panel_url ? [['panel','🧳 Работа']] : ((a.stages_meta&&a.stages_meta.length) ? [['process','🧭 Процесс']] : []);
   var tabs=domainTab.concat([['overview','Запуск'],['settings','Настройка'],['rules','Правила'],['template','Шаблон'],['runs','Прогоны']]);
@@ -2693,7 +2748,8 @@ function _wzCabRender(){
         '<div style="min-width:0;flex:1">'+
           '<div style="font:700 21px/1.25 var(--sans);color:#fff;text-shadow:0 1px 5px rgba(0,0,0,.32)">'+nm+'</div>'+
           (tag?'<div style="font-size:13px;color:rgba(255,255,255,.94);margin-top:4px;text-shadow:0 1px 4px rgba(0,0,0,.3)">'+esc(tag)+'</div>':'')+
-          '<div style="margin-top:8px;font:700 10px var(--mono,monospace);color:'+stBadge[1]+'">'+stBadge[0]+' <span style="color:rgba(255,255,255,.7);font-weight:500">· '+esc(a.orchestrator||a.session_id||'')+'</span></div>'+
+          _wzLifeRow(a)+
+          '<div style="margin-top:6px;font:500 10px var(--mono,monospace);color:rgba(255,255,255,.55)">'+esc(a.orchestrator||a.session_id||'')+'</div>'+
         '</div>'+
         '<button onclick="closeWzCabinet()" style="border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.14);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:600 13px var(--sans);flex-shrink:0;position:relative">✕ Закрыть</button>'+
       '</div>'+
@@ -3046,6 +3102,7 @@ async function renderAutomations(){
       ${_wzHeroHTML(a)}
       <div class="tile-badges">
         <span class="tile-badge ${a.audit==="allow"?"ok":"warn"}">${a.audit==="allow"?"✓ проверен":"! с замечаниями"}</span>
+        ${a.paused?`<span class="tile-badge" style="background:rgba(197,126,51,.14);color:#C57E33">⏸ ${WLANG==='en'?'paused':'пауза'}</span>`:((window.MONITOR_BY_SID||{})[a.session_id]&&(window.MONITOR_BY_SID||{})[a.session_id].health!=='ok'?`<span class="tile-badge" style="background:rgba(224,176,64,.16);color:#a67c1a">🟡 ${WLANG==='en'?'needs attention':'нужна помощь'}</span>`:"")}
         ${(a.schedule&&a.schedule.period)?`<span class="tile-badge ok">⏰ ${esc(a.schedule.period)}</span>`:""}
         ${a.production_agent?`<span class="tile-badge ok">🤖 агент 24/7</span>`:""}
         ${(a.source&&a.source.kind)?`<span class="tile-badge">🔗 ${esc(SRCNAME(a.source.kind))}</span>`:""}
@@ -3147,11 +3204,15 @@ function showBrief(md, opts){
     '<div class="bb">'+mdToHtml(md)+'</div></div>';
   m.style.display="flex";
 }
+function _wzLifeRefresh(){ if(_wzCabI<0) return; var a=AUTOS[_wzCabI]; var e=el('wz_cab_life'); if(!a||!e) return; var tmp=document.createElement('div'); tmp.innerHTML=_wzLifeRow(a); var fresh=tmp.querySelector('#wz_cab_life'); if(fresh) e.replaceWith(fresh); }
 async function runProcess(i){
   const a = AUTOS[i]; if(!a) return;
+  if(window._runningSid===a.session_id) return;   // C1: двойной клик — прогон уже идёт
   const out = el("autoRun-"+i);
   out.innerHTML = `<span class="spin"></span> ${WLANG==='en'?'running the process…':'запускаю процесс…'}`;
-  const r = await jpost("/x/run_process",{session_id:a.session_id});
+  window._runningSid=a.session_id; _wzLifeRefresh();   // C1: шапка «⏳ прогон идёт», кнопки не дублируют запуск
+  let r; try{ r = await jpost("/x/run_process",{session_id:a.session_id}); }
+  finally{ window._runningSid=null; _wzLifeRefresh(); }
   if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">${WLANG==='en'?'Error':'Ошибка'}: ${esc(r.message||"")}</span>`; return; }
   if(r.digest){
     out.innerHTML = `<span style="color:var(--ok,#2a2)">✓ ${WLANG==='en'?'Done — '+(r.findings||0)+' signals. Opening brief…':'Готово — '+(r.findings||0)+' находок. Открываю бриф…'}</span>`;

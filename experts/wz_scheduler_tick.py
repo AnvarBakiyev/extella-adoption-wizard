@@ -167,8 +167,19 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                     seen.append(dk)
                 fresh.append(ev)
             ic["seen"] = seen[-200:]
+            # C1 (Пауза кабинета): drain_once ставит мост при Возобновлении — этот тик дренирует
+            # бэклог, накопленный за паузу, БЕЗ ответов (курсор/seen двигаются, ответы не шлются).
+            # Канон at-most-once: лучше не ответить на старое, чем разослать спам по бэклогу.
+            _drain = bool(ic.get("drain_once"))
+            if _drain:
+                ic["drain_once"] = False
+                ic["skipped_backlog"] = int(ic.get("skipped_backlog", 0) or 0) + len(fresh)
+                ic["drained_at"] = now().isoformat()
             # зафиксировать курсор+seen СРАЗУ (идемпотентность к падению/наложению/таймауту тика)
             kv("set", {"key": ikey, "value": json.dumps(ic, ensure_ascii=False), "description": "inbound " + sid})
+            if _drain:
+                _dbg["polls"].append({"sid": sid, "drained": len(fresh)})
+                continue   # бэклог помечен seen → не ответим и в следующие тики
             processed = 0
             for ev in fresh:
                 # УМНЫЙ ОТВЕТ (опционально, обратносовместимо): если в inbound-конфиге задан reply_expert,
