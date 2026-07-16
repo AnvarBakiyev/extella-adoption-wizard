@@ -616,10 +616,12 @@ def _kp_install_on(pack_id, target):
         return {"status": "error", "message": str(e)[:150]}
 
 
-def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None):
+def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None, want_code=False):
     """Создаёт (external save → persist) вызываемый оркестратор процесса с вшитыми стадиями.
     session_id вшивается (%(SID)s) для резолвера файла из общего стора на хостинге.
-    kp_stages — имена knowledge-стадий, которым оркестратор пробрасывает target+api_token (реюз kp_ask)."""
+    kp_stages — имена knowledge-стадий, которым оркестратор пробрасывает target+api_token (реюз kp_ask).
+    Это фактический КОМПИЛЯТОР pipeline_dsl (CSPL Studio S2): программа {stages,...} → эксперт.
+    want_code=True — вернуть третьим элементом сгенерированный код (проверка детерминизма)."""
     name = ns + "_run_pipeline"
     code = _ORCH_TEMPLATE % {"NAME": name, "WORKDIR": work_dir,
                              "STAGES": json.dumps(stage_names, ensure_ascii=False),
@@ -634,6 +636,8 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None)
                                                            "target": "", "source_key": ""},
                                   "cspl": "fython", "global": True})
     ok = sv.get("status") == "success" or sv.get("id") is not None
+    if want_code:
+        return (name if ok else None), sv, code
     return (name if ok else None), sv
 
 

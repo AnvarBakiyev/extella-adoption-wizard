@@ -274,6 +274,29 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
       <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Воркспейсес</div>
       <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">рабочие среды проектов</div>
     </div>
+    <div class="sysapp" onclick="openCsplStudio()" title="Системное приложение — нельзя удалить"
+         style="width:180px;cursor:pointer;text-align:center;padding:18px 12px;border-radius:16px;transition:background .15s"
+         onmouseover="this.style.background='var(--paper,#fff)'" onmouseout="this.style.background='transparent'">
+      <div style="width:84px;height:84px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#2a6f77,#14171e);display:flex;align-items:center;justify-content:center;font-size:42px;box-shadow:0 6px 18px rgba(20,40,45,.3)">📜</div>
+      <div style="font:700 15px var(--sans);color:var(--ink,#0a0a0a)">Студия языков</div>
+      <div style="font-size:12px;color:var(--silver,#889);margin-top:3px;line-height:1.4">свои предметные языки</div>
+    </div>
+  </div>
+</div>
+
+<!-- CSPL Studio S3: языки аккаунта (cspl:registry → /x/registry), проба компиляции без кода -->
+<div id="cspl_studio" style="display:none;position:fixed;inset:0;z-index:9990;background:var(--cream,#f4f1ea);overflow:auto">
+  <div style="max-width:980px;margin:0 auto;padding:26px 28px 70px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+      <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#2a6f77,#14171e);display:flex;align-items:center;justify-content:center;font-size:26px">📜</div>
+      <div>
+        <div style="font:700 20px var(--sans);color:var(--ink,#0a0a0a)">Студия языков</div>
+        <div style="font-size:12.5px;color:var(--silver,#889)">предметные языки вашего аккаунта: программа словами дела → проверенный исполняемый результат</div>
+      </div>
+      <button class="btn ghost" style="margin-left:auto;padding:8px 16px" onclick="closeCsplStudio()">✕ Закрыть</button>
+    </div>
+    <div id="csplList"><div class="empty"><span class="spin"></span> загружаю языки…</div></div>
+    <div style="font-size:12px;color:var(--silver);margin-top:14px">Создание нового языка словами (генеративный builder) — следующий этап Студии; сегодня языки регистрируются с обязательными контрольными прогонами (fixtures-гейт).</div>
   </div>
 </div>
 
@@ -588,6 +611,10 @@ var _I18N_DICT = {
   "Композитор": "Composer",
   "Визард": "Wizard",
   "Воркспейсес": "Workspaces",
+  "Студия языков": "Language Studio",
+  "свои предметные языки": "your own domain languages",
+  "предметные языки вашего аккаунта: программа словами дела → проверенный исполняемый результат": "your account's domain languages: a program in business terms → a verified executable result",
+  "Создание нового языка словами (генеративный builder) — следующий этап Студии; сегодня языки регистрируются с обязательными контрольными прогонами (fixtures-гейт).": "Creating a new language in words (generative builder) is the Studio's next stage; today languages are registered with mandatory control runs (fixtures gate).",
   "задачи из готовых блоков": "tasks from ready-made blocks",
   "бизнес-процессы под ключ": "turnkey business processes",
   "рабочие среды проектов": "project work environments",
@@ -1517,7 +1544,64 @@ function closeCompStudio(){
   var st=el('comp_studio'); if(!st||st.style.display==='none') return;
   st.style.display='none'; document.body.style.overflow='';
 }
-document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeCompStudio(); });
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeCompStudio(); closeCsplStudio(); } });
+// ── CSPL Studio S3: языки аккаунта + проба компиляции ──
+function openCsplStudio(){ var st=el('cspl_studio'); if(!st) return; st.style.display='block'; document.body.style.overflow='hidden'; renderCsplStudio(); }
+function closeCsplStudio(){ var st=el('cspl_studio'); if(!st||st.style.display==='none') return; st.style.display='none'; document.body.style.overflow=''; }
+var _CSPL_SAMPLE = JSON.stringify([{"Контрагент":"ТОО Альфа","Расхождение":"1800"},{"Контрагент":"ИП Бета","Расхождение":"300"},{"Контрагент":"АО Гамма","Расхождение":"4500"}]);
+async function renderCsplStudio(){
+  var host=el('csplList'); if(!host) return;
+  var d; try{ d=await jget('/x/registry?type=cspl_handler'); }catch(e){ d=null; }
+  var caps=(d&&d.capabilities)||[];
+  if(!caps.length){ host.innerHTML='<div class="empty">'+(WLANG==='en'?'No languages yet — the registry may still be rebuilding.':'Языков пока нет — реестр мог ещё пересобираться.')+'</div>'; return; }
+  host.innerHTML=caps.map(function(c,i){
+    var fx=c.fixtures_ok;
+    return '<div class="card" style="border-left:3px solid #2a6f77;margin-bottom:12px">'
+      +'<div style="display:flex;align-items:center;gap:10px"><b style="font-size:15px">'+esc(c.title||c.capability_id)+'</b>'
+      +'<span class="badge '+(fx?'ok':'warn')+'">'+(fx?(WLANG==='en'?'fixtures passed':'контрольные прогоны пройдены'):(WLANG==='en'?'fixtures unknown':'прогоны не подтверждены'))+'</span>'
+      +'<span style="margin-left:auto;font-size:11px;color:var(--silver)">'+(WLANG==='en'?'compiles to':'компилируется в')+': '+esc(((c.compiles_to||[]).join(', '))||'—')+'</span></div>'
+      +'<div style="font-size:12.5px;color:var(--ink-medium);margin:6px 0 10px">'+esc(c.description||'')+'</div>'
+      +'<details><summary style="cursor:pointer;font-size:12.5px;color:var(--nav)">'+(WLANG==='en'?'▸ Try it (program + data → compile)':'▸ Попробовать (программа + данные → компиляция)')+'</summary>'
+      +'<div style="margin-top:10px"><div style="font-size:11px;color:var(--silver)">'+(WLANG==='en'?'Program (JSON)':'Программа (JSON)')+'</div>'
+      +'<textarea id="cspl_prog_'+i+'" style="width:100%;height:110px;font:12px var(--mono,monospace);border:1px solid var(--cream-dark);border-radius:8px;padding:8px"></textarea>'
+      +'<div style="font-size:11px;color:var(--silver);margin-top:6px">'+(WLANG==='en'?'Records (JSON list) — for report languages':'Данные (JSON-список) — для отчётных языков')+'</div>'
+      +'<textarea id="cspl_recs_'+i+'" style="width:100%;height:64px;font:12px var(--mono,monospace);border:1px solid var(--cream-dark);border-radius:8px;padding:8px"></textarea>'
+      +'<div style="margin-top:8px"><button class="btn gold sm" onclick="csplTry('+i+',\''+esc(c.capability_id)+'\')">'+(WLANG==='en'?'Compile':'Компилировать')+'</button>'
+      +'<span class="statusline" id="cspl_st_'+i+'"></span></div><div id="cspl_out_'+i+'" style="margin-top:8px;font-size:12.5px"></div></div></details></div>';
+  }).join('');
+  // преднабивка примеров программ из реестра (best-effort — берём program_example, если есть в описании реестра KV нет; ставим шаблоны)
+  caps.forEach(function(c,i){
+    var t=el('cspl_prog_'+i); if(!t) return;
+    t.value = c.capability_id==='cspl_pipeline_dsl'
+      ? JSON.stringify({pipeline:"demo",stages:["uc_parse_invoices_acts","uc_anonymize_invoice_data"],kp_stages:[]},null,1)
+      : JSON.stringify({report:"Крупные расхождения",columns:["Контрагент","Расхождение"],filter:{field:"Расхождение",op:">",value:1000},totals:["Расхождение"],out:"md"},null,1);
+    var r=el('cspl_recs_'+i); if(r) r.value=_CSPL_SAMPLE;
+  });
+}
+async function csplTry(i, handler){
+  var st=el('cspl_st_'+i), out=el('cspl_out_'+i);
+  var prog, recs;
+  try{ prog=JSON.parse((el('cspl_prog_'+i)||{}).value||'{}'); }
+  catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+(WLANG==='en'?'Program is not valid JSON':'Программа — не валидный JSON')+'</span>'; return; }
+  try{ recs=JSON.parse((el('cspl_recs_'+i)||{}).value||'[]'); }catch(e){ recs=[]; }
+  if(st) st.innerHTML='<span class="spin"></span>';
+  var r; try{ r=await jpost('/x/cspl_compile',{handler_id:handler,program:prog,records:recs}); }
+  catch(e){ r={status:'error',message:String(e)}; }
+  if(st) st.innerHTML='';
+  if(!r) return;
+  if(r.status==='success'){
+    out.innerHTML='<span style="color:var(--ok,#2a2)">✓ '+(WLANG==='en'?'Compiled':'Скомпилировано')+'</span>'
+      +(r.rows!=null?' · '+(WLANG==='en'?'rows':'строк')+': '+esc(String(r.rows)):'')
+      +(r.totals?' · '+(WLANG==='en'?'totals':'итоги')+': '+esc(JSON.stringify(r.totals)):'')
+      +(r.orchestrator?' · '+(WLANG==='en'?'expert created':'создан эксперт')+': <code>'+esc(r.orchestrator)+'</code>':'')
+      +((r.outputs&&r.outputs.md)?'<div style="color:var(--silver);font-size:11px">'+esc(r.outputs.md)+'</div>':'');
+  } else if(r.status==='invalid'){
+    out.innerHTML='<span style="color:#a67c1a">'+(WLANG==='en'?'Program rejected before execution':'Программа отклонена до исполнения')+':</span><br>'
+      +(r.errors||[]).map(function(e2){return '— <b>'+esc(e2.field||'')+'</b>: '+esc(e2.message||'');}).join('<br>');
+  } else {
+    out.innerHTML='<span style="color:var(--bad)">'+(WLANG==='en'?'Error':'Ошибка')+': '+esc(r.message||'')+'</span>';
+  }
+}
 // Воркспейсес — кокпит рабочих сред (плагин workspace, локальный сервер :34767).
 // Внутри Extella Desktop window.open уводит 127.0.0.1 во внешний браузер
 // (setWindowOpenHandler хоста) — поэтому, когда мы встроены в тулбар (iframe),

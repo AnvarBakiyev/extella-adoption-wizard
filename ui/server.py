@@ -3175,6 +3175,51 @@ class Handler(BaseHTTPRequestHandler):
             if not re.match(r"^cspl_[a-z0-9_]+$", handler or ""):
                 self._send({"status": "error", "message": "handler_id должен быть cspl_*"}, 400)
                 return
+            if handler == "cspl_pipeline_dsl":
+                # S2: pipeline_dsl — компилятор живёт В МОСТУ (_make_orchestrator = рендер _ORCH_TEMPLATE),
+                # артефакт компиляции — исполняемый эксперт <ns>_run_pipeline на платформе.
+                prog = body.get("program") if isinstance(body.get("program"), dict) else {}
+                perrs = []
+                ns = str(prog.get("pipeline", "")).strip()
+                if not re.match(r"^[a-z][a-z0-9]{1,15}$", ns or ""):
+                    perrs.append({"field": "pipeline", "message": "имя конвейера: латиница/цифры, 2-16 символов (станет префиксом эксперта)"})
+                stages = prog.get("stages")
+                if not (isinstance(stages, list) and stages and all(isinstance(x, str) and re.match(r"^[A-Za-z0-9_]+$", x) for x in stages)):
+                    perrs.append({"field": "stages", "message": "обязателен непустой список имён экспертов-стадий"})
+                kp = prog.get("kp_stages") or []
+                if not (isinstance(kp, list) and all(isinstance(x, str) for x in kp)):
+                    perrs.append({"field": "kp_stages", "message": "kp_stages должен быть списком имён"})
+                elif isinstance(stages, list) and any(x not in stages for x in kp):
+                    perrs.append({"field": "kp_stages", "message": "каждая kp-стадия обязана входить в stages"})
+                # глубокая валидация: стадии должны СУЩЕСТВОВАТЬ на платформе (это ценность языка)
+                if not perrs:
+                    for st in stages:
+                        try:
+                            g = api("/api/expert/get", {"name": st, "global": True}, 30)
+                            code_len = len((g or {}).get("expert_code") or ((g or {}).get("expert") or {}).get("code") or "")
+                        except Exception:
+                            code_len = -1
+                        if code_len <= 0:
+                            perrs.append({"field": "stages", "message": "эксперт не найден на платформе: " + st})
+                if perrs:
+                    self._send({"status": "invalid", "handler": "cspl_pipeline_dsl", "errors": perrs})
+                    return
+                if str(body.get("action", "compile")) == "validate":
+                    self._send({"status": "valid", "handler": "cspl_pipeline_dsl"})
+                    return
+                from wz_build import _make_orchestrator as _mk
+                import hashlib as _hl
+                nm, sv, code = _mk(ns, stages, str(prog.get("work_dir") or ("/tmp/" + ns + "_run")),
+                                   session_id=str(prog.get("session_id") or ""),
+                                   kp_stages=kp, want_code=True)
+                if not nm:
+                    self._send({"status": "error", "message": "компиляция не сохранилась: " + _scrub(str(sv)[:150])})
+                    return
+                _registry_refresh_async()   # новый исполняемый артефакт — реестр вслед
+                self._send({"status": "success", "handler": "cspl_pipeline_dsl", "compiled": "expert",
+                            "orchestrator": nm, "code_sha256": _hl.sha256(code.encode("utf-8")).hexdigest(),
+                            "params_contract": 1})
+                return
             try:
                 _rg = json.loads((api("/api/kv/get", {"key": "cspl:registry"}) or {}).get("value") or "{}")
                 if handler not in (_rg.get("handlers") or {}):

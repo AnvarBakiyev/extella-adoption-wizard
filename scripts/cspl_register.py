@@ -54,12 +54,81 @@ def run_handler(name, params, tok):
     return out if isinstance(out, dict) else {"status": "error", "raw": str(out)[:200]}
 
 
+def bridge_compile(payload):
+    import urllib.request
+    req = urllib.request.Request("http://127.0.0.1:8765/x/cspl_compile",
+                                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    return json.loads(urllib.request.urlopen(req, timeout=300).read().decode("utf-8"))
+
+
+def register_pipeline_dsl(tok):
+    """S2: pipeline_dsl — компилятор в мосту (_make_orchestrator). Fixtures через /x/cspl_compile.
+    Позитив компилирует ВРЕМЕННЫЙ эксперт cspltest_run_pipeline (детерминизм по code_sha256)."""
+    print("fixtures cspl_pipeline_dsl (via bridge):")
+    failed = 0
+    prog_ok = {"pipeline": "cspltest", "stages": ["uc_parse_invoices_acts", "uc_anonymize_invoice_data"],
+               "kp_stages": []}
+    r1 = bridge_compile({"handler_id": "cspl_pipeline_dsl", "program": prog_ok})
+    ok1 = r1.get("status") == "success" and r1.get("orchestrator") == "cspltest_run_pipeline" and r1.get("code_sha256")
+    print(("  ✓ " if ok1 else "  ✗ ") + "positive_compile → " + str(r1.get("status")) + " · " + str(r1.get("orchestrator")))
+    failed += 0 if ok1 else 1
+    r2 = bridge_compile({"handler_id": "cspl_pipeline_dsl", "program": prog_ok})
+    det = ok1 and r2.get("code_sha256") == r1.get("code_sha256")
+    print(("  ✓ " if det else "  ✗ ") + "determinism (code_sha256 повтора совпал)")
+    failed += 0 if det else 1
+    r3 = bridge_compile({"handler_id": "cspl_pipeline_dsl", "action": "validate",
+                         "program": {"pipeline": "cspltest", "stages": ["no_such_expert_xyz"]}})
+    ok3 = r3.get("status") == "invalid" and any("не найден" in str(e.get("message")) for e in r3.get("errors", []))
+    print(("  ✓ " if ok3 else "  ✗ ") + "negative_missing_stage → " + str(r3.get("status")))
+    failed += 0 if ok3 else 1
+    r4 = bridge_compile({"handler_id": "cspl_pipeline_dsl", "action": "validate",
+                         "program": {"pipeline": "cspltest", "stages": ["uc_parse_invoices_acts"],
+                                     "kp_stages": ["uc_validate_vat_compliance"]}})
+    ok4 = r4.get("status") == "invalid" and any(e.get("field") == "kp_stages" for e in r4.get("errors", []))
+    print(("  ✓ " if ok4 else "  ✗ ") + "negative_kp_not_subset → " + str(r4.get("status")))
+    failed += 0 if ok4 else 1
+    # уборка временного артефакта компиляции (best-effort)
+    try:
+        sync.api("/api/expert/delete", {"name": "cspltest_run_pipeline", "global": True}, tok)
+        print("  · временный cspltest_run_pipeline удалён")
+    except Exception as e:
+        print("  · временный эксперт не удалился (не блокер):", str(e)[:60])
+    if failed:
+        print("fixtures FAILED: %d — регистрация ЗАБЛОКИРОВАНА" % failed)
+        sys.exit(1)
+    reg = {}
+    try:
+        g = sync.api("/api/kv/get", {"key": "cspl:registry"}, tok)
+        reg = json.loads(g.get("value") or "{}")
+    except Exception:
+        pass
+    handlers = reg.get("handlers") or {}
+    handlers["cspl_pipeline_dsl"] = {
+        "handler_id": "cspl_pipeline_dsl", "version": "1.0.0", "kind": "pipeline",
+        "executor": "bridge:_make_orchestrator",
+        "description": "pipeline_dsl: программа {pipeline, stages[], kp_stages[]} → исполняемый эксперт-оркестратор <ns>_run_pipeline (контракт F2: rules_json/fields_json); валидация включает существование стадий на платформе",
+        "compiles_to": ["expert(orchestrator)"],
+        "fixtures": [{"name": "positive_compile", "ok": ok1}, {"name": "determinism", "ok": det},
+                     {"name": "negative_missing_stage", "ok": ok3}, {"name": "negative_kp_not_subset", "ok": ok4}],
+        "determinism_code_sha256": r1.get("code_sha256"),
+        "program_example": prog_ok,
+    }
+    sync.api("/api/kv/set", {"key": "cspl:registry",
+                             "value": json.dumps({"v": 0, "handlers": handlers}, ensure_ascii=False),
+                             "description": "CSPL Studio registry v0"}, tok)
+    print("зарегистрирован: cspl_pipeline_dsl v1.0.0 · handlers в реестре:", len(handlers))
+
+
 def main():
     handler = sys.argv[1] if len(sys.argv) > 1 else "cspl_report_dsl"
+    tok = sync.token()
+    if handler == "cspl_pipeline_dsl":
+        register_pipeline_dsl(tok)
+        return
     fixtures = FIXTURES.get(handler)
     if not fixtures:
         raise SystemExit("нет fixtures для " + handler)
-    tok = sync.token()
     results = []
     failed = 0
     md_digests = []
