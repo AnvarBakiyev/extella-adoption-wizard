@@ -3210,7 +3210,9 @@ function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : (a&&a.stages_meta&&a
 function openWzCabinet(i){ _wzCabI=i; _wzCabTab=_wzDomainTab(AUTOS[i]); _wzCabRender(); }
 // Exception Inbox: открытие кабинета по session_id (инбокс рендерится раньше, чем загрузились AUTOS)
 async function openWzCabinetBySid(sid){
-  if(!(AUTOS||[]).length){ try{ var d=await jget("/x/automations"); AUTOS=(d&&d.automations)||[]; }catch(e){} }
+  // #23: всегда тянуть свежий список (не только когда пуст) — иначе кабинет открывается на устаревших
+  // данных: новые автоматизации не находятся, прогоны/статусы не обновлены
+  try{ var d=await jget("/x/automations"); if(d&&Array.isArray(d.automations)) AUTOS=d.automations; }catch(e){}
   var i=(AUTOS||[]).findIndex(function(a){ return a.session_id===sid; });
   if(i<0){ toast(WLANG==='en'?'Process not found among automations':'Процесс не найден среди автоматизаций','err'); return; }
   openWzCabinet(i);
@@ -4064,6 +4066,8 @@ async function runProcess(i){
   const rr = el("runrow-"+i);
   if(rr) rr.innerHTML = `Последний прогон: ${esc((run.at||"").slice(0,16).replace("T"," "))} · ${esc(run.status)} · сумма ${fmt(run.total_sum)}${dl}`;
   a.last_run = run;   // безусловно: виджет «Последний результат» должен наполниться и после ПЕРВОГО прогона (был баг: только если last_run уже существовал)
+  (a.runs = a.runs || []).unshift(run);   // #22: вкладка «Прогоны» пополняется сразу, не только после переоткрытия кабинета
+  if(typeof a.runs_count === "number") a.runs_count++;
   renderMonitor();
 }
 const SCHED_PRESETS = [
