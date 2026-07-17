@@ -2864,6 +2864,7 @@ function renderLaunch(){
           ${runs.length
             ? `<b>✓ Готово — автоматизация работает.</b> Первый прогон сделан${lastRunAt?(" ("+esc(lastRunAt)+")"):""}. Дальше она живёт в кабинете: расписание, повторные прогоны, пауза и результаты во времени.`
             : `<b>✓ Процесс одобрен и готов.</b> Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть результат на ваших данных.`}
+          ${!(S.session.source&&S.session.source.kind) ? `<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px;padding:9px 12px;margin-top:10px;font-size:12.5px;color:#7a5b1a">⚠ Данные пока загружаются <b>вручную файлом</b>. Чтобы процесс работал сам 24/7 — откройте кабинет → «Настройка» → «Привязать источник» → «✨ Любой источник» (своё API / CRM / рекламный кабинет).</div>` : ""}
           <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             ${runs.length
               ? `<button class="btn gold" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button><button class="btn ghost" onclick="openReport()">📄 Открыть отчёт</button><button class="btn ghost" onclick="doFirstRun()">↻ Прогон ещё раз</button>`
@@ -3536,12 +3537,14 @@ function _wzCabBody(a){
       '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
       '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
   if(_wzCabTab==='compose' && a.flow_id) return _wzCabComposeTab(a);
-  if(_wzCabTab==='process' && a.stages_meta && a.stages_meta.length) return _wzCabProcess(a);
-  if(_wzCabTab==='overview') return _wzCabLaunch(a);
-  if(_wzCabTab==='runs') return _wzCabRuns(a);
-  if(_wzCabTab==='settings') return _wzCabSettings(a);
-  if(_wzCabTab==='rules') return _wzCabRules(a);
-  if(_wzCabTab==='template') return _wzCabTemplate(a);
+  // Слой 1 честный статус: если живого источника нет — предупреждающий баннер на ЛЮБОЙ содержательной вкладке
+  var _sb = ((a.source&&a.source.kind)||a.panel_url) ? "" : _wzSourceBanner(a, _wzCabI);
+  if(_wzCabTab==='process' && a.stages_meta && a.stages_meta.length) return _sb + _wzCabProcess(a);
+  if(_wzCabTab==='overview') return _sb + _wzCabLaunch(a);
+  if(_wzCabTab==='runs') return _sb + _wzCabRuns(a);
+  if(_wzCabTab==='settings') return _sb + _wzCabSettings(a);
+  if(_wzCabTab==='rules') return _sb + _wzCabRules(a);
+  if(_wzCabTab==='template') return _sb + _wzCabTemplate(a);
   return '';
 }
 function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;color:var(--ink-soft);background:var(--cream);border:1px solid var(--cream-dark);border-radius:7px;padding:4px 10px;margin:0 6px 6px 0">'+esc(c)+'</span>'; }
@@ -3719,6 +3722,17 @@ async function _wzDigestLoad(sid){
     '<div style="font-size:11px;color:var(--silver);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Бриф последнего прогона</div>'+
     '<div style="font-size:12.5px;color:var(--ink-soft);white-space:pre-wrap;max-height:150px;overflow:hidden">'+esc(prev)+'</div>'+
     '<button class="btn ghost sm" style="margin-top:8px" onclick="showBrief(window._wzLastDigest,{kicker:\'Extella · Отчёт прогона\',title:(AUTOS[_wzCabI]&&(AUTOS[_wzCabI].process_name||AUTOS[_wzCabI].client_name))||\'Отчёт прогона\'})">📄 Открыть бриф целиком</button></div>';
+}
+function _wzSourceBanner(a, i){
+  // Слой 1, честный статус: процесс НЕ выдаётся за автономный, если данные грузятся руками файлом.
+  var hasLive = (a.source && a.source.kind) || a.panel_url;
+  if(hasLive){
+    var nm = (a.source&&a.source.kind) ? _srcName(a.source.kind) : 'входящие каналы';
+    return '<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.35);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#237a44">✓ Источник данных подключён: <b>'+esc(nm)+'</b> — процесс тянет свежие данные сам.</div>';
+  }
+  return '<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+    '<div style="flex:1;min-width:220px;font-size:13px;color:#7a5b1a">⚠ <b>Данные загружаются вручную файлом.</b> Чтобы процесс работал сам 24/7 — подключите живой источник (своё API / CRM / рекламный кабинет).</div>'+
+    '<button class="btn gold sm" style="font-size:12.5px;white-space:nowrap" onclick="sourceProcess('+i+')">✨ Подключить источник</button></div>';
 }
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
