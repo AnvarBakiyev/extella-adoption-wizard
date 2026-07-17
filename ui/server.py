@@ -86,7 +86,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "4.49"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "4.50"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -1650,12 +1650,67 @@ def _knowledge_from_rows(agent_id, rows, context=""):
                     'самодостаточен, напр. «Товар X стоит Y», «У клиента Z долг W»). Верни JSON {"facts":[...]}. '
                     "Только из данных, без выдумок, 3-20 штук.")
     facts = [str(f).strip() for f in (v.get("facts") or []) if str(f).strip()][:20]
-    saved = 0
+    ids = []
     for f in facts:
         r = _api_agent("/api/concept/add", {"text": f[:400]}, agent_id)
-        if isinstance(r, dict) and (r.get("id") or r.get("status") == "success"):
-            saved += 1
-    return {"ok": saved > 0, "facts": facts, "saved": saved}
+        if isinstance(r, dict) and r.get("id"):
+            ids.append(r.get("id"))
+    return {"ok": len(ids) > 0, "facts": facts, "saved": len(ids), "ids": ids}
+
+
+# ── A4: источник знаний с обновлением (мозг агента не устаревает) ──────────────────────────────────
+def _knowsrc_key(agent_id, gen_id):
+    return "knowsrc:" + _ns(agent_id) + ":" + _ns(gen_id)
+
+
+def _knowsrc_index_key(agent_id):
+    return "knowsrc_idx:" + _ns(agent_id)
+
+
+def _knowsrc_index_add(agent_id, gen_id):
+    idx = _kv_read(_knowsrc_index_key(agent_id), []) or []
+    if gen_id not in idx:
+        idx.append(gen_id)
+        _kv_write(_knowsrc_index_key(agent_id), idx)
+
+
+def _knowsrc_index_remove(agent_id, gen_id):
+    idx = [g for g in (_kv_read(_knowsrc_index_key(agent_id), []) or []) if g != gen_id]
+    _kv_write(_knowsrc_index_key(agent_id), idx)
+
+
+def _knowledge_refresh(agent_id, gen_id):
+    """Обновление знания из источника: перечитать ЖИВЫЕ строки (verify по сохранённому gen_id) → УДАЛИТЬ
+    прошлые факты этого источника (по их id) → записать свежие. Так мозг агента освежается, а не пухнет."""
+    rec = _kv_read(_knowsrc_key(agent_id, gen_id), None)
+    if not isinstance(rec, dict):
+        return {"ok": False, "err": "источник знаний не найден"}
+    out = _run_gen_source(gen_id, "verify", limit=25)
+    rows = out.get("preview") if isinstance(out, dict) else None
+    if not (isinstance(out, dict) and out.get("ok") and rows):
+        return {"ok": False, "err": "источник не отдал живых строк при обновлении"}
+    for cid in (rec.get("ids") or []):   # выкидываем прошлый набор фактов этого источника
+        _api_agent("/api/concept/delete", {"concept_id": cid}, agent_id)
+    kn = _knowledge_from_rows(agent_id, rows, rec.get("description") or gen_id)
+    rec["ids"] = kn.get("ids", [])
+    rec["refreshed_at"] = datetime.now(timezone.utc).isoformat()
+    ivl = int(rec.get("interval_hours", 24) or 24)
+    rec["next_due"] = (datetime.now(timezone.utc) + timedelta(hours=max(1, ivl))).isoformat()
+    _kv_write(_knowsrc_key(agent_id, gen_id), rec)
+    return {"ok": kn.get("ok", False), "saved": kn.get("saved", 0), "facts": kn.get("facts", []),
+            "refreshed_at": rec["refreshed_at"], "next_due": rec["next_due"]}
+
+
+def _knowsrc_list(agent_id):
+    """Источники знаний агента (для панели мозга): что обновляется и когда следующий раз. Список — по индексу."""
+    out = []
+    for gid in (_kv_read(_knowsrc_index_key(agent_id), []) or []):
+        rec = _kv_read(_knowsrc_key(agent_id, gid), None)
+        if isinstance(rec, dict):
+            out.append({"gen_id": rec.get("gen_id"), "description": rec.get("description"),
+                        "interval_hours": rec.get("interval_hours"), "facts": len(rec.get("ids") or []),
+                        "refreshed_at": rec.get("refreshed_at"), "next_due": rec.get("next_due")})
+    return out
 
 
 def _agents_load():
@@ -2180,7 +2235,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"status": "error", "message": "агент не выбран"}, 400)
             else:
                 nm = next((a.get("name") for a in _agents_load() if a.get("id") == cur), cur)
-                self._send({"status": "success", "agent": {"id": cur, "name": nm}, **_brain_read(cur)})
+                self._send({"status": "success", "agent": {"id": cur, "name": nm},
+                            "sources": _knowsrc_list(cur), **_brain_read(cur)})
         elif path == "/x/blueprint":
             sid = qs.get("session_id", "")
             p = SESS_DIR / (sid + "_blueprint.json")
@@ -2827,8 +2883,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             kn = _knowledge_from_rows(cur, rows, description or endpoint)
             nm = next((a.get("name") for a in _agents_load() if a.get("id") == cur), cur)
+            # A4: сохранить как ОБНОВЛЯЕМЫЙ источник знаний (мозг не устареет) — по флагу save
+            if body.get("save") and kn.get("ok"):
+                ivl = int(body.get("interval_hours", 24) or 24)
+                rec = {"gen_id": gen_id, "agent_id": cur, "description": description or endpoint,
+                       "interval_hours": max(1, ivl), "ids": kn.get("ids", []),
+                       "refreshed_at": datetime.now(timezone.utc).isoformat(),
+                       "next_due": (datetime.now(timezone.utc) + timedelta(hours=max(1, ivl))).isoformat()}
+                _kv_write(_knowsrc_key(cur, gen_id), rec)
+                _knowsrc_index_add(cur, gen_id)
+                kn["saved_source"] = {"gen_id": gen_id, "interval_hours": rec["interval_hours"]}
             self._send({"status": "success" if kn.get("ok") else "error", "message": kn.get("err", ""),
                         "agent": {"id": cur, "name": nm}, "verify": out, "result": kn})
+            return
+
+        if self.path in ("/x/knowledge_refresh", "/x/knowledge_source_remove"):
+            # A4: обновить знание из источника (заменить факты свежими) / убрать источник обновления
+            if self._blocked_origin():
+                self._send({"status": "error", "message": "forbidden origin"}, 403)
+                return
+            cur = _kv_read(CURAGENT_KV, "") or ""
+            gid = str(body.get("gen_id", "")).strip()
+            if not cur or not gid:
+                self._send({"status": "error", "message": "нужен выбранный агент и gen_id"}, 400)
+                return
+            if self.path == "/x/knowledge_refresh":
+                r = _knowledge_refresh(cur, gid)
+                self._send({"status": "success" if r.get("ok") else "error", "message": r.get("err", ""),
+                            "result": r, "sources": _knowsrc_list(cur)})
+            else:
+                rec = _kv_read(_knowsrc_key(cur, gid), None)
+                api("/api/kv/delete", {"key": _knowsrc_key(cur, gid)})   # факты в мозге НЕ трогаем — просто перестаём обновлять
+                _knowsrc_index_remove(cur, gid)
+                self._send({"status": "success", "sources": _knowsrc_list(cur)})
             return
 
         if self.path in ("/x/source_test", "/x/source_pull"):

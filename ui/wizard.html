@@ -661,6 +661,19 @@ function _brainRender(res){
     (voiceN?' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="voiceTry()">▶ Примерить голос</button>':'')+'</div>';
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+voiceBox+
     sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур), вручную и из документа.",cs,"del_concept","add_concept").replace('＋ добавить словами</button>','＋ добавить словами</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeLearn()">📚 Загрузить знание компании</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeFromSource()">🔌 Знание из источника</button>')+
+    (function(){
+      var srcs=res.sources||[];
+      if(!srcs.length) return '';
+      return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px">🔄 Источники знаний (обновляются)</div>'+
+        '<div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 6px">Мозг агента освежается свежими данными по расписанию — знание не устаревает.</div>'+
+        srcs.map(function(x){
+          var nd=x.next_due?(' · след. '+String(x.next_due).slice(0,16).replace("T"," ")):'';
+          return '<div style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:7px;margin-bottom:4px">'+
+            '<div style="flex:1;font-size:12px"><b>'+esc(String(x.description||x.gen_id).slice(0,60))+'</b><div style="font-size:11px;color:var(--silver,#889)">'+(x.facts||0)+' фактов · каждые '+(x.interval_hours||24)+'ч'+esc(nd)+'</div></div>'+
+            '<button class="btn ghost" style="padding:4px 9px;font-size:12px" onclick="knowledgeRefresh(\''+esc(x.gen_id)+'\')">🔄 Обновить</button>'+
+            '<button class="btn ghost" style="padding:4px 8px;font-size:12px" onclick="knowledgeSourceRemove(\''+esc(x.gen_id)+'\')">✕</button></div>';
+        }).join('')+'</div>';
+    })()+
     sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон). Правила с 🎙 [голос] — выученный стиль.",rs,"del_rule","add_rule")+
     (function(){
       var sk=res.skills||{}, ex=sk.experts||[];
@@ -728,15 +741,29 @@ async function knowledgeFromSource(){
   ask("🔌 Источник данных — описание","Опишите источник словами (напр.: «список товаров с ценами из нашего JSON API»). Extella сама напишет и запустит подключение.","",async (desc)=>{
     if(!desc) return;
     ask("Адрес источника (URL)","Ссылка на API/данные (если есть). Ключ/токен — отдельно, если нужен.","",async (url)=>{
-      busy("Подключаюсь к источнику и тяну данные…");
-      const r=await jpost("/x/knowledge_from_source",{description:desc, endpoint:(url||"").trim()}); busyOff();
-      const res=(r&&r.result)||{};
-      if(r.status==="success"){
-        toast("✓ Из источника запомнено фактов: "+(res.saved||0),"ok");
-        _brainRender(await fetch("/x/brain").then(x=>x.json()));
-      } else toast("Не удалось: "+(r.message||res.err||"источник не отдал данных"),"err");
+      ask("Обновлять автоматически?","Период обновления в часах (напр. 24 — раз в сутки). Пусто — взять данные разово, без обновления.","",async (per)=>{
+        const hrs=parseInt(per)||0;
+        busy("Подключаюсь к источнику и тяну данные…");
+        const r=await jpost("/x/knowledge_from_source",{description:desc, endpoint:(url||"").trim(), save:hrs>0, interval_hours:hrs}); busyOff();
+        const res=(r&&r.result)||{};
+        if(r.status==="success"){
+          toast("✓ Запомнено фактов: "+(res.saved||0)+(res.saved_source?(" · обновление каждые "+res.saved_source.interval_hours+"ч"):""),"ok");
+          _brainRender(await fetch("/x/brain").then(x=>x.json()));
+        } else toast("Не удалось: "+(r.message||res.err||"источник не отдал данных"),"err");
+      });
     });
   });
+}
+async function knowledgeRefresh(gid){
+  busy("Обновляю знание из источника…");
+  const r=await jpost("/x/knowledge_refresh",{gen_id:gid}); busyOff();
+  const res=(r&&r.result)||{};
+  if(r.status==="success"){ toast("✓ Обновлено фактов: "+(res.saved||0),"ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
+  else toast("Не удалось: "+(r.message||res.err||""),"err");
+}
+async function knowledgeSourceRemove(gid){
+  const r=await jpost("/x/knowledge_source_remove",{gen_id:gid});
+  if(r.status==="success"){ toast("Источник снят с обновления (факты в мозге остались)","ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
 }
 
 /* ================= modal + toast (замена prompt/alert) ================= */
