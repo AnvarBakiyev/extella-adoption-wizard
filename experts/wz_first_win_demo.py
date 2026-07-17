@@ -6,6 +6,38 @@
 def wz_first_win_demo(example: str = "ads") -> dict:
     from datetime import datetime, timezone
 
+    def _fmt(n):
+        return format(int(n), ",").replace(",", " ")
+
+    # --- пример 2: забытые подписки в банковской выписке (под пару к чипу сборки) ---
+    if example == "subs":
+        txns = [
+            {"merchant": "Netflix",         "amount": 4990, "status": "активна"},
+            {"merchant": "Spotify",         "amount": 1690, "status": "активна"},
+            {"merchant": "Adobe Creative",  "amount": 7290, "status": "активна"},
+            {"merchant": "2ГИС Про",        "amount": 990,  "status": "не использовалась 2 мес"},
+            {"merchant": "CloudBackup X",   "amount": 2490, "status": "не использовалась 4 мес"},
+            {"merchant": "Онлайн-курс Y",   "amount": 3900, "status": "не использовалась 5 мес"},
+        ]
+        forgotten = [t for t in txns if "не использ" in t["status"]]
+        monthly = sum(t["amount"] for t in txns)
+        waste = sum(t["amount"] for t in forgotten)
+        rows = ["| %s | %s ₸/мес | %s |" % (t["merchant"], _fmt(t["amount"]),
+                ("🔴 " + t["status"] if "не использ" in t["status"] else "🟢 активна")) for t in txns]
+        md = [
+            "## Забытые подписки в банковской выписке", "",
+            "_Демо-прогон на синтетической выписке · %s UTC_" % datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"), "",
+            "**Нашли %d регулярных платежей** на %s ₸/мес. Из них **%d выглядят забытыми** — впустую **%s ₸/мес** (%s ₸/год)."
+            % (len(txns), _fmt(monthly), len(forgotten), _fmt(waste), _fmt(waste * 12)), "",
+            "### Регулярные платежи", "| Сервис | Сумма | Статус |", "|---|---|---|",
+        ] + rows + [
+            "", "### Рекомендация",
+            "- **Отмените забытые** — %s: сэкономит %s ₸/год" % (", ".join(t["merchant"] for t in forgotten), _fmt(waste * 12)),
+            "", "_Extella проверяет ваши выписки так каждый месяц сама. Соберите такой процесс под себя._",
+        ]
+        return {"status": "success", "example": "subs", "digest_md": "\n".join(md),
+                "summary": {"total_count": len(txns), "total_sum": monthly}, "synthetic": True}
+
     # --- вшитая синтетика (пример: ежедневный отчёт по рекламным бюджетам) ---
     rows = [
         {"client": "Альфа-Трейд",    "platform": "Meta Ads",      "campaign": "Лето_2025",     "spend": 184300, "budget_left_pct": 8},

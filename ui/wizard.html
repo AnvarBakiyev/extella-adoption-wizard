@@ -256,6 +256,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <div style="font-size:20px;font-weight:800;color:var(--ink,#0a0a0a);margin:4px 0 6px">Посмотрите Extella в деле — прямо сейчас</div>
     <div style="font-size:13.5px;color:var(--silver,#889);line-height:1.5;margin-bottom:14px">Один клик — Extella соберёт и посчитает готовый отчёт на демо-данных за секунды. Без настройки и подключений. Это то, что процесс потом будет присылать вам сам каждый день.</div>
     <button class="btn gold" id="firstWinBtn" style="padding:12px 22px;font-size:15px" onclick="firstWin(this)">▶ Живой пример: отчёт по рекламным бюджетам</button>
+    <div style="margin-top:9px;font-size:12.5px;color:var(--silver,#889)">или другой пример: <a href="#" onclick="firstWin(this,'subs');return false" style="color:var(--gold,#a97e35);font-weight:600;text-decoration:none">💳 забытые подписки в выписке</a></div>
   </div>
   <div class="kicker">Визард внедрения</div>
   <h1>Соберите свою автоматизацию</h1>
@@ -1801,15 +1802,21 @@ async function buildProcessFromTask(taskArg){
   var ci=el("chatInput"); if(ci){ ci.value="Хочу автоматизировать процесс: "+task+". Расспроси меня и спроектируй."; ci.focus(); }
 }
 // Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без тупика)
-async function firstWin(btn){
-  var lbl = btn ? btn.textContent : "";
-  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin"></span> Extella собирает отчёт на демо-данных…'; }
-  var r; try{ r = await jpost("/x/first_win",{example:"ads"}); }catch(e){ r=null; }
-  if(btn){ btn.disabled=false; btn.textContent = lbl || "▶ Живой пример: отчёт по рекламным бюджетам"; }
+async function firstWin(btn, example){
+  example = example || "ads";
+  var META = { ads:{title:"Ежедневный отчёт по рекламным бюджетам", chip:"📊 Реклама"},
+               subs:{title:"Забытые подписки в банковской выписке", chip:"💳 Подписки"} };
+  var meta = META[example] || META.ads;
+  var lbl = btn ? btn.innerHTML : "";
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin"></span> Extella собирает результат на демо-данных…'; }
+  var r; try{ r = await jpost("/x/first_win",{example:example}); }catch(e){ r=null; }
+  if(btn){ btn.disabled=false; btn.innerHTML = lbl; }
   if(r && r.digest){
-    showBrief(r.digest, {kicker:"Extella · Первая победа (демо)", title:"Ежедневный отчёт по рекламным бюджетам",
+    showBrief(r.digest, {kicker:"Extella · Первая победа (демо)", title:meta.title,
       subtitle:"Собрано и посчитано Extella на синтетических данных за секунды — без настройки и подключений.",
-      chips:["🧠 Qwen","📊 Демо-данные","⚡ 1 клик"]});
+      chips:["🧠 Qwen", meta.chip, "⚡ 1 клик"]});
+    // косметика: после демо мягко направляем к «соберите своё» — подсвечиваем поле сборки
+    var fi=el("fwComposeInput"); if(fi){ try{ fi.focus(); fi.style.boxShadow="0 0 0 3px rgba(201,163,92,.35)"; setTimeout(function(){ fi.style.boxShadow=""; },2600); }catch(e){} }
   } else { toast("Демо временно недоступно — попробуйте ещё раз","err"); }
 }
 // Гибрид ч.2: личная сборка из онбординга — Композитор собирает под задачу (одноразовые), процессные
