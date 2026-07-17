@@ -2937,7 +2937,15 @@ async function sendChat(){
   if(r.status!=="success"){ wait.textContent = "Ошибка: "+(r.message||"нет ответа"); return; }
   S.chatRespId = r.response_id;
   wait.textContent = r.text;
-  afterBotReply(wait, r.text);
+  await afterBotReply(wait, r.text);
+  // #17: мост сверил answers_count — автосейв не сработал на содержательной реплике → надёжная кнопка
+  // переноса (не полагаемся на то, что агент произнёс нужную фразу)
+  if(r.answers_saved===false && text.length>40 && !wait.querySelector(".apply")){
+    var _tb=document.createElement("button");
+    _tb.className="btn ghost sm apply"; _tb.textContent="⤵ Перенести ответы в конспект";
+    _tb.onclick=function(){ _extractAndSaveAnswers(_tb); };
+    wait.appendChild(_tb);
+  }
 }
 async function afterBotReply(bubble, text){
   // помощник мог сам сохранить ответы/решения — обновляем конспект живьём

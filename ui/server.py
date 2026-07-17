@@ -4066,6 +4066,15 @@ class Handler(BaseHTTPRequestHandler):
                 history_block = ("[ИСТОРИЯ ТЕКУЩЕГО РАЗГОВОРА этой сессии — помни контекст, НЕ переспрашивай "
                                  "уже отвеченное, продолжай с того же места]\n" + hist +
                                  "\n[Конец истории. НОВОЕ сообщение клиента — ниже.]\n\n")
+            def _ans_count():
+                try:
+                    _p = SESS_DIR / (sid + ".json")
+                    if SAFE_ID.match(sid or "") and _p.exists():
+                        return len((json.loads(_p.read_text(encoding="utf-8")).get("answers") or {}))
+                except Exception:
+                    pass
+                return 0
+            _ac0 = _ans_count()   # #17: answers_count ДО хода агента — UI сверит, реально ли сработал автосейв
             payload = {"agent_id": CONFIG["agent_id"],
                        "input": surface_note + history_block + enriched,
                        "run_timeout": 180, "store": True}
@@ -4084,7 +4093,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if text:                              # записываем обмен в стенограмму сессии (память чата)
                 _chat_add_exchange(sid, user_input, text)
-            self._send({"status": "success", "text": text, "response_id": res.get("id")})
+            _ac1 = _ans_count()   # #17: сверка — если фактура была, а ответов не прибавилось, UI предложит «Перенести в конспект»
+            self._send({"status": "success", "text": text, "response_id": res.get("id"),
+                        "answers_count": _ac1, "answers_saved": bool(_ac1 > _ac0)})
         else:
             self._send({"status": "error", "message": "not found"}, 404)
 
