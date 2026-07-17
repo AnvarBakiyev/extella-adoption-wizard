@@ -345,11 +345,26 @@ def _update_session(sid, mutate):
     там re-read сессии прямо перед записью и merge (append), чтобы не блокировать правки владельца."""
     sp = SESS_DIR / (sid + ".json")
     with _sess_lock(sid):
-        s = json.loads(sp.read_text(encoding="utf-8"))
-        mutate(s)
-        s["updated_at"] = datetime.now(timezone.utc).isoformat()
-        sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
-        return s
+        _lf = None
+        try:
+            import fcntl as _fcntl   # #16: + МЕЖПРОЦЕССНЫЙ flock — координация с wz_session (листенер) на том же файле сессии
+            _lf = open(str(sp) + ".lock", "w")
+            _fcntl.flock(_lf, _fcntl.LOCK_EX)
+        except Exception:
+            _lf = None
+        try:
+            s = json.loads(sp.read_text(encoding="utf-8"))
+            mutate(s)
+            s["updated_at"] = datetime.now(timezone.utc).isoformat()
+            sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+            return s
+        finally:
+            if _lf is not None:
+                try:
+                    _fcntl.flock(_lf, _fcntl.LOCK_UN)
+                    _lf.close()
+                except Exception:
+                    pass
 
 
 def _human_missing(m):

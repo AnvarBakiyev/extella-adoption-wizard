@@ -36,6 +36,35 @@ def wz_session(
         spath(s["session_id"]).write_text(
             json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _locked_update(sid, mutate):
+        """#16: атомарная правка под МЕЖПРОЦЕССНЫМ flock — re-read свежей сессии → mutate → write.
+        Мост (_update_session) флокает тот же <sid>.json.lock → нет lost-update между листенером и мостом.
+        fcntl недоступен → деградируем на обычную запись (лучше падения)."""
+        p = spath(sid)
+        if not p.exists():
+            return None
+        lf = None
+        try:
+            import fcntl
+            lf = open(str(p) + ".lock", "w")
+            fcntl.flock(lf, fcntl.LOCK_EX)
+        except Exception:
+            lf = None
+        try:
+            fresh = json.loads(p.read_text(encoding="utf-8"))
+            mutate(fresh)
+            fresh["updated_at"] = now()
+            p.write_text(json.dumps(fresh, ensure_ascii=False, indent=2), encoding="utf-8")
+            return fresh
+        finally:
+            if lf is not None:
+                try:
+                    import fcntl
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    lf.close()
+                except Exception:
+                    pass
+
     if action == "create":
         sid = "wz_" + datetime.now(timezone.utc).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
         s = {"session_id": sid,
@@ -78,18 +107,21 @@ def wz_session(
             assert isinstance(answers, dict) and answers
         except Exception:
             return {"status": "error", "message": "payload_json must be a non-empty JSON object {question_id: answer | {question, answer}}"}
-        for qid, ans in answers.items():
-            if isinstance(ans, dict):
-                rec = {"answer": str(ans.get("answer", "")),
-                       "question": str(ans.get("question", ""))}
-            else:
-                rec = {"answer": str(ans),
-                       "question": s.get("answers", {}).get(qid, {}).get("question", "")}
-            rec["updated_at"] = now()
-            s["answers"][qid] = rec
-        s["log"].append({"ts": now(), "event": "answers saved: " + ", ".join(list(answers.keys())[:10])})
-        save(s)
-        return {"status": "success", "answers_count": len(s["answers"])}
+        # #16: применяем ответы под межпроцессным локом на СВЕЖЕЙ сессии — не затираем правки моста
+        def _apply(fresh):
+            fresh.setdefault("answers", {})
+            for qid, ans in answers.items():
+                if isinstance(ans, dict):
+                    rec = {"answer": str(ans.get("answer", "")), "question": str(ans.get("question", ""))}
+                else:
+                    rec = {"answer": str(ans), "question": fresh.get("answers", {}).get(qid, {}).get("question", "")}
+                rec["updated_at"] = now()
+                fresh["answers"][qid] = rec
+            fresh.setdefault("log", []).append({"ts": now(), "event": "answers saved: " + ", ".join(list(answers.keys())[:10])})
+        s2 = _locked_update(session_id, _apply)
+        if s2 is None:
+            return {"status": "error", "message": "session not found"}
+        return {"status": "success", "answers_count": len(s2.get("answers", {}))}
 
     if action == "add_comment":
         try:
