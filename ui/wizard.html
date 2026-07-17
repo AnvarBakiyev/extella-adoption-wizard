@@ -2304,6 +2304,16 @@ function renderBlueprint(){
       ${threadHTML("bp:suitability")}
     </div>
 
+    ${bp.crux_layer && bp.crux_layer.layer ? (()=>{
+      var CX={source:'Источник данных',capability:'Добыча способности — модель/репо/навык',knowledge_voice:'Знание компании и голос',trust:'Доверие к суждению',action:'Действие и общение',artifact:'Оформление результата (Excel/PPT/док)',orchestration:'Оркестрация процесса'};
+      var nm=CX[bp.crux_layer.layer]||bp.crux_layer.layer;
+      return '<div style="background:var(--gold-bg);border:1px solid #eddfc4;border-left:3px solid var(--gold);border-radius:10px;padding:12px 16px;margin-top:16px">'+
+        '<div style="font:600 11px var(--mono,monospace);letter-spacing:.08em;text-transform:uppercase;color:var(--gold)">🎯 Главное в этой задаче</div>'+
+        '<div style="font-size:15px;font-weight:700;margin:4px 0 2px">'+esc(nm)+'</div>'+
+        (bp.crux_layer.why?'<div style="font-size:13px;color:var(--ink-soft)">'+esc(bp.crux_layer.why)+'</div>':'')+
+        '<div style="font-size:12px;color:var(--silver);margin-top:6px">Сюда визард вложит стройку в первую очередь — остальное леса.</div></div>';
+    })() : ''}
+
     <div class="kicker" style="margin-top:26px">Стадии процесса</div>
     <div class="flow">
       ${(bp.stages||[]).map((s,i)=>`
