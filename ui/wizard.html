@@ -4384,6 +4384,7 @@ async function runProcess(i){
   window._runningSid=a.session_id; _wzLifeRefresh();   // C1: шапка «⏳ прогон идёт», кнопки не дублируют запуск
   let r; try{ r = await jpost("/x/run_process",{session_id:a.session_id}); }
   finally{ window._runningSid=null; _wzLifeRefresh(); }
+  if(r.code==="source_drift"){ out.innerHTML=""; ask("⚠ Источник изменил структуру", (r.message||"колонки источника изменились")+"\n\nПрогон остановлен, чтобы не считать по чужой схеме.","",()=>{}); return; }
   if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">${WLANG==='en'?'Error':'Ошибка'}: ${esc(r.message||"")}</span>`; return; }
   if(r.digest){
     out.innerHTML = `<span style="color:var(--ok,#2a2)">✓ ${WLANG==='en'?'Done — '+(r.findings||0)+' signals. Opening brief…':'Готово — '+(r.findings||0)+' находок. Открываю бриф…'}</span>`;

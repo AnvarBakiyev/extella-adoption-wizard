@@ -389,6 +389,19 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             if not _pull_ok:
                 fired.append({"key": key, "status": "source_pull_failed", "err": str((_po or {}).get("err", ""))[:120]})
                 continue   # источник не отдал данные — не гоняем оркестратор на устаревших/пустых данных
+            # дрифт структуры: колонки источника изменились с привязки → прогон по чужой схеме = мусор.
+            # ЛОМАЮЩИЙ дрифт (исчезли колонки) — не гоним автопилот молча, честно помечаем; мягкий (добавились) — ок.
+            _base_schema = _srcinfo.get("schema") or []
+            _cur_cols = _po.get("columns")
+            if not (isinstance(_cur_cols, list) and _cur_cols):
+                _prev = _po.get("preview") or _po.get("sample")
+                _cur_cols = list(_prev[0].keys()) if (isinstance(_prev, list) and _prev and isinstance(_prev[0], dict)) else []
+            _cur_schema = sorted(str(c) for c in (_cur_cols or []))
+            if _base_schema and _cur_schema:
+                _removed = sorted(set(_base_schema) - set(_cur_schema))
+                if _removed:
+                    fired.append({"key": key, "status": "source_drift", "removed": _removed})
+                    continue
         if fid:
             # composed-задача: раннер flow читает план из KV; agent_id (Qwen клиента) кладёт мост при schedule
             run_params = {"api_token": api_token, "flow_id": fid}
