@@ -653,9 +653,15 @@ function _brainRender(res){
   resetModInput();
   el("modTitle").textContent="🧠 Мозг агента · "+esc((res.agent&&res.agent.name)||"");
   el("modHint").innerHTML="Знания и правила этого агента (его личный мозг). Концепты — что он знает о клиенте; правила — как он должен действовать/говорить. Эксперты (умения) — общий граф платформы.";
-  el("modInput").outerHTML='<input id="modInput" type="hidden">'+
+  var voiceN=rs.filter(function(r){return /\[голос\]/.test(r.text);}).length;
+  var voiceBox='<div style="background:linear-gradient(135deg,#c9a35c14,transparent);border:1px solid var(--gold,#c9a35c);border-radius:9px;padding:9px 11px;margin-bottom:12px">'+
+    '<div style="font-weight:700;font-size:13px">🎙 Голос агента '+(voiceN?'<span style="color:var(--silver,#889);font-weight:400">выучен, '+voiceN+' правил</span>':'<span style="color:var(--silver,#889);font-weight:400">не задан</span>')+'</div>'+
+    '<div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 7px">Дайте 2–4 примера, как пишет клиент — агент выучит стиль (тон, длина, обороты) и будет отвечать так же.</div>'+
+    '<button class="btn gold" style="padding:5px 12px;font-size:12px" onclick="voiceLearn()">🎙 Обучить по примерам</button>'+
+    (voiceN?' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="voiceTry()">▶ Примерить голос</button>':'')+'</div>';
+  el("modInput").outerHTML='<input id="modInput" type="hidden">'+voiceBox+
     sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур) и вручную.",cs,"del_concept","add_concept")+
-    sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон).",rs,"del_rule","add_rule");
+    sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон). Правила с 🎙 [голос] — выученный стиль.",rs,"del_rule","add_rule");
   el("modBack").classList.add("open");
   const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
   _modCb=null;
@@ -676,6 +682,28 @@ async function brainAdd(op){
 async function brainDel(op,id){
   const r=await jpost("/x/brain_edit",{op:op,id:id});
   if(r.status==="success"){ _brainRender(r); } else toast("Не удалось удалить","err");
+}
+async function voiceLearn(){
+  askBig("🎙 Примеры голоса клиента","Вставьте 2–4 реальных сообщения/письма, как пишет клиент (каждое с новой строки, разделяйте пустой строкой). Агент выучит стиль.","",async (txt)=>{
+    if(!txt||!txt.trim()) return;
+    const samples=txt.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean);
+    busy("Учу голос по примерам…");
+    const r=await jpost("/x/voice_learn",{samples:samples}); busyOff();
+    const res=(r&&r.result)||{};
+    if(r.status==="success"){
+      toast("✓ Голос выучен: +"+(res.saved||0)+" правил","ok");
+      ask("🎙 Голос выучен", "Стиль: "+(res.summary||"")+"\n\nПравила голоса:\n• "+((res.rules||[]).join("\n• "))+"\n\nОни записаны в мозг агента (раздел Правила). Открыть мозг?", "", ()=>openBrain());
+    } else toast("Не удалось: "+(r.message||res.err||""),"err");
+  });
+}
+async function voiceTry(){
+  ask("▶ Примерить голос","Опишите ситуацию/сообщение, на которое агент должен ответить (напр.: «Клиент спрашивает про сроки доставки»)","",async (sit)=>{
+    if(!sit) return; busy("Генерю ответ в голосе агента…");
+    const r=await jpost("/x/voice_try",{situation:sit}); busyOff();
+    const res=(r&&r.result)||{};
+    if(r.status==="success") ask("🎙 Ответ в голосе агента", res.reply||"(пусто)","",()=>openBrain());
+    else toast("Не удалось: "+(r.message||res.err||""),"err");
+  });
 }
 
 /* ================= modal + toast (замена prompt/alert) ================= */
@@ -1581,6 +1609,16 @@ function applyI18N(){
 
 function toggleWLang(){ WLANG=(WLANG==='ru'?'en':'ru'); try{ localStorage.setItem('wz_lang',WLANG); }catch(e){} applyWLang(); if(typeof renderAutomations==='function' && S.mode==='automations') renderAutomations(); applyI18N(); }
 
+function askBig(title, hint, def, cb){
+  resetModInput();
+  el("modTitle").textContent = title;
+  el("modHint").textContent = hint||"";
+  el("modInput").outerHTML='<textarea id="modInput" style="width:100%;min-height:120px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:8px;padding:10px 12px;font:13px/1.5 var(--sans);resize:vertical"></textarea>';
+  el("modInput").value=def||"";
+  el("modBack").classList.add("open");
+  _modCb = cb;
+  setTimeout(()=>el("modInput").focus(), 50);
+}
 function ask(title, hint, def, cb, opts){
   resetModInput();
   el("modTitle").textContent = title;
