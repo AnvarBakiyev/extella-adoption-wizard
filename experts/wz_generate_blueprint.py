@@ -101,7 +101,7 @@ def wz_generate_blueprint(
 3. Суитабилити считай по рубрике каталога: self_serve_allowed=true только для процессов класса {json.dumps(rubric.get("self_serve_allowed", []), ensure_ascii=False)}; процессы с записью во внешние системы или действиями от имени компании — self_serve_allowed=false и risk_level минимум medium.
 4. Не выдумывай числа и факты о клиенте: опирайся только на ответы интервью. Если данных мало — пиши меньше стадий и больше open_questions.
 5. Учитывай открытые комментарии команды (переданы отдельно) — это уточнения к ответам.
-6. Тексты пиши деловым языком ({language}), без внутренних терминов платформы (CSPL, Listener и т.п.) в полях title/business_description/goal.
+6. Тексты (title/business_description/goal/summary) пиши {"СТРОГО на английском языке (write ALL text fields in English)" if language == "en" else "на русском языке"}, деловым стилем, без внутренних терминов платформы (CSPL, Listener и т.п.).
 7. Верни ТОЛЬКО JSON без пояснений.
 
 ФОРМАТ (строго):

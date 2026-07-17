@@ -1979,6 +1979,19 @@ class Handler(BaseHTTPRequestHandler):
                 params.setdefault("base_url", CONFIG.get("llm_base_url", ""))
                 params.setdefault("model", CONFIG.get("llm_model", ""))
                 params.setdefault("api_token", CONFIG.get("auth_token", ""))            # платформенная модель, если api_key пуст (клиенту OpenAI-ключ не нужен)
+                # #12: язык blueprint следует за языком фактуры интервью (как gen_questions) — иначе всегда русский (US-демо ломался)
+                if expert == "wz_generate_blueprint" and not params.get("language"):
+                    _sidL = str(params.get("session_id", "")); _txtL = ""
+                    try:
+                        _spL = SESS_DIR / (_sidL + ".json")
+                        if _sidL and _spL.exists():
+                            _sdL = json.loads(_spL.read_text(encoding="utf-8"))
+                            _txtL = str(_sdL.get("questionnaire_task", "")) + " " + " ".join(
+                                str((v.get("answer") if isinstance(v, dict) else v) or "") for v in (_sdL.get("answers") or {}).values())
+                    except Exception:
+                        _txtL = ""
+                    if _txtL.strip():
+                        params["language"] = _task_lang(_txtL)
                 # LLM-эксперт: ретрай + фолбэк по цепочке Qwen-агентов (устойчивость к флапу бэкенда)
                 self._send(run_llm_expert(expert, params))
             else:
