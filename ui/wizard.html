@@ -2739,6 +2739,8 @@ function renderLaunch(){
   const lb = lastBuild();
   const openC = (S.session.comments||[]).filter(c=>!c.resolved);
   const launched = S.session.stage==="launched";
+  const runs = (S.session.runs)||[];
+  const lastRunAt = runs.length ? String(runs[runs.length-1].at||"").slice(0,16).replace("T"," ") : "";
   let gate;
   if(!lb){
     gate = `<div class="card gap-card"><b>Процесс ещё не построен.</b> Вернитесь на шаг «Стройка» и нажмите «Построить процесс».</div>`;
@@ -2754,9 +2756,19 @@ function renderLaunch(){
         ${(aud.issues&&aud.issues.length)?`<ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul>`:""}
         ${threadHTML("launch:audit")}
       </div>
-      ${launched ? `<div class="card pack-card"><b>✓ Процесс одобрен и готов.</b> Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть реальный результат.
-          <div style="margin-top:10px"><button class="btn gold" onclick="doFirstRun()">▶ Сделать первый прогон</button><span class="statusline" id="stFirstRun"></span></div>
-          <div id="firstRunOut" style="margin-top:8px"></div></div>`
+      ${launched ? `<div class="card pack-card">
+          ${runs.length
+            ? `<b>✓ Готово — автоматизация работает.</b> Первый прогон сделан${lastRunAt?(" ("+esc(lastRunAt)+")"):""}. Дальше она живёт в кабинете: расписание, повторные прогоны, пауза и результаты во времени.`
+            : `<b>✓ Процесс одобрен и готов.</b> Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть результат на ваших данных.`}
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            ${runs.length
+              ? `<button class="btn gold" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button><button class="btn ghost" onclick="doFirstRun()">↻ Прогон ещё раз</button>`
+              : `<button class="btn gold" onclick="doFirstRun()">▶ Сделать первый прогон</button><button class="btn ghost" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button>`}
+            <span class="statusline" id="stFirstRun"></span>
+          </div>
+          <div id="firstRunOut" style="margin-top:8px"></div>
+          <div style="font-size:12px;color:var(--silver);margin-top:10px">Автоматизация теперь в разделе «Автоматизации» — там расписание, повторные прогоны, пауза и все результаты.</div>
+        </div>`
         : `<div class="toolbar"><button class="btn gold" id="launchBtn" onclick="doLaunch()" ${v==="escalate"?"disabled":""}>✅ Одобрить запуск</button><span class="statusline" id="stLaunch"></span></div>`}`;
   }
   // сводка результата прогона (из вертикального среза сборки)
@@ -2820,11 +2832,11 @@ async function doFirstRun(){
     if(out) out.innerHTML = '<span style="color:var(--bad)">Ошибка прогона: '+esc((r&&r.message)||"")+'</span>';
     return;
   }
-  const rn = r.run||{};
-  if(out) out.innerHTML = '✓ Прогон выполнен: '+esc((rn.at||"").slice(0,16).replace("T"," "))+
-    (rn.total_count!=null?' · позиций: '+esc(String(rn.total_count)):'')+
-    (rn.status && rn.status!=='success'?' · статус: '+esc(String(rn.status)):'');
-  if(r.digest) showBrief(r.digest, r.findings);
+  if(r.digest) showBrief(r.digest, r.findings);   // модал с результатом первого прогона
+  // персистим прогон в сессию (runs[]) и перерисовываем шаг «Запуск» в финиш-режим:
+  // «Готово — работает» + главная дверь «Открыть кабинет →», где автоматизация живёт дальше
+  await reloadSession();
+  if(S.view==="launch") render();
 }
 
 /* ================= chat ================= */
