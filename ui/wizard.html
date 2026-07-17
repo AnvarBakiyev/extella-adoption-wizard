@@ -2284,8 +2284,11 @@ async function regenerateSpec(){
   if(r.status!=="success"){ setStatus("stSpec","ошибка: "+esc(r.message||"")); toast("Не удалось обновить ТЗ","err"); return; }
   setStatus("stSpec","✓ ТЗ обновлено");
   toast("✓ Техзадание обновлено","ok");
-  await reloadSession(); render();
+  await reloadSession();
+  S._specStamp = _bpStamp();   // #15: запоминаем план, по которому собран ТЗ — для детекции устаревания
+  render();
 }
+function _bpStamp(){ var bp=S.blueprint&&S.blueprint.blueprint; return bp?JSON.stringify((bp.stages||[]).map(function(s){return (s.id||"")+":"+(s.title||"");})):""; }
 function mdToHtml(md, withComments){
   // маленький безопасный renderer: заголовки, списки, жирный, код, hr, ссылки
   // withComments (по умолчанию true) — вставлять кнопки-комментарии на ## (для ТЗ);
@@ -2330,7 +2333,10 @@ function renderSpec(){
   if(!S.spec){
     el("specArea").innerHTML = `<div class="empty">Текст ТЗ ещё не собран. Нажмите «Обновить ТЗ» — документ соберётся из интервью, плана и решений сессии.</div>`;
   } else {
-    el("specArea").innerHTML = `<div class="spec-doc">${mdToHtml(S.spec)}</div>`;
+    // #15: ТЗ мог отстать от плана (blueprint менялся после сборки ТЗ) — честно предупреждаем
+    var _stale = (S._specStamp!==undefined) && (S._specStamp !== _bpStamp());
+    var _warn = _stale ? `<div class="card gap-card" style="margin-bottom:10px">⚠ План процесса менялся после сборки этого ТЗ — нажмите «Обновить ТЗ», чтобы пересобрать по свежему плану.</div>` : "";
+    el("specArea").innerHTML = _warn + `<div class="spec-doc">${mdToHtml(S.spec)}</div>`;
   }
   el("specComments").innerHTML = threadHTML("spec:doc");
 }
@@ -3227,6 +3233,10 @@ function _wzLife(a){
   var mon=(window.MONITOR_BY_SID||{})[sid];
   if(mon && mon.health && mon.health!=='ok')
     return {k:'attention', label:'🟡 нужна помощь', color:'#F5C26B', reason:(mon.reasons&&mon.reasons[0])||''};
+  // #24: фолбэк без монитора — плохой последний прогон = нужна помощь (кабинет мог открыться до прогрева MONITOR_BY_SID)
+  var _lr=a.last_run||(a.runs&&a.runs[0]);
+  if(_lr && _lr.status && _lr.status!=='success')
+    return {k:'attention', label:'🟡 нужна помощь', color:'#F5C26B', reason:'последний прогон: '+String(_lr.status)};
   if((a.schedule&&a.schedule.period)||a.inbound) return {k:'active', label:'● работает', color:'#7ee2a1'};
   return {k:'manual', label:'○ запуск вручную', color:'rgba(255,255,255,.8)'};
 }
@@ -3336,7 +3346,9 @@ async function cabChat(){
 function cabApplyKind(k){ if(window._cabAct) window._cabAct.op=k; cabApply(); }
 function cabCancel(){ window._cabAct=null; _cabPush(_cabA('Отменено.')); }
 async function cabApply(){
-  var a=AUTOS[_wzCabI]; var act=window._cabAct; if(!a||!act) return;
+  var a=AUTOS[_wzCabI]; var act=window._cabAct;
+  if(!a) return;
+  if(!act){ _cabPush(_cabA('Эта правка уже применена или отменена — сформулируйте заново.')); return; }   // #27: не молчать при повторном клике по устаревшей кнопке
   window._cabAct=null;
   var MAP={'Каждый час':60,'Ежедневно':1440,'Еженедельно':10080,'Ежемесячно':43200};
   if(act.op==='recipients'){
