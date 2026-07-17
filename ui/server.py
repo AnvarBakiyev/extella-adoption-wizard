@@ -2483,6 +2483,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not _tp.get("ok"):
                     self._send({"status": "error", "code": _tp.get("code"), "message": _tp.get("message")}, 412)
                     return
+                _vd = ((s.get("builds") or [{}])[-1].get("audit") or {}).get("verdict", "")
+                if _vd == "escalate" and not body.get("confirmed"):   # одобрение≠запуск: тот же гейт, что в /x/deploy
+                    self._send({"status": "error", "code": "escalate",
+                                "message": "проверка безопасности требует вмешательства команды — расписание заблокировано"}, 403)
+                    return
             lb = (s.get("builds") or [{}])[-1]
             orch = lb.get("orchestrator")
             src = lb.get("source_file")
@@ -2529,8 +2534,11 @@ class Handler(BaseHTTPRequestHandler):
                     kvval["fields"] = s["fields"]
                 if _pc:
                     kvval["params_contract"] = _pc     # F2: тик передаст rules/fields процессному оркестратору
-                api("/api/kv/set", {"key": kvkey, "value": json.dumps(kvval, ensure_ascii=False),
-                                    "description": "schedule " + sid})
+                _kr = api("/api/kv/set", {"key": kvkey, "value": json.dumps(kvval, ensure_ascii=False),
+                                          "description": "schedule " + sid})
+                if not _kr or (isinstance(_kr, dict) and _kr.get("status") == "error"):   # #7: не отдавать success, если расписание не сохранилось
+                    self._send({"status": "error", "message": "не удалось сохранить расписание (KV): " + str(_kr)[:120]}, 502)
+                    return
                 _sched_index_update(add=sid)      # внести sid в индекс активных расписаний
             s["updated_at"] = datetime.now(timezone.utc).isoformat()
             sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2640,8 +2648,8 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["active"] = (not paused)
                     if not paused:
                         _iv = int(cfg.get("interval_min", 0) or 0)
-                        if _iv:   # Resume: следующий запуск через интервал, не мгновенный шторм
-                            cfg["next_due_ts"] = (datetime.now(timezone.utc) + timedelta(minutes=_iv)).isoformat()
+                        # Resume: следующий запуск через интервал, не мгновенный шторм — даже при пустом interval сдвигаем на +1 мин (#20)
+                        cfg["next_due_ts"] = (datetime.now(timezone.utc) + timedelta(minutes=max(1, _iv))).isoformat()
                     api("/api/kv/set", {"key": "sched:" + sid, "value": json.dumps(cfg, ensure_ascii=False),
                                         "description": "schedule " + sid})
                     out["sched"] = "paused" if paused else "active"
@@ -2894,6 +2902,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"status": "error", "message": "bad mode/channel"}, 400)
                 return
             lb = (s.get("builds") or [{}])[-1]
+            _vd = (lb.get("audit") or {}).get("verdict", "")
+            if _vd == "escalate" and not body.get("confirmed"):   # одобрение≠запуск: не включать приём для заблокированного аудитом процесса
+                self._send({"status": "error", "code": "escalate",
+                            "message": "проверка безопасности требует вмешательства команды — приём входящих заблокирован"}, 403)
+                return
             orch = lb.get("orchestrator")
             src = lb.get("source_file")
             if not orch:

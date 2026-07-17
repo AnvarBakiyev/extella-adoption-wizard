@@ -345,6 +345,11 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                 due = True
         if not due:
             continue
+        # #3 двойное срабатывание: столбим слот СРАЗУ (переносим next_due вперёд и пишем в KV) ДО прогона.
+        # Иначе наложенный тик (прогон дольше интервала / параллельный cron) прочитает старый срок и запустит повторно.
+        cfg["next_due_ts"] = (now() + timedelta(minutes=max(1, interval))).isoformat()
+        kv("set", {"key": key, "value": json.dumps(cfg, ensure_ascii=False),
+                   "description": "schedule " + key.split(":", 1)[-1]})
         # запуск оркестратора (пиннинг на хостинг + ключ файла в общем сторе для резолвера)
         t0 = now()
         tgt = cfg.get("target")
@@ -534,6 +539,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             recips = [_d] if _d else []
         recips = [c for c in recips if c.replace("_", "").isalnum()]
         # flow: partial = дайджест есть, но с деградацией — доставляем честно (с пометкой в тексте)
+        _deliv = None
         _deliver_ok = run.get("status") == "success" or (fid and run.get("status") == "partial")
         if recips and _deliver_ok:
             tc = run.get("total_count"); ts = run.get("total_sum")
@@ -564,11 +570,22 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                                     "mode": "send", "text": msg}}
                 if cfg.get("target"):
                     dbody["target"] = cfg["target"]
+                _dok, _derr = False, None
                 try:
-                    requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
-                except Exception:
-                    pass
-        fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"]})
+                    _dr = requests.post(base + "/api/expert/run", headers=headers, json=dbody, timeout=120)
+                    _do = _dr.json().get("result", _dr.json())
+                    if isinstance(_do, str):
+                        try:
+                            _do = json.loads(_do)
+                        except Exception:
+                            _do = {}
+                    _dok = bool(isinstance(_do, dict) and _do.get("ok"))
+                    _derr = (_do.get("err") if isinstance(_do, dict) else None)
+                except Exception as _de:
+                    _derr = str(_de)[:120]
+                _deliv = _deliv or []
+                _deliv.append({"channel": deliver, "ok": _dok, "err": _derr})   # #19: доставка больше не молчит — исход в возврат тика/лог
+        fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"], "delivered": _deliv})
 
     # Capability Registry: суточный ПОЛНЫЙ пересбор (событийные обновления делает мост;
     # тик — страховка, чтобы реестр не протухал без событий). Маркер пишет сам эксперт.
