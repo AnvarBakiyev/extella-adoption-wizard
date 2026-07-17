@@ -660,7 +660,7 @@ function _brainRender(res){
     '<button class="btn gold" style="padding:5px 12px;font-size:12px" onclick="voiceLearn()">🎙 Обучить по примерам</button>'+
     (voiceN?' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="voiceTry()">▶ Примерить голос</button>':'')+'</div>';
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+voiceBox+
-    sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур) и вручную.",cs,"del_concept","add_concept")+
+    sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур), вручную и из документа.",cs,"del_concept","add_concept").replace('＋ добавить словами</button>','＋ добавить словами</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeLearn()">📚 Загрузить знание компании</button>')+
     sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон). Правила с 🎙 [голос] — выученный стиль.",rs,"del_rule","add_rule");
   el("modBack").classList.add("open");
   const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
@@ -703,6 +703,17 @@ async function voiceTry(){
     const res=(r&&r.result)||{};
     if(r.status==="success") ask("🎙 Ответ в голосе агента", res.reply||"(пусто)","",()=>openBrain());
     else toast("Не удалось: "+(r.message||res.err||""),"err");
+  });
+}
+async function knowledgeLearn(){
+  askBig("📚 Знание компании","Вставьте текст: FAQ, прайс, регламент, описание продукта/услуги, правила доставки и т.п. Агент разберёт его на факты и запомнит.","",async (txt)=>{
+    if(!txt||!txt.trim()) return; busy("Разбираю знание на факты…");
+    const r=await jpost("/x/knowledge_learn",{text:txt}); busyOff();
+    const res=(r&&r.result)||{};
+    if(r.status==="success"){
+      toast("✓ Запомнено фактов: "+(res.saved||0),"ok");
+      _brainRender(await fetch("/x/brain").then(x=>x.json()));
+    } else toast("Не удалось: "+(r.message||res.err||""),"err");
   });
 }
 
