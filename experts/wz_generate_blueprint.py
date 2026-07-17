@@ -98,6 +98,7 @@ def wz_generate_blueprint(
 2г. Если разрыв закрывается известным расширением из catalog.delivery_extensions — укажи в элементе gap поле extension_id (точный id из каталога) и в proposal перескажи его effort_hint; если подходящего расширения нет — extension_id: null.
 2а. Сначала подбери ближайший АРХЕТИП процесса из catalog.process_archetypes (типовую форму) и строй стадии по его capability_flow, адаптируя под ответы клиента; если ни один архетип не подходит — archetype.id = null и собирай стадии из возможностей напрямую. Процесс может относиться к ЛЮБОМУ департаменту (финансы, HR, юристы, закупки, операции, маркетинг) — не своди всё к контакт-центру.
 2д. БАЗА ЗНАНИЙ: если процесс опирается на закон/кодекс/регламент/стандарт/политику (ответ knowledge_base не пуст ИЛИ по смыслу нужны правовые нормы — кадровые документы, договоры, налоги и т.п.) — ОБЯЗАТЕЛЬНО добавь стадию с capability_ids=["knowledge_grounding"] (asset_names=["kp_ask"]), которая находит релевантные статьи в базе и подставляет их в работу (агент опирается на актуальный документ, а не память модели). Выбери подходящую базу из ПЕРЕДАННОГО СПИСКА knowledge_packs по домену (HR→trud_rk, договоры→grazhd_rk, налоги→nalog_rk и т.д.) и запиши её id в поле knowledge_pack.pack_id. Если нужной базы в списке нет — knowledge_pack.pack_id=null и добавь элемент в gaps «нужна база знаний: …». НЕ вшивай статьи закона в другие стадии статикой — только через стадию knowledge_grounding.
+2е. ИСТОЧНИК ДАННЫХ (обязательно): определи, откуда процесс берёт ИСХОДНЫЕ данные для работы, и заполни поле data_source. needs_external=true, если процессу нужны данные из внешней системы (CRM, БД, рекламный кабинет, 1С, таблицы, API), а не введённые вручную. Опиши, ЧТО это за данные, и предположи способ получения obtained_by (file — файл вручную; sheets — Google Sheets; api — своя система по API/ключу; crm — CRM; ads — рекламный кабinet; unknown — не ясно). Если needs_external=true и obtained_by≠file — ПЕРВЫМ пунктом open_questions поставь вопрос «Откуда брать эти данные и есть ли к ним доступ (файл / Google Sheets / своя система по API / CRM / рекламный кабинет)?».
 3. Суитабилити считай по рубрике каталога: self_serve_allowed=true только для процессов класса {json.dumps(rubric.get("self_serve_allowed", []), ensure_ascii=False)}; процессы с записью во внешние системы или действиями от имени компании — self_serve_allowed=false и risk_level минимум medium.
 4. Не выдумывай числа и факты о клиенте: опирайся только на ответы интервью. Если данных мало — пиши меньше стадий и больше open_questions.
 5. Учитывай открытые комментарии команды (переданы отдельно) — это уточнения к ответам.
@@ -118,6 +119,7 @@ def wz_generate_blueprint(
   "pack_recommendation": {{"pack_id": "id из каталога или null", "fit": "почему подходит / чего не хватает", "adaptation_needed": ["что настроить под клиента"]}},
   "knowledge_pack": {{"pack_id": "id из knowledge_packs или null", "why": "почему эта база нужна процессу"}},
   "gaps": [{{"title": "...", "description": "чего нет в каталоге", "proposal": "как закрыть (разработка/поставка/ручной шаг)", "extension_id": "id из catalog.delivery_extensions или null"}}],
+  "data_source": {{"needs_external": true/false, "description": "какие ИСХОДНЫЕ данные нужны процессу и откуда", "suggested": ["варианты источника, напр. Google Sheets / CRM / рекламный кабинет / выгрузка 1С"], "obtained_by": "file|sheets|api|crm|ads|unknown"}},
   "sample_test_plan": {{"data_needed": "какие данные нужны для теста", "steps": ["шаг 1", "..."], "success_criteria": ["критерий 1", "..."]}},
   "open_questions": ["вопрос клиенту 1", "..."]
 }}"""
@@ -251,6 +253,25 @@ def wz_generate_blueprint(
     if str(sut.get("risk_level", "")).lower() not in ("low", "medium", "high"):
         sut["risk_level"] = "medium"
     bp["suitability"] = sut
+
+    # -- Источник данных: поле всегда присутствует; если нужны внешние данные и способ не «файл» —
+    #    гарантируем вопрос «откуда данные» первым в open_questions (Слой 1: спрашиваем на входе) ----
+    ds = bp.get("data_source")
+    if not isinstance(ds, dict):
+        ds = {"needs_external": False, "description": "", "suggested": [], "obtained_by": "unknown"}
+    ds["needs_external"] = bool(ds.get("needs_external"))
+    if not isinstance(ds.get("suggested"), list):
+        ds["suggested"] = []
+    if str(ds.get("obtained_by", "")) not in ("file", "sheets", "api", "crm", "ads", "unknown"):
+        ds["obtained_by"] = "unknown"
+    bp["data_source"] = ds
+    if ds["needs_external"] and ds["obtained_by"] != "file":
+        oq = bp.get("open_questions")
+        oq = oq if isinstance(oq, list) else []
+        _q = "Откуда брать эти данные и есть ли к ним доступ (файл / Google Sheets / своя система по API / CRM / рекламный кабинет)?"
+        if not any("откуда" in str(q).lower() and "данны" in str(q).lower() for q in oq):
+            oq.insert(0, _q)
+        bp["open_questions"] = oq
 
     # -- Write output + attach to session ------------------------------
     out = Path(output_path) if output_path else sp.parent / (session.get("session_id", sp.stem) + "_blueprint.json")

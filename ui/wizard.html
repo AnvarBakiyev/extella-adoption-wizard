@@ -2326,6 +2326,14 @@ function renderBlueprint(){
       ${threadHTML("bp:pack")}
     </div>`:""}
 
+    ${bp.data_source?`
+    <div class="kicker" style="margin-top:26px">Источник данных</div>
+    <div class="card"${(bp.data_source.needs_external&&bp.data_source.obtained_by!=='file')?' style="border-left:3px solid #C67E34"':''}>
+      <div style="font-size:13.5px">${bp.data_source.needs_external?'📥 <b>Процессу нужны внешние данные.</b> ':'Данные вводятся/загружаются вручную. '}${esc(bp.data_source.description||'')}</div>
+      ${(bp.data_source.suggested||[]).length?`<div style="font-size:13px;margin-top:6px"><b>Откуда можно брать:</b> ${bp.data_source.suggested.map(esc).join(' · ')}</div>`:''}
+      ${(bp.data_source.needs_external&&bp.data_source.obtained_by!=='file')?`<div style="font-size:12.5px;color:#7a5b1a;margin-top:8px">После сборки подключите живой источник (своё API / CRM / рекламный кабинет) на шаге «Запуск» — или оставьте загрузку файлом.</div>`:''}
+    </div>`:""}
+
     ${(bp.gaps||[]).length?`
     <div class="kicker" style="margin-top:26px">Разрывы (честно)</div>
     ${bp.gaps.map((g,i)=>`<div class="card gap-card">
