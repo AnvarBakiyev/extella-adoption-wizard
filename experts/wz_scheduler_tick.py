@@ -34,6 +34,48 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
     def now():
         return datetime.now(timezone.utc)
 
+    def _mk_digest(out):
+        """Единый отчёт прогона по расписанию: готовый digest → файл report_md (на этом устройстве)
+        → синтез из summary (total_count/total_sum/by_*). Раньше бралось только digest_md — у
+        процессов-на-файле его нет (там путь к report.md), и результат по расписанию не сохранялся."""
+        if not isinstance(out, dict):
+            return ""
+        dm = out.get("digest_md") or out.get("digest")
+        if isinstance(dm, str) and dm.strip() and not dm.strip().startswith("/"):
+            return dm[:12000]
+        rp = out.get("report_md")
+        if isinstance(rp, str) and rp.startswith("/"):
+            try:
+                p = Path(rp)
+                if p.is_file() and p.stat().st_size < 400000:
+                    txt = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if txt:
+                        return txt[:12000]
+            except Exception:
+                pass
+        sm = out.get("summary")
+        if isinstance(sm, str) and sm.strip():
+            return sm[:12000]
+        if isinstance(sm, dict):
+            ln = ["## Результат прогона", ""]
+            tc, ts = sm.get("total_count"), sm.get("total_sum")
+            if tc is not None:
+                l = "**Позиций:** %s" % tc
+                if ts not in (None, 0, 0.0):
+                    l += "  ·  **Сумма:** %s" % ts
+                ln += [l, ""]
+            for k, v in sm.items():
+                if k.startswith("by_") and isinstance(v, dict) and 0 < len(v) <= 25:
+                    lbl = k[3:].replace("_", " ")
+                    ln.append("### " + lbl.capitalize())
+                    ln += ["| %s | Кол-во |" % lbl, "|---|---|"]
+                    ln += ["| %s | %s |" % (kk, vv) for kk, vv in list(v.items())[:25]]
+                    ln.append("")
+            body = "\n".join(ln).strip()
+            if body and body != "## Результат прогона":
+                return body[:12000]
+        return ""
+
     SCHED_INDEX_KEY = "sched:__index__"
     RECONCILE_MIN = 360   # как часто индекс пересобирается полным сканом (страховка от рассинхрона); 0 = выкл
 
@@ -474,7 +516,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         # C3 (виджет «Последний результат» кабинета): дайджест прогона по расписанию раньше НИГДЕ
         # не сохранялся (в канал уходило 600 симв, файл оставался на исполняющем устройстве) —
         # теперь последний дайджест перезаписью живёт в digest:<sid> (один, не копим — потолок KV)
-        _dgp = (out or {}).get("digest_md") or (out or {}).get("digest") or ""
+        _dgp = _mk_digest(out)   # готовый digest → файл report_md → синтез из summary (не только digest_md)
         if _dgp:
             try:
                 kv("set", {"key": "digest:" + key.split(":", 1)[-1],

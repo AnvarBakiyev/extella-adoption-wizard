@@ -521,6 +521,50 @@ def _recover_orphan_builds():
     return n
 
 
+def _run_digest(res):
+    """Единый человекочитаемый отчёт прогона (markdown) для виджета «Последний результат»,
+    кнопки «Открыть отчёт» и расписания. Приоритет: готовый digest в ответе → содержимое
+    локального файла report_md → синтез из summary (total_count/total_sum/by_*).
+    Чинит пробел: ветка процессов-на-файле digest не сохраняла — результат «пропадал» из UI."""
+    if not isinstance(res, dict):
+        return ""
+    dm = res.get("digest_md") or res.get("digest")
+    if isinstance(dm, str) and dm.strip() and not dm.strip().startswith("/"):
+        return dm[:12000]
+    rp = res.get("report_md")   # оркестраторы-на-файле кладут сюда ПУТЬ к report.md, не текст
+    if isinstance(rp, str) and rp.startswith("/"):
+        try:
+            p = Path(rp)
+            if p.is_file() and p.stat().st_size < 400000:
+                txt = p.read_text(encoding="utf-8", errors="replace").strip()
+                if txt:
+                    return txt[:12000]
+        except Exception:
+            pass
+    summ = res.get("summary")
+    if isinstance(summ, str) and summ.strip():
+        return summ[:12000]
+    if isinstance(summ, dict):
+        out = ["## Результат прогона", ""]
+        tc, ts = summ.get("total_count"), summ.get("total_sum")
+        if tc is not None:
+            line = "**Позиций:** %s" % tc
+            if ts not in (None, 0, 0.0):
+                line += "  ·  **Сумма:** %s" % ts
+            out += [line, ""]
+        for k, v in summ.items():
+            if k.startswith("by_") and isinstance(v, dict) and 0 < len(v) <= 25:
+                lbl = k[3:].replace("_", " ")
+                out.append("### " + lbl.capitalize())
+                out += ["| %s | Кол-во |" % lbl, "|---|---|"]
+                out += ["| %s | %s |" % (kk, vv) for kk, vv in list(v.items())[:25]]
+                out.append("")
+        body = "\n".join(out).strip()
+        if body and body != "## Результат прогона":
+            return body[:12000]
+    return ""
+
+
 def _save_digest(sid, digest):
     """C3: последний дайджест прогона → KV digest:<sid> (перезапись; читает виджет «Последний
     результат» кабинета). Раньше дайджест жил только в HTTP-ответе и терялся с закрытием модалки."""
@@ -2394,6 +2438,7 @@ class Handler(BaseHTTPRequestHandler):
             if (res or {}).get("needs_review_reason"):   # WZ-B02 → Exception Inbox: причина словами
                 run_rec["needs_review_reason"] = str(res["needs_review_reason"])[:200]
             s = _update_session(sid, lambda s: s.setdefault("runs", []).append(run_rec))
+            _save_digest(sid, _run_digest(res))   # C3: и процесс-на-файле оставляет отчёт (виджет/«Открыть отчёт»/расписание)
             # доставка результата в канал (как по расписанию) — чтобы РУЧНОЙ запуск тоже слал, а не только тик
             delivered = None
             recips = _recipients(s)   # несколько получателей: шлём результат в каждый подключённый канал
