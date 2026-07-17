@@ -4566,7 +4566,7 @@ function goalLoop(){
   };
 }
 function renderGoalJournal(res){
-  var KM={reason:['💭','Продумал'],build:['🧩','Собрал и запустил эксперта'],build_fail:['🛠','Сборка не удалась'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
+  var KM={reason:['💭','Продумал'],build:['🧩','Собрал и запустил эксперта'],build_fail:['🛠','Сборка не удалась'],reject_step:['🔴','Трас-гейт отклонил шаг'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
   var rows=(res.journal||[]).map(function(j){
     var k=KM[j.kind]||['·',String(j.kind)];
     var code=j.code?'<details style="margin-top:3px"><summary style="cursor:pointer;font-size:11px;color:var(--silver)">код эксперта</summary><pre style="white-space:pre-wrap;font-size:10.5px;background:var(--cream);padding:6px;border-radius:5px;max-height:130px;overflow:auto;margin-top:4px">'+esc(String(j.code))+'</pre></details>':'';
