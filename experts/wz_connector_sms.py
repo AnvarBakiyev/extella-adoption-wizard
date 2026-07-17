@@ -33,6 +33,8 @@ def wz_connector_sms(api_token: str = "", client: str = "default", mode: str = "
         return {"ok": False, "err": "коннектор SMS не подключён (нет секрета)"}
     try:
         env = json.loads(Fernet(kp.read_bytes()).decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ
         if env.get("k") != "sms":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался sms)"}
         creds = json.loads(env.get("v", "{}"))

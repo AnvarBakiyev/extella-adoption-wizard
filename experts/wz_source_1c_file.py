@@ -51,6 +51,8 @@ def wz_source_1c_file(api_token: str = "", client: str = "default", mode: str = 
         return {"ok": False, "err": "источник 1С (файл) не подключён (нет секрета)"}
     try:
         env = json.loads(fkey.decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ (была только на записи)
         if env.get("k") != "src_1c_file":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался src_1c_file)"}
         creds = json.loads(env.get("v", "{}"))

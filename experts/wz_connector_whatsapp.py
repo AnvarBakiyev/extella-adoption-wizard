@@ -34,6 +34,8 @@ def wz_connector_whatsapp(api_token: str = "", client: str = "default", mode: st
         return {"ok": False, "err": "коннектор WhatsApp не подключён (нет секрета)"}
     try:
         env = json.loads(Fernet(kp.read_bytes()).decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ
         if env.get("k") != "whatsapp":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался whatsapp)"}
         creds = json.loads(env.get("v", "{}"))

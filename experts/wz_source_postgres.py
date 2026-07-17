@@ -53,6 +53,8 @@ def wz_source_postgres(api_token: str = "", client: str = "default", mode: str =
         return {"ok": False, "err": "источник PostgreSQL не подключён (нет секрета)"}
     try:
         env = json.loads(fkey.decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ (была только на записи)
         if env.get("k") != "src_postgres":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался src_postgres)"}
         creds = json.loads(env.get("v", "{}"))

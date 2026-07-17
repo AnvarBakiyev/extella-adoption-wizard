@@ -51,6 +51,8 @@ def wz_source_mysql(api_token: str = "", client: str = "default", mode: str = "v
         return {"ok": False, "err": "источник MySQL не подключён (нет секрета)"}
     try:
         env = json.loads(fkey.decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ (была только на записи)
         if env.get("k") != "src_mysql":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался src_mysql)"}
         creds = json.loads(env.get("v", "{}"))

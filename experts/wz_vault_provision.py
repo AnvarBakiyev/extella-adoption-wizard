@@ -18,8 +18,14 @@ def wz_vault_provision(pin: str = "", client: str = "default") -> dict:
     for c in cands:
         try:
             Path(c).parent.mkdir(parents=True, exist_ok=True)
-            Path(c).write_bytes(key)
-            try: os.chmod(c, 0o600)
+            _um = os.umask(0o077)   # #3 сузить права на время создания — без окна world-readable до chmod
+            try:
+                fd = os.open(c, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                try: os.write(fd, key)
+                finally: os.close(fd)
+            finally:
+                os.umask(_um)
+            try: os.chmod(c, 0o600)   # если файл существовал — mode при open игнорируется, дожимаем
             except Exception: pass
             written = c; break
         except Exception:

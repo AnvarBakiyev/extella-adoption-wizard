@@ -42,6 +42,8 @@ def wz_connector_email(api_token: str = "", client: str = "default", mode: str =
         return {"ok": False, "err": "коннектор Email не подключён (нет секрета)"}
     try:
         env = json.loads(Fernet(kp.read_bytes()).decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ
         if env.get("k") != "email":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался email)"}
         creds = json.loads(env.get("v", "{}"))

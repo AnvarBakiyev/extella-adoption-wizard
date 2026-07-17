@@ -50,6 +50,8 @@ def wz_source_1c_winrm(api_token: str = "", client: str = "default", mode: str =
         return {"ok": False, "err": "источник 1С (WinRM) не подключён (нет секрета)"}
     try:
         env = json.loads(fkey.decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ (была только на записи)
         if env.get("k") != "src_1c_winrm":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался src_1c_winrm)"}
         creds = json.loads(env.get("v", "{}"))
@@ -90,13 +92,16 @@ def wz_source_1c_winrm(api_token: str = "", client: str = "default", mode: str =
         # mode == pull: сгенерировать VBScript чтения объекта выбранными полями
         if not obj_name:
             return {"ok": False, "err": "не указан object_name (имя справочника/документа 1С)"}
-        cap = int(limit) if (limit and int(limit) > 0) else 50000
+        explicit = bool(limit and int(limit) > 0)
+        cap = int(limit) if explicit else 50000
         coll = "Documents" if obj_type == "document" else "Catalogs"
         name_esc = _NAME.sub("", obj_name)
         if not name_esc:
             return {"ok": False, "err": "имя объекта 1С пустое после проверки (допустимы буквы/цифры/_)"}
-        if not re.match(r"^[A-Za-z]:\\", base_path) or any(c in base_path for c in '"\'`|<>*?\n\r'):
-            return {"ok": False, "err": "недопустимый путь к базе (ожидается вида C:\\1C\\Base)"}
+        # #6 RCE: строгий БЕЛЫЙ список (путь уходит в PowerShell double-quoted "…" внутри Add-Content,
+        # где $() и $var подставляются) — чёрный список пропускал $(...)/&/;. Только буквы/цифры/_/-/./пробел/\.
+        if not re.match(r"^[A-Za-z]:\\[0-9A-Za-zА-Яа-яЁё._\\ -]+$", base_path):
+            return {"ok": False, "err": "недопустимый путь к базе (ожидается вида C:\\1C\\Base — только буквы/цифры/_/-/./пробел)"}
         fnames = [_NAME.sub("", str(x)) for x in fields][:40]
         fnames = [x for x in fnames if x] or ["Description"]
         bp = base_path.replace("\\", "\\\\")
@@ -128,7 +133,7 @@ def wz_source_1c_winrm(api_token: str = "", client: str = "default", mode: str =
                'a.Exit(False)\n'
                'WScript.Echo "COUNT:" & count\n'
                'WScript.Echo "ROWS:" & lines\n'
-               'WScript.Echo "SUCCESS"\n') % (bp, coll, name_esc, name_esc, extract, joinexpr, cap)
+               'WScript.Echo "SUCCESS"\n') % (bp, coll, name_esc, name_esc, extract, joinexpr, cap + 1)   # #7 читаем cap+1 → детект переполнения
 
         import uuid
         vbs_path = "C:\\wz_1c_src_%s.vbs" % uuid.uuid4().hex   # уникально на вызов → нет гонки при параллельных pull на одном устройстве
@@ -173,6 +178,12 @@ def wz_source_1c_winrm(api_token: str = "", client: str = "default", mode: str =
                     _cnt = None
         if _cnt is not None and _cnt != len(allrows):
             return {"ok": False, "err": "1С: разобрано строк " + str(len(allrows)) + " из заявленных " + str(_cnt) + " — вывод неполный, прогон не засчитан"}
+        # #7 переполнение: VBS прочитал cap+1; если строк больше потолка и limit не задан явно —
+        # НЕ отдаём усечённое как полное (как в postgres/mysql/1c_file)
+        if len(allrows) > cap:
+            if not explicit:
+                return {"ok": False, "err": "источник вернул больше " + str(cap) + " строк — данные НЕ выгружены, чтобы не отдать усечённое как полное; задайте limit или сузьте выборку"}
+            allrows = allrows[:cap]
     except Exception as e:
         return {"ok": False, "err": "1c_winrm: " + scrub(str(e))[:150]}
 

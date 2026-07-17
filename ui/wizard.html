@@ -1472,16 +1472,23 @@ function applyI18N(){
 
 function toggleWLang(){ WLANG=(WLANG==='ru'?'en':'ru'); try{ localStorage.setItem('wz_lang',WLANG); }catch(e){} applyWLang(); if(typeof renderAutomations==='function' && S.mode==='automations') renderAutomations(); applyI18N(); }
 
-function ask(title, hint, def, cb){
+function ask(title, hint, def, cb, opts){
   resetModInput();
   el("modTitle").textContent = title;
   el("modHint").textContent = hint||"";
-  el("modInput").value = def||"";
+  const mi = el("modInput");
+  mi.value = def||"";
+  // #11 секретные поля вводим маскированно (type=password) и чистим сразу после чтения (modOk).
+  // Эвристика по заголовку/подсказке покрывает все токен/пароль/webhook-запросы; opts.secret форсирует.
+  const _sec = (opts && opts.secret) || /токен|пароль|token|password|secret|webhook|apitoken|auth\s*token|\bjwt\b/i.test(String(title)+" "+String(hint));
+  mi.type = _sec ? "password" : "text";
+  if(_sec){ mi.setAttribute("autocomplete","new-password"); mi.setAttribute("spellcheck","false"); }
+  else { mi.removeAttribute("autocomplete"); }
   el("modBack").classList.add("open");
   _modCb = cb;
-  setTimeout(()=>el("modInput").focus(), 50);
+  setTimeout(()=>mi.focus(), 50);
 }
-function modOk(){ const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
+function modOk(){ const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; if(mi) mi.value=""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
 function modCancel(){ el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
 function busy(text){ el("busyText").textContent = text; el("busyBack").classList.add("open"); }
 function busyOff(){ el("busyBack").classList.remove("open"); }

@@ -38,6 +38,8 @@ def wz_connector_telegram(api_token: str = "", client: str = "default", mode: st
         return {"ok": False, "err": "коннектор Telegram не подключён (нет секрета)"}
     try:
         env = json.loads(Fernet(kp.read_bytes()).decrypt(ct.encode()).decode())
+        if env.get("c") != client:
+            return {"ok": False, "err": "привязка секрета к клиенту не совпала"}   # #8 client-isolation: проверка привязки на ЧТЕНИИ
         if env.get("k") != "telegram":
             return {"ok": False, "err": "привязка секрета не совпала (ожидался telegram)"}
         creds = json.loads(env.get("v", "{}"))
@@ -169,7 +171,33 @@ def wz_connector_telegram(api_token: str = "", client: str = "default", mode: st
         chat = str(chat_id).strip() or chat   # для входящих (B2) отвечаем в чат отправителя, иначе — chat_id из секрета
         if not chat:
             return {"ok": False, "err": "в секрете нет chat_id для отправки"}
-        r = requests.post(base + "/sendMessage", json={"chat_id": chat, "text": text or "Тест Extella"}, timeout=20).json()
+        # #13 ретраи на ВРЕМЕННЫХ сбоях (429/5xx/сеть): до 3 попыток, экспон. backoff + Retry-After.
+        # Постоянные ошибки (400 «chat not found» и т.п.) НЕ ретраим. При исчерпании — transient:True,
+        # чтобы оркестратор/тик переочередил, а не записал как окончательный провал.
+        import time as _t
+        r = None
+        _last_transient = None
+        for _att in range(3):
+            _wait = None
+            try:
+                _resp = requests.post(base + "/sendMessage", json={"chat_id": chat, "text": text or "Тест Extella"}, timeout=20)
+                if _resp.status_code == 429 or _resp.status_code >= 500:
+                    try:
+                        _ra = int(_resp.headers.get("Retry-After") or (_resp.json().get("parameters", {}) or {}).get("retry_after") or 0)
+                    except Exception:
+                        _ra = 0
+                    _last_transient = "telegram временный сбой (HTTP %d)" % _resp.status_code
+                    _wait = max(_ra, 2 ** _att)
+                else:
+                    r = _resp.json()
+                    break
+            except Exception as _ne:
+                _last_transient = "сеть telegram: " + (str(_ne).replace(tok, "<token>") if tok else str(_ne))[:100]
+                _wait = 2 ** _att
+            if _wait is not None and _att < 2:
+                _t.sleep(min(_wait, 10))
+        if r is None:
+            return {"ok": False, "transient": True, "err": _last_transient or "telegram: временный сбой, отправка не подтверждена"}
         if r.get("ok"):
             res = {"ok": True, "message_id": r.get("result", {}).get("message_id"), "host": socket.gethostname()}
         else:
