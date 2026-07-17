@@ -515,7 +515,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
     <div class="mrow">
       <button class="btn ghost" onclick="modCancel()">Отмена</button>
-      <button class="btn gold" onclick="modOk()">OK</button>
+      <button class="btn gold" id="modOkBtn" onclick="modOk()">OK</button>
     </div>
   </div>
 </div>
@@ -592,7 +592,7 @@ function _modClearExtras(){
   inp.setAttribute("onkeydown", "if(event.key==='Enter')modOk()");
   hint.after(inp);
 }
-function resetModInput(){ _modClearExtras(); }   // всегда чистый видимый инпут (после hidden/select-модалок)
+function resetModInput(){ _modClearExtras(); var ob=el("modOkBtn"); if(ob) ob.textContent="OK"; }   // чистый инпут + дефолтная кнопка
 /* ================= EN/RU (демо на английский) ================= */
 var WLANG = (function(){ try { return localStorage.getItem('wz_lang') || 'ru'; } catch(e){ return 'ru'; } })();
 var WT = {
@@ -4283,6 +4283,9 @@ async function sourceProcess(i){
           + `<div style="font-size:12.5px;text-align:left">Подключите источник в блоке <b>🔌 Подключения</b> вверху страницы (Google Sheets — просто по ссылке), затем вернитесь сюда и выберите его.</div>`;
     if(curKind) body += `<label class="opt" style="color:#999;margin-top:6px"><input type="radio" name="srcAct" value="off"><span>Отвязать текущий источник</span></label>`;
   }
+  body += `<div style="margin-top:12px;border-top:1px dashed var(--cream-dark);padding-top:10px">`
+        + `<button class="btn gold sm" style="font-size:12.5px" onclick="modCancel();genSource(${i})">✨ Любой источник — по описанию</button>`
+        + `<div style="font-size:11.5px;color:var(--silver);margin-top:5px">Нет в списке? Опишите API и вставьте ключ — Extella сама соберёт подключение и покажет первые строки.</div></div>`;
   el("modInput").outerHTML = body;
   el("modBack").classList.add("open");
   _modCb = async ()=>{
@@ -4302,6 +4305,69 @@ async function sourceProcess(i){
     toast("✓ Источник подключён"+(r.rows!=null?(", строк: "+r.rows):""),"ok");
     renderAutomations();
   };
+}
+// ✨ Генеративный источник: опиши API + ключ → Qwen пишет интеграцию → гейт «первые реальные строки» → привязка
+function genSource(i){
+  var a = AUTOS[i]; if(!a) return;
+  var st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  resetModInput();
+  el("modTitle").textContent = "✨ Подключи любой источник";
+  el("modHint").innerHTML = "Опишите источник и вставьте ключ (если нужен) — Extella сама соберёт подключение и покажет первые реальные строки перед сохранением. Годится для API с ключом/токеном. Meta/Google Ads (OAuth) — позже через Composio.";
+  el("modInput").outerHTML =
+      `<input id="modInput" type="hidden">`
+    + `<input id="genUrl" ${st} placeholder="Адрес API, напр. https://api.вашсервис.kz/orders">`
+    + `<textarea id="genDesc" ${st.replace('margin-bottom:8px','height:64px;margin-bottom:8px')} placeholder="Что это и какие поля нужны. Напр.: список заказов; поля номер, дата, сумма, клиент, статус"></textarea>`
+    + `<input id="genAuth" type="password" autocomplete="new-password" ${st} placeholder="Ключ/токен (если нужен; хранится в сейфе)">`
+    + `<select id="genAuthKind" ${st}><option value="none">Без авторизации</option><option value="bearer" selected>Bearer-токен (Authorization)</option><option value="header">Ключ в заголовке (X-Api-Key)</option><option value="query">Ключ в параметре URL</option></select>`;
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Собрать →";
+  _modCb = async ()=>{
+    var url=((el("genUrl")||{}).value||"").trim();
+    var desc=((el("genDesc")||{}).value||"").trim();
+    var authKind=(el("genAuthKind")||{}).value||"none";
+    var authTok=((el("genAuth")||{}).value||""); if(el("genAuth")) el("genAuth").value="";
+    if(!url && !desc){ toast("Опишите источник или дайте адрес API","err"); return; }
+    var secret={};
+    if(authTok && authKind!=="none"){ secret[(authKind==="bearer")?"token":"api_key"]=authTok; }
+    busy("Собираю подключение: Qwen пишет интеграцию и тянет первые строки…");
+    var r = await jpost("/x/source_generate",{endpoint:url, description:desc, auth_kind:authKind, secret:secret});
+    busyOff();
+    if(!r || (!r.code && !(r.verify&&r.verify.ok))){
+      toast("Не удалось собрать: "+((r&&r.verify&&r.verify.err)||(r&&r.message)||"проверьте адрес/ключ"),"err"); return;
+    }
+    genSourceGate(i, r);
+  };
+}
+function genSourceGate(i, r){
+  var v=r.verify||{}; var rows=v.preview||[]; var cols=v.columns||(rows[0]?Object.keys(rows[0]):[]);
+  var tbl = rows.length
+    ? ('<table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0 4px"><thead><tr>'+
+        cols.map(c=>'<th style="text-align:left;border-bottom:2px solid var(--cream-dark);padding:5px 7px;color:var(--silver)">'+esc(c)+'</th>').join('')+
+        '</tr></thead><tbody>'+
+        rows.slice(0,8).map(row=>'<tr>'+cols.map(c=>'<td style="border-bottom:1px solid var(--cream);padding:5px 7px">'+esc(String(row[c]==null?'':row[c])).slice(0,60)+'</td>').join('')+'</tr>').join('')+
+        '</tbody></table>')
+    : '<div style="color:#c33;font-size:13px;margin:8px 0">Строк не получено. '+esc(v.err||'')+'</div>';
+  resetModInput();
+  el("modTitle").textContent = rows.length ? ("Это твои данные?") : "Строки не получены";
+  el("modHint").innerHTML = rows.length ? ("Первые "+rows.length+" строк"+(v.rows!=null?(" из "+v.rows):"")+". Всё верно — сохраните как источник процесса.") : "Посмотрите код — возможно, надо уточнить адрес или ключ.";
+  el("modInput").outerHTML = '<input id="modInput" type="hidden">'+tbl+
+    '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:12px;color:var(--silver)">Показать сгенерированный код</summary>'+
+    '<pre style="white-space:pre-wrap;font-size:11px;background:var(--cream);padding:8px;border-radius:6px;max-height:170px;overflow:auto;margin-top:6px">'+esc(r.code||'')+'</pre></details>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn");
+  if(rows.length){
+    if(ob) ob.textContent="Сохранить как источник";
+    _modCb = async ()=>{
+      busy("Привязываю источник к процессу…");
+      var b = await jpost("/x/source_bind",{session_id:AUTOS[i].session_id, kind:r.kind});
+      busyOff();
+      if(b.status==="success"){ toast("✓ Источник подключён"+(b.rows!=null?(", строк: "+b.rows):""),"ok"); renderAutomations(); }
+      else toast("Не удалось привязать: "+(b.message||""),"err");
+    };
+  } else {
+    if(ob) ob.textContent="Переописать";
+    _modCb = ()=>{ genSource(i); };
+  }
 }
 function connectEmail(){
   ask("Email — адрес отправителя", "Ваш email (он же логин SMTP), например report@company.kz. Хранится шифрованно.", "", (email)=>{
