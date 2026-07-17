@@ -660,7 +660,7 @@ function _brainRender(res){
     '<button class="btn gold" style="padding:5px 12px;font-size:12px" onclick="voiceLearn()">🎙 Обучить по примерам</button>'+
     (voiceN?' <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="voiceTry()">▶ Примерить голос</button>':'')+'</div>';
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+voiceBox+
-    sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур), вручную и из документа.",cs,"del_concept","add_concept").replace('＋ добавить словами</button>','＋ добавить словами</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeLearn()">📚 Загрузить знание компании</button>')+
+    sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур), вручную и из документа.",cs,"del_concept","add_concept").replace('＋ добавить словами</button>','＋ добавить словами</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeLearn()">📚 Загрузить знание компании</button> <button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="knowledgeFromSource()">🔌 Знание из источника</button>')+
     sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон). Правила с 🎙 [голос] — выученный стиль.",rs,"del_rule","add_rule");
   el("modBack").classList.add("open");
   const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
@@ -714,6 +714,20 @@ async function knowledgeLearn(){
       toast("✓ Запомнено фактов: "+(res.saved||0),"ok");
       _brainRender(await fetch("/x/brain").then(x=>x.json()));
     } else toast("Не удалось: "+(r.message||res.err||""),"err");
+  });
+}
+async function knowledgeFromSource(){
+  ask("🔌 Источник данных — описание","Опишите источник словами (напр.: «список товаров с ценами из нашего JSON API»). Extella сама напишет и запустит подключение.","",async (desc)=>{
+    if(!desc) return;
+    ask("Адрес источника (URL)","Ссылка на API/данные (если есть). Ключ/токен — отдельно, если нужен.","",async (url)=>{
+      busy("Подключаюсь к источнику и тяну данные…");
+      const r=await jpost("/x/knowledge_from_source",{description:desc, endpoint:(url||"").trim()}); busyOff();
+      const res=(r&&r.result)||{};
+      if(r.status==="success"){
+        toast("✓ Из источника запомнено фактов: "+(res.saved||0),"ok");
+        _brainRender(await fetch("/x/brain").then(x=>x.json()));
+      } else toast("Не удалось: "+(r.message||res.err||"источник не отдал данных"),"err");
+    });
   });
 }
 
