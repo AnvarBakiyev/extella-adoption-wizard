@@ -160,6 +160,7 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
             "\nСгенерируй код стадии строго по контракту (input_path, output_path).")
     out_path = "/tmp/stage_" + expert_name + ".json"
     last_err = None
+    why = None   # #11: инициализация ДО цикла — иначе при провале всех попыток на этапе LLM/build (до приёмки, стр.243) финальный return читает несвязанную why → NameError
     # директива нативной стройки: модель СОЗДАЁТ эксперта действием, исходник — только в create, не в чат
     build_directive = ("\n\nПОСТРОЙ этого эксперта НА ПЛАТФОРМЕ действием (создай ИЛИ обнови эксперта) под именем "
                        "СТРОГО '" + expert_name + "', cspl=" + cspl + ", сигнатура РОВНО "
@@ -232,7 +233,7 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
         sv = api("/api/expert/save", {"name": expert_name, "description": _descr,
                                       "code": code, "kwargs": {"input_path": "", "output_path": ""},
                                       "cspl": cspl, "global": True})
-        if sv.get("status") not in ("success", None) and sv.get("id") is None and "error" in str(sv).lower():
+        if not (isinstance(sv, dict) and (sv.get("status") == "success" or sv.get("id"))):   # #25: приёмка сохранения только по явному успеху (раньше пропускался мусор без status/id/«error»)
             return False, None, "save: " + str(sv)[:150]
         # приёмка = реальный прогон стадии на фактическом входе (это же и звено среза)
         if Path(out_path).exists():
@@ -798,7 +799,9 @@ def _run_build(session_id, build_id):
                             _sh.copy(current_input, outp)  # passthrough: срез продолжается, retrieval — на run-time
                         except Exception:
                             outp = current_input
-                    ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
+                        ok, detail = True, "реюз kp_ask(" + kp_pack + "): на build-срезе passthrough — retrieval выполнится на run-time"   # #28: честная метка вместо success-строки
+                    else:
+                        ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
             else:
                 ok, outp, detail = _build_one(nm, t, schema_hint, is_first=(idx == 0),
                                               is_last=(idx == len(data_tasks) - 1),

@@ -206,6 +206,12 @@ def wz_generate_blueprint(
                          "description": "Модель предложила компоненты, которых нет в каталоге: " + ", ".join(str(x) for x in removed),
                          "proposal": "Проверить потребность и при необходимости запланировать разработку"})
     bp["gaps"] = gaps
+    # #13: после срезки неизвестных компонентов — если НИ одна стадия не имеет исполнимых компонентов
+    # (ни capability_ids, ни asset_names), процесс собрать не из чего → честный отказ вместо «пустой» сборки
+    if not any((st.get("capability_ids") or st.get("asset_names")) for st in bp["stages"]):
+        return {"status": "error", "gaps": gaps, "warnings": warnings,
+                "message": "план без исполнимых компонентов: предложенные инструменты вне каталога. "
+                           "Уточните задачу в интервью или запросите разработку недостающих компонентов."}
 
     pr = bp.get("pack_recommendation") or {}
     if pr.get("pack_id") and pr["pack_id"] not in pack_ids:
