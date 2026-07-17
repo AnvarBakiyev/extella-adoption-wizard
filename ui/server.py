@@ -2163,10 +2163,24 @@ class Handler(BaseHTTPRequestHandler):
             _update_session(sid, lambda sx: sx.__setitem__("building", build_id))
 
             def _rebuild_bg():
+                _built_ok = False
                 try:
                     _run_build(sid, build_id)
+                    try:
+                        _built_ok = json.loads((RUNS_DIR / build_id / "build_progress.json").read_text(encoding="utf-8")).get("status") == "built"
+                    except Exception:
+                        _built_ok = False
                 finally:
                     _update_session(sid, lambda sx: sx.pop("building", None))
+                    if not _built_ok:   # #23: стройка упала → откатить blueprint к снапшоту (иначе план впереди собранного кода)
+                        try:
+                            _hist = json.loads((SESS_DIR / (sid + ".json")).read_text(encoding="utf-8")).get("blueprint_history") or []
+                            if _hist and _hist[-1].get("blueprint"):
+                                bpp.write_text(json.dumps({"blueprint": _hist[-1]["blueprint"],
+                                                           "reverted_at": datetime.now(timezone.utc).isoformat()},
+                                                          ensure_ascii=False, indent=2), encoding="utf-8")
+                        except Exception:
+                            pass
                     if _was_active:   # resume: возвращаем расписание, next_due вперёд
                         try:
                             gv2 = api("/api/kv/get", {"key": "sched:" + sid})
