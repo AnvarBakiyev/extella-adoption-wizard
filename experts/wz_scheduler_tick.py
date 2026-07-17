@@ -337,6 +337,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             continue
         # срок?
         nd = cfg.get("next_due_ts")
+        _slot = nd or now().isoformat()   # идентичность слота (для идемпотентности доставки) — ДО переноса срока
         due = True
         if nd:
             try:
@@ -415,12 +416,27 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         run_body = {"expert_name": orch, "params": run_params, "global": True}
         if tgt:
             run_body["target"] = tgt            # сам оркестратор исполняется на хостинге
-        try:
-            r = requests.post(base + "/api/expert/run", headers=headers, json=run_body, timeout=900)
-            resp = r.json()
-            out = resp.get("result", resp)
-        except Exception as e:
-            resp, out = {}, {"status": "error", "message": str(e)[:150]}
+        # Надёжность: ретрай НАЧАЛЬНОГО запуска при транзиенте (обрыв связи / HTTP 5xx) ДО создания задачи —
+        # безопасно (задача ещё не создана, дубля прогона не будет). Детерминированный ответ (4xx/готовый
+        # результат) не ретраим. Слот уже столблён выше, так что наложения тиков не будет.
+        import time as _tr
+        resp, out, run_attempts = {}, {"status": "error", "message": "no attempt"}, 0
+        for _att in range(1, 4):
+            run_attempts = _att
+            try:
+                r = requests.post(base + "/api/expert/run", headers=headers, json=run_body, timeout=900)
+                if r.status_code >= 500 and _att < 3:
+                    _tr.sleep(2 * _att)
+                    continue
+                resp = r.json()
+                out = resp.get("result", resp)
+                break
+            except Exception as e:
+                out = {"status": "error", "message": str(e)[:150]}
+                if _att < 3:
+                    _tr.sleep(2 * _att)
+                    continue
+                resp = {}
 
         def as_dict(v):
             if isinstance(v, dict):
@@ -488,7 +504,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
         _stat = (out or {}).get("status", "unknown")
         if fid:
             _stat = (out or {}).get("run_status") or _stat   # flow честно помечает деградацию (partial)
-        run = {"at": now().isoformat(), "status": _stat,
+        run = {"at": now().isoformat(), "status": _stat, "attempts": run_attempts,
                "total_count": (out or {}).get("total_count"), "total_sum": (out or {}).get("total_sum"),
                "report_xlsx": (out or {}).get("report_xlsx"), "host": (out or {}).get("host"),
                "trigger": "schedule"}
@@ -565,6 +581,16 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                     msg += "\n⚠ прогон с деградацией (часть шагов не отработала)"
                 msg += "\n\n" + str(_dg)[:600]
             for deliver in recips:
+                # идемпотентность доставки: один отчёт в один канал за ЭТОТ слот расписания — не дважды
+                # (страховка от повторной доставки, если тик переиграл после успешной отправки)
+                _dedup_k = "delivered:" + str(key) + "|" + str(_slot) + "|" + str(deliver)
+                try:
+                    if kv("get", {"key": _dedup_k}).get("value"):
+                        _deliv = _deliv or []
+                        _deliv.append({"channel": deliver, "ok": True, "skipped": "already_delivered"})
+                        continue
+                except Exception:
+                    pass
                 dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
                          "params": {"api_token": api_token, "client": cfg.get("client", "default"),
                                     "mode": "send", "text": msg}}
@@ -583,6 +609,12 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                     _derr = (_do.get("err") if isinstance(_do, dict) else None)
                 except Exception as _de:
                     _derr = str(_de)[:120]
+                if _dok:   # ключ дедупа ставим ТОЛЬКО на успешной доставке (иначе — переиграем в след. тик)
+                    try:
+                        kv("set", {"key": _dedup_k, "value": json.dumps({"at": now().isoformat()}),
+                                   "description": "delivery dedup"})
+                    except Exception:
+                        pass
                 _deliv = _deliv or []
                 _deliv.append({"channel": deliver, "ok": _dok, "err": _derr})   # #19: доставка больше не молчит — исход в возврат тика/лог
         fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"], "delivered": _deliv})
