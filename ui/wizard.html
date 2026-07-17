@@ -4306,29 +4306,74 @@ async function sourceProcess(i){
     renderAutomations();
   };
 }
-// ✨ Генеративный источник: опиши API + ключ → Qwen пишет интеграцию → гейт «первые реальные строки» → привязка
+// Рецепты площадок: как получить токен СЕЙЧАС (до Composio) + преднастройка полей
+var GEN_RECIPES = {
+  custom:{label:"Свой API (ключ/токен)", endpoint:"", auth:"bearer", token_url:"",
+    recipe:"Любой REST API с ключом или токеном. Вставьте ключ ниже."},
+  meta:{label:"Meta Ads (Facebook)", endpoint:"https://graph.facebook.com/v19.0/act_ВАШ_ID/insights?fields=campaign_name,spend,impressions,clicks&date_preset=yesterday", auth:"bearer", token_url:"",
+    recipe:"Meta Business Settings → «Системные пользователи» → создайте системного пользователя, дайте доступ к рекламному аккаунту, сгенерируйте токен со scope <b>ads_read</b>. Такой токен не истекает. Вставьте его ниже и укажите act_&lt;ваш ID&gt; в адресе."},
+  google_ads:{label:"Google Ads", endpoint:"https://googleads.googleapis.com/v16/customers/ВАШ_ID/googleAds:search", auth:"oauth_refresh", token_url:"https://oauth2.googleapis.com/token",
+    recipe:"Один раз получите <b>refresh_token</b> через OAuth Playground (scope adwords) + <b>client_id/secret</b> из Google Cloud + <b>developer_token</b> из Google Ads API Center. Access-токен система обновит сама. developer_token допишите в описании."},
+  yandex:{label:"Яндекс Директ", endpoint:"https://api.direct.yandex.com/json/v5/reports", auth:"bearer", token_url:"",
+    recipe:"Получите OAuth-токен приложения в Яндекс OAuth (scope <b>direct:api</b>) — живёт долго. Вставьте токен ниже."},
+  vk:{label:"VK Реклама", endpoint:"https://ads.vk.com/api/v2/statistics/ads.json", auth:"bearer", token_url:"",
+    recipe:"В кабинете VK Ads: Настройки → доступ к API → создайте токен доступа. Вставьте его ниже."}
+};
+function genPreset(){
+  var p=GEN_RECIPES[(el("genPreset")||{}).value]||GEN_RECIPES.custom;
+  if(el("genUrl") && p.endpoint) el("genUrl").value=p.endpoint;
+  if(el("genAuthKind")) el("genAuthKind").value=p.auth;
+  if(el("genTokenUrl")) el("genTokenUrl").value=p.token_url||"";
+  if(el("genRecipe")) el("genRecipe").innerHTML = p.recipe ? ("💡 "+p.recipe) : "";
+  genAuthToggle();
+}
+function genAuthToggle(){
+  var k=(el("genAuthKind")||{}).value||"none";
+  var kw=el("genKeyWrap"), ow=el("genOauthWrap");
+  if(kw) kw.style.display = (k==="bearer"||k==="header"||k==="query") ? "block":"none";
+  if(ow) ow.style.display = (k==="oauth_refresh") ? "block":"none";
+}
+// ✨ Генеративный источник: опиши API + ключ/OAuth → Qwen пишет интеграцию → гейт «первые реальные строки» → привязка
 function genSource(i){
   var a = AUTOS[i]; if(!a) return;
   var st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
+  var opts = Object.keys(GEN_RECIPES).map(function(k){return '<option value="'+k+'">'+esc(GEN_RECIPES[k].label)+'</option>';}).join('');
   resetModInput();
   el("modTitle").textContent = "✨ Подключи любой источник";
-  el("modHint").innerHTML = "Опишите источник и вставьте ключ (если нужен) — Extella сама соберёт подключение и покажет первые реальные строки перед сохранением. Годится для API с ключом/токеном. Meta/Google Ads (OAuth) — позже через Composio.";
+  el("modHint").innerHTML = "Опишите источник — Extella сама соберёт подключение и покажет первые реальные строки перед сохранением. Ключевые/токен-API работают сразу; для рекламных кабинетов (OAuth) — по рецепту (разовый токен), система держит его свежим.";
   el("modInput").outerHTML =
       `<input id="modInput" type="hidden">`
+    + `<select id="genPreset" ${st} onchange="genPreset()">${opts}</select>`
+    + `<div id="genRecipe" style="font-size:11.5px;color:#7a5b1a;background:var(--gold-bg);border:1px solid #eddfc4;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>`
     + `<input id="genUrl" ${st} placeholder="Адрес API, напр. https://api.вашсервис.kz/orders">`
-    + `<textarea id="genDesc" ${st.replace('margin-bottom:8px','height:64px;margin-bottom:8px')} placeholder="Что это и какие поля нужны. Напр.: список заказов; поля номер, дата, сумма, клиент, статус"></textarea>`
-    + `<input id="genAuth" type="password" autocomplete="new-password" ${st} placeholder="Ключ/токен (если нужен; хранится в сейфе)">`
-    + `<select id="genAuthKind" ${st}><option value="none">Без авторизации</option><option value="bearer" selected>Bearer-токен (Authorization)</option><option value="header">Ключ в заголовке (X-Api-Key)</option><option value="query">Ключ в параметре URL</option></select>`;
+    + `<textarea id="genDesc" ${st.replace('margin-bottom:8px','height:60px;margin-bottom:8px')} placeholder="Что это и какие поля нужны. Напр.: расход по кампаниям; поля кампания, показы, клики, расход"></textarea>`
+    + `<select id="genAuthKind" ${st} onchange="genAuthToggle()"><option value="none">Без авторизации</option><option value="bearer" selected>Bearer-токен</option><option value="header">Ключ в заголовке (X-Api-Key)</option><option value="query">Ключ в параметре URL</option><option value="oauth_refresh">OAuth (refresh-токен — Meta/Google/Яндекс)</option></select>`
+    + `<div id="genKeyWrap"><input id="genAuth" type="password" autocomplete="new-password" ${st} placeholder="Ключ/токен (хранится в сейфе)"></div>`
+    + `<div id="genOauthWrap" style="display:none">`
+    +   `<input id="genRefresh" type="password" autocomplete="new-password" ${st} placeholder="refresh_token">`
+    +   `<input id="genTokenUrl" ${st} placeholder="token_url (адрес обновления токена)">`
+    +   `<input id="genClientId" ${st} placeholder="client_id">`
+    +   `<input id="genClientSecret" type="password" autocomplete="new-password" ${st} placeholder="client_secret">`
+    + `</div>`;
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Собрать →";
+  genPreset();
   _modCb = async ()=>{
     var url=((el("genUrl")||{}).value||"").trim();
     var desc=((el("genDesc")||{}).value||"").trim();
     var authKind=(el("genAuthKind")||{}).value||"none";
-    var authTok=((el("genAuth")||{}).value||""); if(el("genAuth")) el("genAuth").value="";
     if(!url && !desc){ toast("Опишите источник или дайте адрес API","err"); return; }
     var secret={};
-    if(authTok && authKind!=="none"){ secret[(authKind==="bearer")?"token":"api_key"]=authTok; }
+    if(authKind==="bearer"){ var tk=((el("genAuth")||{}).value||""); if(tk) secret.token=tk; }
+    else if(authKind==="header"||authKind==="query"){ var ak=((el("genAuth")||{}).value||""); if(ak) secret.api_key=ak; }
+    else if(authKind==="oauth_refresh"){
+      secret.refresh_token=((el("genRefresh")||{}).value||"").trim();
+      secret.token_url=((el("genTokenUrl")||{}).value||"").trim();
+      secret.client_id=((el("genClientId")||{}).value||"").trim();
+      secret.client_secret=((el("genClientSecret")||{}).value||"");
+      if(!secret.refresh_token || !secret.token_url){ toast("Для OAuth нужны refresh_token и token_url","err"); return; }
+    }
+    ["genAuth","genRefresh","genClientSecret"].forEach(function(id){ if(el(id)) el(id).value=""; });   // затираем секреты в полях
     busy("Собираю подключение: Qwen пишет интеграцию и тянет первые строки…");
     var r = await jpost("/x/source_generate",{endpoint:url, description:desc, auth_kind:authKind, secret:secret});
     busyOff();

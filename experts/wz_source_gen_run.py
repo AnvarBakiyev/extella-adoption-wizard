@@ -118,6 +118,26 @@ def wz_source_gen_run(api_token: str = "", client: str = "default", mode: str = 
     fn = g.get("fetch")
     if not callable(fn):
         return {"ok": False, "err": "в сгенерированном коде нет функции fetch(secret)"}
+
+    # OAuth2-обновление ДО вызова fetch: если в секрете есть refresh_token+token_url — детерминированно
+    # (в доверенном коде, не в сгенерированном) обновляем access_token → secret['token']. Так OAuth-площадки
+    # (Meta/Google/Яндекс Ads) работают до Composio: юзер один раз получил refresh_token, дальше — сами.
+    if secret.get("refresh_token") and secret.get("token_url"):
+        try:
+            _form = {"grant_type": "refresh_token", "refresh_token": secret["refresh_token"]}
+            if secret.get("client_id"):
+                _form["client_id"] = secret["client_id"]
+            if secret.get("client_secret"):
+                _form["client_secret"] = secret["client_secret"]
+            _tr = requests.post(secret["token_url"], data=_form, timeout=30)
+            _tr.raise_for_status()
+            _at = (_tr.json() or {}).get("access_token")
+            if not _at:
+                return {"ok": False, "err": "OAuth-обновление: в ответе провайдера нет access_token"}
+            secret["token"] = _at
+        except Exception as e:
+            return {"ok": False, "err": "OAuth-обновление токена не удалось: " + str(e)[:120]}
+
     try:
         rows = fn(dict(secret))
     except Exception as e:
