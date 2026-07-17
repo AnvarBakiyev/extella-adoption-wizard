@@ -2762,7 +2762,7 @@ function renderLaunch(){
             : `<b>✓ Процесс одобрен и готов.</b> Компоненты собраны, состав зафиксирован. Одобрение — не запуск: сделайте первый прогон, чтобы увидеть результат на ваших данных.`}
           <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             ${runs.length
-              ? `<button class="btn gold" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button><button class="btn ghost" onclick="doFirstRun()">↻ Прогон ещё раз</button>`
+              ? `<button class="btn gold" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button><button class="btn ghost" onclick="openReport()">📄 Открыть отчёт</button><button class="btn ghost" onclick="doFirstRun()">↻ Прогон ещё раз</button>`
               : `<button class="btn gold" onclick="doFirstRun()">▶ Сделать первый прогон</button><button class="btn ghost" onclick="openWzCabinetBySid('${esc(S.sessionId)}')">Открыть кабинет →</button>`}
             <span class="statusline" id="stFirstRun"></span>
           </div>
@@ -2832,11 +2832,29 @@ async function doFirstRun(){
     if(out) out.innerHTML = '<span style="color:var(--bad)">Ошибка прогона: '+esc((r&&r.message)||"")+'</span>';
     return;
   }
-  if(r.digest) showBrief(r.digest, r.findings);   // модал с результатом первого прогона
+  if(r.digest) showBrief(r.digest, _reportBriefOpts((r.run||{}).at));   // модал с результатом первого прогона
   // персистим прогон в сессию (runs[]) и перерисовываем шаг «Запуск» в финиш-режим:
   // «Готово — работает» + главная дверь «Открыть кабинет →», где автоматизация живёт дальше
   await reloadSession();
   if(S.view==="launch") render();
+}
+// параметры модалки отчёта — заголовок/слоган/чипы под конкретный процесс (не CI-дефолты showBrief)
+function _reportBriefOpts(at){
+  var bp = S.blueprint && S.blueprint.blueprint;
+  var lb = lastBuild(); var experts = (lb && lb.experts) || [];
+  return {
+    kicker: 'Extella · Отчёт прогона',
+    title: (bp && bp.process_name) || (S.session && S.session.client_name) || 'Отчёт прогона',
+    subtitle: 'Результат прогона автоматизации' + (at?(' · '+String(at).slice(0,16).replace("T"," ")):'') + '.',
+    chips: experts.length ? ['🧩 '+experts.length+(experts.length===1?' компонент':' компонентов'),'🧠 Qwen'] : ['🧠 Qwen']
+  };
+}
+// «Открыть отчёт» с финиш-экрана: сохранённый digest последнего прогона (тот же, что в кабинете),
+// но прямо здесь — не заходя в кабинет
+async function openReport(){
+  let r; try{ r = await jpost("/x/digest",{session_id:S.sessionId}); }catch(e){ r=null; }
+  if(!r || r.status!=="success" || !r.digest){ toast("Отчёт пока не сформирован — сделайте прогон","err"); return; }
+  showBrief(r.digest, _reportBriefOpts(r.at));
 }
 
 /* ================= chat ================= */
