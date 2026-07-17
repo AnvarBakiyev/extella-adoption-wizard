@@ -4573,9 +4573,14 @@ function renderGoalJournal(res){
     var lc=(j.learned&&((j.learned.concepts||[]).length||(j.learned.rules||[]).length))?
       '<div style="font-size:11px;color:var(--petrol,#2a6b6b);margin-top:3px">🧠 выучено: '+
       esc([].concat((j.learned.concepts||[]).map(function(c){return c.k+'='+c.v}),(j.learned.rules||[])).join(' · ').slice(0,180))+'</div>':'';
+    var att=(j.attempts&&j.attempts.length>1)?'<div style="margin-top:4px"><div style="font-size:11px;color:var(--silver);margin-bottom:2px">Само-исправление ('+j.attempts.length+' поптыт.):</div>'+j.attempts.map(function(a){
+      var mk=a.ok?'✅':'↻';
+      return '<div style="font-size:11px;color:var(--ink-soft);padding:1px 0 1px 6px;border-left:2px solid '+(a.ok?'#3a9':'var(--cream-dark)')+'">'+mk+' <b>'+esc(a.source)+'</b> '+esc(JSON.stringify(a.params||{}))+' → '+(a.n||0)+' найд. <span style="color:'+(a.ok?'#3a9':'#c96')+'">'+esc((a.verdict||'').slice(0,80))+'</span></div>';
+    }).join('')+'</div>':'';
     var cand=(j.candidates&&j.candidates.length)?'<div style="margin-top:4px">'+j.candidates.map(function(c){
       return '<div style="font-size:11.5px;color:var(--ink-soft);padding:2px 0"><b>'+esc(c.source)+'</b> · '+esc(c.id)+' <span style="color:var(--silver)">'+esc(c.meta||'')+'</span></div>';
     }).join('')+'</div>':'';
+    cand=att+cand;
     var body=(j.result?'<div style="font-size:12px;color:var(--ink-soft);margin-top:3px;white-space:pre-wrap">'+esc(String(j.result).slice(0,220))+'</div>':'')+
              (j.why?'<div style="font-size:12px;color:#c33;margin-top:3px">✗ '+esc(j.why)+'</div>':'')+cand+lc+code;
     return '<div style="border-left:2px solid var(--cream-dark);padding:5px 0 5px 12px;margin-bottom:6px"><div style="font-size:12.5px"><b>'+k[0]+' '+esc(k[1])+'</b> · '+esc(String(j.step||'').slice(0,90))+'</div>'+body+'</div>';
