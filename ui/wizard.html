@@ -259,14 +259,21 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   </div>
   <div class="kicker">Визард внедрения</div>
   <h1>Соберите свою автоматизацию</h1>
-  <div style="max-width:640px">
-    <div style="font-size:14px;color:var(--silver,#889);line-height:1.55;margin:10px 0 16px">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
+  <div style="max-width:660px">
+    <div style="font-size:14px;color:var(--silver,#889);line-height:1.55;margin:10px 0 14px">Опишите задачу одной фразой — Extella соберёт её из блоков прямо сейчас. Постоянный процесс (расписание, получатели) лучше собрать через интервью с Мастером.</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="fwComposeInput" placeholder="напр.: найти забытые подписки в банковских выписках"
+        style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
+        onkeydown="if(event.key==='Enter')firstWinCompose()">
+      <button class="btn gold" style="padding:0 20px;font-size:14px" onclick="firstWinCompose()">Собрать</button>
+    </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
+      <span class="chip-ex" onclick="firstWinCompose(this.textContent)">найти забытые подписки в выписках</span>
+      <span class="chip-ex" onclick="firstWinCompose(this.textContent)">превратить папку PDF в базу знаний</span>
       <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">дебиторка 28 филиалов каждый понедельник директору</span>
-      <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">сводка заявок на закуп из 1С</span>
       <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">отвечать клиентам в Telegram 24/7</span>
     </div>
-    <button class="btn gold" style="padding:12px 22px;font-size:15px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
+    <button class="btn ghost" style="padding:10px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти полное интервью с Мастером →</button>
   </div>
 </div>
 
@@ -1805,6 +1812,15 @@ async function firstWin(btn){
       chips:["🧠 Qwen","📊 Демо-данные","⚡ 1 клик"]});
   } else { toast("Демо временно недоступно — попробуйте ещё раз","err"); }
 }
+// Гибрид ч.2: личная сборка из онбординга — Композитор собирает под задачу (одноразовые), процессные
+// честно уводит в Мастера; на ошибке — фолбэк (Мастер / готовый пример), без тупика.
+function firstWinCompose(taskArg){
+  var t = (typeof taskArg==="string" && taskArg.trim()) || (el("fwComposeInput") && el("fwComposeInput").value.trim()) || "";
+  if(!t){ var i=el("fwComposeInput"); if(i) i.focus(); return; }
+  openCompStudio();
+  var ci=el("composerInput"); if(ci){ ci.value=t; }
+  composeNow();
+}
 async function composeNow(){
   if(_composing) return;                       // гард от двойного сабмита (double-click / зажатый Enter)
   const task = (el("composerInput").value||"").trim();
@@ -1822,7 +1838,15 @@ async function composeNow(){
   let r;
   try{ r = await jpost("/x/compose",{task:task}); }
   finally{ _composing=false; if(cbtn) cbtn.disabled=false; }
-  if(!r || r.status!=="success"){ _body().innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'; return; }
+  if(!r || r.status!=="success"){
+    // #гибрид-ч2: не тупик — предлагаем Мастера или готовый пример
+    _body().innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'
+      + '<div style="margin-top:10px;font-size:13px;color:var(--nav)">Не удалось собрать автоматически — но это не тупик:</div>'
+      + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="btn gold sm" onclick="buildProcessFromTask(window._composerTask||\'\')">🧩 Собрать через Мастера →</button>'
+      + '<button class="btn ghost sm" onclick="closeCompStudio();firstWin(document.getElementById(\'firstWinBtn\'))">▶ Посмотреть готовый пример</button></div>';
+    return;
+  }
   // верстак-чат: черновик flow можно доводить словами (полный чат по сборке)
   window._composeState = { task: task, refinements: [], chat: [] };
   _composeWorkbench(r);
