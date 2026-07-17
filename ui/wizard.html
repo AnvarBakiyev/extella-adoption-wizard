@@ -561,11 +561,17 @@ const STEPS = [["interview","Интервью"],["blueprint","План"],["spec"
 let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
 
 const jget = (u)=>fetch(u).then(r=>r.json());
-const jpost = (u,b)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()).then(r=>{
-  // подключил/отключил в любом диалоге → сразу освежаем блок «Подключения» (статус, чипы)
-  if((u==="/x/secret_set"||u==="/x/secret_remove") && r && r.status==="success" && typeof renderConnections==="function") renderConnections();
+// #12 CSRF double-submit: тянем токен моста один раз и шлём его в заголовке всех POST (свой UI same-origin —
+// preflight не возникает; чужая localhost-страница токен не прочитает). Пустой — повторяем запрос токена.
+let _csrfTok = null;
+async function _csrf(){ if(_csrfTok) return _csrfTok; try{ const r=await fetch('/x/csrf').then(r=>r.json()); _csrfTok=(r&&r.token)||''; }catch(e){ _csrfTok=''; } return _csrfTok; }
+const jpost = async (u,b)=>{
+  const t = await _csrf();
+  const r = await fetch(u,{method:"POST",headers:{"Content-Type":"application/json","X-Bridge-CSRF":t},body:JSON.stringify(b)}).then(r=>r.json());
+  // подключил/отключил/проверил в любом диалоге → сразу освежаем блок «Подключения» (статус проверки, чипы)
+  if((u==="/x/secret_set"||u==="/x/secret_remove"||u==="/x/connector_test"||u==="/x/connector_send"||u==="/x/source_test") && r && typeof renderConnections==="function") renderConnections();
   return r;
-});
+};
 const esc = (s)=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const el = (id)=>document.getElementById(id);
 
@@ -3095,11 +3101,22 @@ async function renderConnections(){
   // «находки» для адопции в сейф (Tourvisor не находка — он живёт в config постоянно, его читают ta_*)
   const found   = secrets.filter(x=>x.external && x.connector!=='tourvisor').map(x=>x.connector);
   window.CONN = vaulted;
+  // #10/#15: честный статус проверки — не выдаём «подключено» за проверенное, показываем свежесть
+  const svmap = {}; secrets.forEach(x=>{ if(!x.external) svmap[x.connector]=x; });
+  const _ago = (iso)=>{ if(!iso) return ''; const d=Math.floor((Date.now()-new Date(iso).getTime())/86400000); return d<=0?'сегодня':(d===1?'вчера':d+' дн назад'); };
+  const _pill = (c,bg,t)=>`<span style="font-size:11.5px;color:${c};background:${bg};border-radius:999px;padding:3px 9px">${t}</span>`;
+  const connStatus = (e)=>{
+    if(!e) return '';
+    if(e.last_ok===false) return _pill('#c33','rgba(197,51,51,.12)','⚠ не подтверждено');
+    if(e.last_ok===true){ const stale = e.validated_at && (Date.now()-new Date(e.validated_at).getTime())>30*86400000;
+      return _pill('#2f9e56','rgba(47,158,86,.12)', stale?('✓ проверено '+_ago(e.validated_at)):'✓ проверено'); }
+    return _pill('#8a8577','rgba(138,133,119,.14)','● подключено, не проверено');
+  };
   const card = (key,label,fn)=>{
     const m = CONN_META[key]||{e:'🔌',what:'',need:''};
     const on = vaulted.includes(key), ext = found.includes(key);
     const status = on
-      ? '<span style="font-size:11.5px;color:#2f9e56;background:rgba(47,158,86,.12);border-radius:999px;padding:3px 9px">✓ подключено</span>'
+      ? connStatus(svmap[key])
       : (ext ? '<span style="font-size:11.5px;color:#C57E33;background:rgba(197,126,51,.13);border-radius:999px;padding:3px 9px">найдено в Travel-паке</span>' : '');
     const act = on
       ? `<a href="#" onclick="testConn('${key}',${key.startsWith('src_')?1:0});return false" style="color:#2f9e56;font-size:12.5px">проверить</a> <a href="#" onclick="disconnectConn('${key}');return false" style="color:#c33;font-size:12.5px;margin-left:8px" title="отключить">отключить</a>`

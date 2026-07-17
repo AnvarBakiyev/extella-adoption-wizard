@@ -22,3 +22,7 @@ __pycache__/
 # macOS / iCloud
 .DS_Store
 *.icloud
+
+# CSRF double-submit токен моста (локальный секрет, не в репо)
+ui/.csrf_token
+.csrf_token
