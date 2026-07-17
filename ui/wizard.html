@@ -1679,7 +1679,7 @@ async function refreshSessions(keep){
   // мусор не показываем: битые записи без имени/ид («· null · ответов 0») захламляли селектор
   const list = (d.sessions||[]).filter(s=>s && s.session_id && s.session_id!=="null" && s.client_name && s.client_name!=="null");
   sel.innerHTML = '<option value="">— выбрать сессию —</option>' +
-    list.map(s=>`<option value="${s.session_id}">${esc(s.client_name)} · ${s.stage} · ответов ${s.answers_count}</option>`).join("");
+    list.map(s=>`<option value="${s.session_id}">${esc(s.client_name)} · ${s.stage} · ответов ${s.answers_count}${s.agent_name?(' · 🤖 '+esc(s.agent_name)):''}</option>`).join("");
   if(keep) sel.value = keep;
 }
 function newSession(){
@@ -3484,6 +3484,7 @@ function _wzHeroHTML(a){
     '<div class="wz-hero-row"><span class="wz-hero-em">'+em+'</span></div>'+
     '<div class="wz-hero-nm">'+nm+'</div>'+
     (tag?'<div class="wz-hero-tag">'+esc(tag)+'</div>':'')+
+    (a.agent_name?'<div style="position:relative;margin-top:6px;display:inline-block;font-size:11px;color:#fff;background:rgba(255,255,255,.18);border-radius:6px;padding:2px 8px">🤖 '+esc(a.agent_name)+'</div>':'')+
   '</div>';
 }
 // ── Кабинет агента (оверлей с вкладками) ──
