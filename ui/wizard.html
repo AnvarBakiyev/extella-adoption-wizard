@@ -4466,6 +4466,7 @@ function trustCheck(prefillTask){
     var fields=((el("tcFields")||{}).value||"").split(",").map(function(s){return s.trim();}).filter(Boolean);
     var sample=((el("tcSample")||{}).value||"").split("\n").map(function(s){return s.trim();}).filter(Boolean);
     if(!task||!fields.length||sample.length<2){ toast("Нужны инструкция, поля и ≥2 примера","err"); return; }
+    window._tcCtx={task:task, fields:fields, sample:sample};
     busy("Проверяю доверие: гоняю судью несколько раз и сравниваю… (до ~2 минут)");
     var r=await jpost("/x/trust_check",{task:task, fields:fields, sample:sample, runs:3});
     busyOff();
@@ -4474,25 +4475,43 @@ function trustCheck(prefillTask){
     renderTrustReport(res);
   };
 }
-function renderTrustReport(res){
+function renderTrustReport(res, delta){
   var LG={green:['🟢','#2f9e56'],amber:['🟡','#C57E33'],red:['🔴','#c33'],gray:['⚪','#888']};
-  var rows=(res.fields||[]).map(function(f){
+  var rows=(res.fields||[]).map(function(f,fi){
     var lg=LG[f.light]||LG.gray;
     var flaky=(f.flaky||[]).length? '<div style="font-size:12px;color:var(--silver);margin-top:5px;line-height:1.5">'+f.flaky.map(function(fl){return '⚠ «'+esc(fl.item)+'» → '+esc((fl.answers||[]).join(' · '));}).join('<br>')+'</div>':'';
+    var refine=(f.light==='red'||f.light==='amber')?'<button class="btn ghost sm" style="font-size:11.5px;padding:3px 10px;margin-top:6px" onclick="refineField('+fi+')">✏ Уточнить определение</button>':'';
     return '<div style="border:1px solid var(--cream-dark);border-radius:10px;padding:10px 14px;margin-bottom:8px">'+
       '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:16px">'+lg[0]+'</span>'+
       '<b style="flex:1;font-size:14px">'+esc(f.field)+'</b>'+
-      '<span style="font-weight:700;color:'+lg[1]+'">'+(f.reproducibility==null?'неопр.':f.reproducibility+'%')+'</span></div>'+flaky+'</div>';
+      '<span style="font-weight:700;color:'+lg[1]+'">'+(f.reproducibility==null?'неопр.':f.reproducibility+'%')+'</span></div>'+flaky+refine+'</div>';
   }).join('');
+  window._tcFields=res.fields||[];
   var ov=(res.overall==null?'':' · общая '+res.overall+'%');
+  var deltaNote=delta?'<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.3);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;color:#237a44">✎ Уточнено «'+esc(delta.field)+'»: воспроизводимость '+esc(delta.before)+'% → <b>'+esc(delta.after)+'%</b></div>':'';
   resetModInput();
   el("modTitle").textContent="Где суждению можно доверять";
-  el("modHint").innerHTML="Прогонов: "+esc(res.runs)+ov+" · без эталона. 🟢 стабильно · 🟡 шатко · 🔴 определение размыто — стоит уточнить формулировку поля.";
-  el("modInput").outerHTML='<input id="modInput" type="hidden">'+rows+
-    '<div style="font-size:12px;color:var(--silver);margin-top:6px">Красное/жёлтое = поле недоопределено (модель не согласна сама с собой). Следующий шаг — правка формулировки словами.</div>';
+  el("modHint").innerHTML="Прогонов: "+esc(res.runs)+ov+" · без эталона. 🟢 стабильно · 🟡 шатко · 🔴 определение размыто — уточните формулировку поля.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden">'+deltaNote+rows+
+    '<div style="font-size:12px;color:var(--silver);margin-top:6px">«Уточнить» правит ОПРЕДЕЛЕНИЕ поля словами (не отдельный кейс) и перепрогоняет — один разговор чинит класс ошибок.</div>';
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Готово";
   _modCb=null;
+}
+function refineField(fi){
+  var ctx=window._tcCtx, F=(window._tcFields||[])[fi]; if(!ctx||!F) return;
+  var before=F.reproducibility;
+  ask("Как правильно определить «"+F.field+"»?", "Опишите словами чёткие границы. Напр.: «приоритет 1-5, где 5=потеря денег/недоступность сервиса, 1=справочный вопрос».", "", async function(clar){
+    clar=(clar||"").trim(); if(!clar) return;
+    busy("Уточняю определение и перепрогоняю судью… (до ~2 минут)");
+    var r=await jpost("/x/trust_refine",{task:ctx.task, field:F.field, clarification:clar, fields:ctx.fields, sample:ctx.sample, runs:3});
+    busyOff();
+    var res=(r&&r.result)||{};
+    if(!res.ok){ toast("Не удалось уточнить: "+((r&&r.message)||res.err||"—"),"err"); return; }
+    if(r.new_task) window._tcCtx.task=r.new_task;   // определение обновлено — дальнейшие правки от него
+    var nf=(res.fields||[]).find(function(x){return x.field===F.field;});
+    renderTrustReport(res, {field:F.field, before:(before==null?'—':before), after:(nf&&nf.reproducibility!=null?nf.reproducibility:'—')});
+  });
 }
 function connectEmail(){
   ask("Email — адрес отправителя", "Ваш email (он же логин SMTP), например report@company.kz. Хранится шифрованно.", "", (email)=>{
