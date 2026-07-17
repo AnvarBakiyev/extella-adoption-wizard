@@ -178,7 +178,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 .nav-toggle button.on{background:var(--ink);color:#fff}
 
 /* ---------- chat drawer ---------- */
-.chat{position:fixed;top:0;right:0;bottom:0;width:392px;background:var(--paper);border-left:1px solid var(--cream-dark);display:none;flex-direction:column;z-index:60}
+.chat{position:fixed;top:52px;right:0;bottom:0;width:392px;background:var(--paper);border-left:1px solid var(--cream-dark);border-top:1px solid var(--cream-dark);display:none;flex-direction:column;z-index:60}/* top:52 — чтобы заголовок помощника не уходил под тулбар-чром приложения (Chat/Library/Plugins) */
 .chat.open{display:flex}
 .chat-head{padding:14px 18px;border-bottom:1px solid var(--cream-dark);display:flex;align-items:center;gap:10px}
 .chat-head b{font-size:13.5px}
@@ -188,9 +188,10 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 .msg.user{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:4px}
 .msg.bot{align-self:flex-start;background:var(--cream);border:1px solid var(--cream-dark);border-bottom-left-radius:4px}
 .msg .apply{margin-top:8px}
-.chat-form{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--cream-dark)}
-.chat-form input{flex:1;border:1px solid var(--cream-dark);border-radius:9px;padding:9px 12px;background:#fff}
-.chat-form input:focus{outline:none;border-color:var(--gold)}
+.chat-form{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--cream-dark);align-items:flex-end}
+.chat-form input,.chat-form textarea{flex:1;border:1px solid var(--cream-dark);border-radius:9px;padding:9px 12px;background:#fff}
+.chat-form textarea{resize:none;min-height:20px;max-height:120px;line-height:1.45;font:14px/1.45 var(--sans,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif);overflow-y:auto;white-space:pre-wrap}
+.chat-form input:focus,.chat-form textarea:focus{outline:none;border-color:var(--gold)}
 .chat-form .attach{border:1px solid var(--cream-dark);background:#fff;color:var(--nav);border-radius:9px;padding:0 11px;font-size:16px}
 .empty{color:var(--silver);font-size:13.5px;text-align:center;padding:40px 20px}
 .hide{display:none!important}
@@ -501,7 +502,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   </div>
   <div class="chat-form">
     <label class="attach" title="Приложить файл">📎<input type="file" multiple style="display:none" onchange="uploadFiles(this.files)"></label>
-    <input id="chatInput" placeholder="Сообщение… (Shift+Enter — новая строка)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}">
+    <textarea id="chatInput" rows="1" placeholder="Сообщение… (Shift+Enter — новая строка)" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
     <button class="btn" onclick="sendChat()">→</button>
   </div>
 </div>
@@ -1532,8 +1533,6 @@ function newSession(){
 }
 async function loadSession(sid){
   if(!sid){ S.sessionId=null; render(); return; }
-  // открыть сессию = работать над процессом → уводим в Мастер (кнопка навигации свёрнута)
-  if(S.mode==="composer"||S.mode==="my"||S.mode==="core") setMode("wizard");
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
   S.sessionId = sid;
@@ -1542,7 +1541,16 @@ async function loadSession(sid){
   S.blueprint = null; S.spec = null;
   try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(bp && bp.blueprint) S.blueprint = bp; }catch(e){}
   try{ const sp = await jget("/x/spec?session_id="+encodeURIComponent(sid)); if(sp && sp.markdown) S.spec = sp.markdown; }catch(e){}
-  S.view = STAGE2VIEW[S.session.stage] || "interview";
+  var st = S.session && S.session.stage;
+  // собранный/запущенный процесс живёт в КАБИНЕТЕ «Автоматизаций» — открываем его (а не пустое интервью
+  // Мастера: STAGE2VIEW не знает launched/built → раньше падало в interview = «выбрал, но никуда не перешло»)
+  if(st==="launched" || st==="built"){
+    try{ var d=await jget("/x/automations"); var list=(d&&d.automations)||[]; var idx=list.findIndex(function(a){return a.session_id===sid;});
+      if(idx>=0){ AUTOS=list; setMode("automations"); openWzCabinet(idx); return; } }catch(e){}
+  }
+  // иначе — Мастер (интервью/blueprint/spec/test/launch)
+  if(S.mode==="composer"||S.mode==="my"||S.mode==="core") setMode("wizard");
+  S.view = STAGE2VIEW[st] || "interview";
   render();
 }
 async function reloadSession(){
@@ -2991,7 +2999,7 @@ async function sendChatSilent(text){
 async function sendChat(){
   const inp = el("chatInput");
   const text = inp.value.trim(); if(!text) return;
-  inp.value = ""; pushMsg("user", text);
+  inp.value = ""; inp.style.height = "auto"; pushMsg("user", text);
   const wait = pushMsg("bot","<span class='spin'></span> Помощник думает и записывает ответы в проект — это нормально, до ~минуты…");
   wait.innerHTML = wait.textContent = ""; wait.innerHTML = "<span class='spin'></span> Помощник думает и записывает ответы — это нормально, до ~минуты…";
   const slow = setTimeout(()=>{ wait.innerHTML = "<span class='spin'></span> Идёт важная работа: помощник сохраняет ответы в проект. Подождите, не закрывайте…"; }, 12000);
