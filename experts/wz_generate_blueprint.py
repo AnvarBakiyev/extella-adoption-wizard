@@ -180,9 +180,15 @@ def wz_generate_blueprint(
         import re as _re
         _m = _re.search(r"\{.*\}", content, _re.S)   # Qwen иногда добавляет текст — берём JSON-объект
         bp = json.loads(_m.group(0) if _m else content)
-        assert isinstance(bp.get("stages"), list)
+        _stages = bp.get("stages")
+        assert isinstance(_stages, list), "stages не список"
+        # #15: отбросить не-dict/безымянные стадии — иначе guardrail ниже падает на st.get() (AttributeError вне try)
+        _stages = [st for st in _stages if isinstance(st, dict) and (st.get("title") or st.get("id"))]
+        # #14: пустой набор стадий — не валидный процесс; честный отказ вместо «пустой» сборки
+        assert _stages, "blueprint без валидных стадий"
+        bp["stages"] = _stages
     except Exception as e:
-        return {"status": "error", "message": "Failed to parse LLM JSON: " + str(e)[:200]}
+        return {"status": "error", "message": "Не удалось разобрать план от модели: " + str(e)[:200]}
 
     # -- Catalog guardrail --------------------------------------------
     warnings = []

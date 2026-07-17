@@ -2034,8 +2034,12 @@ function toggleThread(ref){ S.openThreads[ref]=!S.openThreads[ref]; render(); }
 /* ================= конспект интервью ================= */
 function renderBrief(){
   const a = S.session.answers||{};
-  const filled = _qs().filter(q=>{ const r=a[q.id]; return r && (typeof r==="string" ? r : (r.answer||"")).trim(); }).length;
-  el("briefCount").textContent = ` · заполнено ${filled} из ${_qs().length}`;
+  const _val = r => (typeof r==="string" ? r : ((r&&r.answer)||""));
+  const _qids = _qs().map(q=>q.id);
+  // #2: ответы, сохранённые Помощником под id вне текущего (адаптивного) опросника — показать, а не терять
+  const _orphans = Object.keys(a).filter(id=>_qids.indexOf(id)<0 && _val(a[id]).trim());
+  const filled = _qs().filter(q=>_val(a[q.id]).trim()).length + _orphans.length;
+  el("briefCount").textContent = ` · заполнено ${filled} из ${_qs().length + _orphans.length}`;
   el("qlist").innerHTML = _qs().map(q=>{
     const raw = a[q.id];
     const saved = typeof raw === "string" ? raw : ((raw && raw.answer) || "");
@@ -2052,6 +2056,21 @@ function renderBrief(){
         <textarea id="ans-${q.id}" oninput="S.drafts['${q.id}']=this.value">${esc(ans)}</textarea>
         <div style="margin-top:6px"><button class="btn gold sm" onclick="saveAnswers()">✓ Сохранить</button></div>
         ${threadHTML("q:"+q.id)}
+      </div>
+    </div>`;
+  }).join("") + _orphans.map(function(id){
+    var ans=_val(a[id]);
+    var lbl=(a[id]&&typeof a[id]==="object"&&a[id].question)||((QUESTIONS.find(function(q){return q.id===id;})||{}).q)||String(id).replace(/_/g," ");
+    var open=S.openBrief[id]?"open":"";
+    return `<div class="brief-item filled ${open}" id="bi-${id}">
+      <div class="brief-head" onclick="toggleBrief('${id}')">
+        <span class="st">✓</span>
+        <span class="bt">${esc(lbl)}</span>
+        <span class="prev">${esc(ans)}</span>
+      </div>
+      <div class="brief-edit">
+        <textarea id="ans-${id}" oninput="S.drafts['${id}']=this.value">${esc(ans)}</textarea>
+        <div style="margin-top:6px"><button class="btn gold sm" onclick="saveAnswers()">✓ Сохранить</button></div>
       </div>
     </div>`;
   }).join("");
@@ -2071,6 +2090,14 @@ async function saveAnswers(){
     const prev = (S.session.answers||{})[q.id];
     const v = (S.drafts[q.id] !== undefined ? S.drafts[q.id] : (t ? t.value : (typeof prev === "string" ? prev : (prev||{}).answer)) || "").trim();
     if(v) payload[q.id] = {question:q.q, answer:v};
+  });
+  // #2: сохранить и «осиротевшие» ответы (id вне текущего опросника) + их правки — иначе правка любого пункта их затрёт
+  const _aa = S.session.answers||{}; const _qids2 = _qs().map(q=>q.id);
+  Object.keys(_aa).forEach(id=>{
+    if(_qids2.indexOf(id)>=0) return;
+    const t=el("ans-"+id); const prev=_aa[id];
+    const v=(S.drafts[id]!==undefined ? S.drafts[id] : (t ? t.value : (typeof prev==="string"?prev:(prev||{}).answer))||"").trim();
+    if(v) payload[id]={question:(prev&&typeof prev==="object"&&prev.question)||String(id).replace(/_/g," "), answer:v};
   });
   if(!Object.keys(payload).length){ setStatus("stInterview","конспект пуст — поговорите с Помощником или заполните пункт"); return; }
   setStatus("stInterview","<span class='spin'></span>сохраняю через платформу…");
