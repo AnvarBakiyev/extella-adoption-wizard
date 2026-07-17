@@ -230,6 +230,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
     <button id="navCore" onclick="setMode('core')" style="display:none">🧬 Процессное ядро</button>
   </div>
   <div class="spacer"></div>
+  <button class="btn ghost" id="agentBadge" onclick="openAgentManager()" title="Для какого агента строим (концепты, правила, память — в его мозг)">🤖 Агент…</button>
   <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
   <button class="btn ghost" id="wNewSess" onclick="newSession()">+ Новая сессия</button>
   <button class="btn ghost" id="wLangBtn" onclick="toggleWLang()" title="Language / Язык">EN</button>
@@ -576,6 +577,66 @@ const jpost = async (u,b)=>{
 };
 const esc = (s)=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const el = (id)=>document.getElementById(id);
+
+/* ============ Ф2: выбор/создание агента (инвариант «видно, для кого строим») ============ */
+let _agents = {agents:[], current:""};
+async function refreshAgentBadge(){
+  try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){ _agents={agents:[],current:""}; }
+  const b=el("agentBadge"); if(!b) return;
+  const cur=(_agents.agents||[]).find(a=>a.id===_agents.current);
+  b.textContent = cur ? ("🤖 "+cur.name) : "🤖 Выбрать агента";
+  b.style.color = cur ? "" : "#a97e35"; b.style.fontWeight = cur ? "" : "700";
+}
+async function openAgentManager(){
+  try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){}
+  const list=(_agents.agents||[]).map(function(a){
+    const on=a.id===_agents.current;
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+(on?'var(--gold,#c9a35c)':'var(--cream-dark,#e5e0d5)')+';border-radius:9px;margin-bottom:6px;background:'+(on?'#c9a35c14':'transparent')+'">'+
+      '<div style="flex:1"><div style="font-weight:600;font-size:13px">'+(on?'✓ ':'')+esc(a.name)+'</div>'+
+      '<div style="font-size:11px;color:var(--silver,#889)">'+esc(a.id)+' · '+(a.source==='created'?'создан визардом':'привязан')+'</div></div>'+
+      (on?'<span style="font-size:11px;color:var(--gold,#a97e35);font-weight:600">строим сюда</span>':
+          '<button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="agentSelect(\''+a.id+'\')">Выбрать</button>')+
+      '<button class="btn ghost" title="Убрать из визарда" style="padding:4px 8px;font-size:12px" onclick="agentUnlink(\''+a.id+'\')">✕</button>'+
+    '</div>';
+  }).join('') || '<div style="font-size:13px;color:var(--silver,#889);padding:6px 0 12px">Пока ни одного агента. Создайте нового (это копия платформенной Qwen) или привяжите существующего по id.</div>';
+  resetModInput();
+  el("modTitle").textContent="🤖 Для какого агента строим";
+  el("modHint").innerHTML="Концепты, правила и память процессов копятся в МОЗГ выбранного агента. Эксперты и данные — общие для всех.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden">'+list+
+    '<div style="display:flex;gap:8px;margin-top:12px">'+
+    '<button class="btn gold" style="flex:1" onclick="agentCreate()">＋ Создать агента (Qwen)</button>'+
+    '<button class="btn ghost" style="flex:1" onclick="agentLink()">🔗 Привязать по id</button></div>';
+  el("modBack").classList.add("open");
+  const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
+  _modCb=null;
+}
+async function agentCreate(){
+  modCancel();
+  ask("Имя нового агента","Создам keyless-Qwen агента (копию платформенной Qwen 3.7). В его мозг пойдут концепты и правила этого клиента.","",async (nm)=>{
+    if(!nm) return; busy("Создаю агента (копия Qwen)…");
+    const r=await jpost("/x/agent_create",{name:nm}); busyOff();
+    if(r.status==="success"){ toast("✓ Агент создан и выбран","ok"); await refreshAgentBadge(); openAgentManager(); }
+    else toast("Не удалось: "+(r.message||"ошибка"),"err");
+  });
+}
+async function agentLink(){
+  modCancel();
+  ask("Привязать агента по id","Вставьте agent_… существующего агента Extella (напр. UI-копию Qwen). Проверю и привяжу.","",async (id)=>{
+    if(!id) return; busy("Привязываю…");
+    const r=await jpost("/x/agent_link",{agent_id:id.trim()}); busyOff();
+    if(r.status==="success"){ toast("✓ Агент привязан и выбран","ok"); await refreshAgentBadge(); openAgentManager(); }
+    else toast("Не удалось: "+(r.message||"ошибка"),"err");
+  });
+}
+async function agentSelect(id){
+  const r=await jpost("/x/agent_select",{agent_id:id});
+  if(r.status==="success"){ await refreshAgentBadge(); openAgentManager(); }
+  else toast("Не удалось выбрать","err");
+}
+async function agentUnlink(id){
+  const r=await jpost("/x/agent_unlink",{agent_id:id});
+  if(r.status==="success"){ await refreshAgentBadge(); openAgentManager(); }
+}
 
 /* ================= modal + toast (замена prompt/alert) ================= */
 let _modCb = null;
@@ -4963,6 +5024,7 @@ function setStatus(id, html){ el(id).innerHTML = html; }
   applyWLang();
   try{ applyI18N(); }catch(e){}
   try{ CATALOG = await jget("/x/catalog"); }catch(e){}
+  try{ await refreshAgentBadge(); }catch(e){}
   const deep = new URLSearchParams(location.search).get("session");
   await refreshSessions(deep || undefined);
   if(deep){ await loadSession(deep); } else { setMode('composer'); }
