@@ -568,9 +568,20 @@ const jget = (u)=>fetch(u).then(r=>r.json());
 // preflight не возникает; чужая localhost-страница токен не прочитает). Пустой — повторяем запрос токена.
 let _csrfTok = null;
 async function _csrf(){ if(_csrfTok) return _csrfTok; try{ const r=await fetch('/x/csrf').then(r=>r.json()); _csrfTok=(r&&r.token)||''; }catch(e){ _csrfTok=''; } return _csrfTok; }
-const jpost = async (u,b)=>{
+const jpost = async (u,b,timeoutMs)=>{
   const t = await _csrf();
-  const r = await fetch(u,{method:"POST",headers:{"Content-Type":"application/json","X-Bridge-CSRF":t},body:JSON.stringify(b)}).then(r=>r.json());
+  // клиентский таймаут: сервер может держать соединение (синхронный pull/прогон) — не даём оверлею висеть вечно
+  const _ac = (typeof AbortController!=="undefined") ? new AbortController() : null;
+  const _to = (_ac && timeoutMs) ? setTimeout(()=>_ac.abort(), timeoutMs) : null;
+  let r;
+  try{
+    r = await fetch(u,{method:"POST",headers:{"Content-Type":"application/json","X-Bridge-CSRF":t},body:JSON.stringify(b),signal:_ac?_ac.signal:undefined}).then(x=>x.json());
+  }catch(e){
+    if(_to) clearTimeout(_to);
+    if(e && e.name==="AbortError") return {status:"error", timeout:true, message:"источник отвечает слишком долго — проверьте подключение и данные (доступ, лист/диапазон)"};
+    return {status:"error", message:"нет связи с мостом: "+((e&&e.message)||e)};
+  }
+  if(_to) clearTimeout(_to);
   // подключил/отключил/проверил в любом диалоге → сразу освежаем блок «Подключения» (статус проверки, чипы)
   if((u==="/x/secret_set"||u==="/x/secret_remove"||u==="/x/connector_test"||u==="/x/connector_send"||u==="/x/source_test") && r && typeof renderConnections==="function") renderConnections();
   return r;
@@ -4530,9 +4541,13 @@ async function sourceProcess(i){
   let body = `<input id="modInput" type="hidden">`;
   if(connSrc.length){
     const opts = connSrc.map(x=>`<option value="${x[0]}" ${x[0]===curKind?"selected":""}>${x[1]}</option>`).join("");
-    body += `<div style="font-size:13px;text-align:left;margin-bottom:6px">Тянуть данные из (подключённые источники):</div>`
-          + `<select id="srcKind" class="sess-select" style="width:100%;max-width:none;margin-bottom:10px">${opts}</select>`
-          + `<label class="opt" style="color:#999"><input type="radio" name="srcAct" value="off"><span>Отвязать источник (вернуться к загрузке файла)</span></label>`;
+    // безопасный дефолт: «ничего не менять» — чтобы случайный OK не привязывал; привязка/отвязка — явным выбором
+    body += (curKind?`<div style="font-size:12.5px;text-align:left;margin-bottom:8px;color:var(--ink-soft)">Сейчас привязан: <b>${esc((SRC.find(x=>x[0]===curKind)||[])[1]||curKind)}</b></div>`:``)
+          + `<label class="opt" style="font-weight:600"><input type="radio" name="srcAct" value="keep" checked><span>Ничего не менять</span></label>`
+          + `<label class="opt"><input type="radio" name="srcAct" value="bind"><span>Привязать источник:</span></label>`
+          + `<select id="srcKind" class="sess-select" style="width:100%;max-width:none;margin:4px 0 4px 22px" onchange="var b=document.querySelector('input[name=srcAct][value=bind]');if(b)b.checked=true">${opts}</select>`
+          + `<div style="font-size:11.5px;color:var(--silver);text-align:left;margin:0 0 8px 22px">Данные тянутся из уже подключённого источника (настроен в блоке «🔌 Подключения» — там же задаётся, какая таблица/диапазон).</div>`
+          + (curKind?`<label class="opt" style="color:#999"><input type="radio" name="srcAct" value="off"><span>Отвязать источник (вернуться к загрузке файла)</span></label>`:``);
   } else {
     body += `<div style="font-size:13px;color:#888;text-align:left;margin-bottom:6px">Пока не подключён ни один источник данных.</div>`
           + `<div style="font-size:12.5px;text-align:left">Подключите источник в блоке <b>🔌 Подключения</b> вверху страницы (Google Sheets — просто по ссылке), затем вернитесь сюда и выберите его.</div>`;
@@ -4544,19 +4559,20 @@ async function sourceProcess(i){
   el("modInput").outerHTML = body;
   el("modBack").classList.add("open");
   _modCb = async ()=>{
-    const off = (document.querySelector('input[name=srcAct]:checked')||{}).value === "off";
-    if(off){
+    const act = (document.querySelector('input[name=srcAct]:checked')||{}).value || "keep";
+    if(act==="keep") return;   // безопасный дефолт — ничего не делаем
+    if(act==="off"){
       busy("Отвязываю источник…");
-      const r = await jpost("/x/source_bind",{session_id:a.session_id, kind:"off"});
-      busyOff(); toast(r.status==="success"?"Источник отвязан":("Ошибка: "+(r.message||"")), r.status==="success"?"ok":"err");
+      let r; try{ r = await jpost("/x/source_bind",{session_id:a.session_id, kind:"off"}, 30000); } finally{ busyOff(); }
+      toast(r.status==="success"?"Источник отвязан":("Ошибка: "+(r.message||"")), r.status==="success"?"ok":"err");
       renderAutomations(); return;
     }
     const kind = (el("srcKind")||{}).value;
     if(!kind){ toast("Нет подключённых источников — подключите в блоке «Подключения»","err"); return; }
     busy("Привязываю источник и тяну данные…");
-    const r = await jpost("/x/source_bind",{session_id:a.session_id, kind:kind});
-    busyOff();
-    if(r.status!=="success"){ toast("Не удалось: "+(r.message||""),"err"); return; }
+    let r; try{ r = await jpost("/x/source_bind",{session_id:a.session_id, kind:kind}, 75000); }
+    finally{ busyOff(); }
+    if(r.status!=="success"){ toast("Не удалось привязать: "+(r.message||"источник не отдал данные"),"err"); return; }
     toast("✓ Источник подключён"+(r.rows!=null?(", строк: "+r.rows):""),"ok");
     renderAutomations();
   };
