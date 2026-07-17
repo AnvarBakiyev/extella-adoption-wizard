@@ -366,6 +366,10 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     prev, last_out = source_file, None
     for i, name in enumerate(STAGES):
         outp = str(wd / ("stage%%d.json" %% i))
+        try:
+            Path(outp).unlink()   # не тащим stage-файл прошлого прогона: упавшая стадия иначе «успешна» на чужих данных
+        except OSError:
+            pass
         _params = {"input_path": prev, "output_path": outp}
         # F2 (контракт параметров): правила/поля владельца доступны КАЖДОЙ стадии этой сборки
         # (кодоген генерит стадии с этими kwargs; менять поведение обязана только та, кому релевантно)
@@ -387,7 +391,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
         ok = (isinstance(res, dict) and res.get("status") == "success") or (Path(outp).exists() and Path(outp).stat().st_size > 0)
         if ok and i == 0:
             clean_file(outp)
-        if not Path(outp).exists():
+        if not ok or not Path(outp).exists():   # ok теперь честный (файл прошлого прогона удалён) — провал стадии не маскируется
             return {"status": "error", "failed_stage": name, "detail": str(res)[:200]}
         prev, last_out = outp, outp
 
@@ -704,11 +708,11 @@ def _run_build(session_id, build_id):
                            agents=[design_agent()])
         if not isinstance(r, dict) or r.get("status") == "error":
             stage("plan", "Составляю план стройки", "error", error=str(r)[:300])
-            prog["status"] = "error"; save(); return
+            prog["status"] = "error"; save(); _unlock(); return
         plan_path = SESS_DIR / (session_id + "_build_plan.json")
         if not plan_path.exists():
             stage("plan", "Составляю план стройки", "error", error="план не сохранился")
-            prog["status"] = "error"; save(); return
+            prog["status"] = "error"; save(); _unlock(); return
         pdoc = json.loads(plan_path.read_text(encoding="utf-8"))
         plan = pdoc.get("plan", pdoc)
         tasks = plan.get("tasks", [])
@@ -825,7 +829,7 @@ def _run_build(session_id, build_id):
         if had_build_tasks and not built_ok:
             prog["status"] = "error"
             prog["error"] = "ни один компонент не собрался (сборщик не смог пройти приёмку — вероятно, нужен файл-образец)"
-            save(); return
+            save(); _unlock(); return
 
         # 3. Автосоздание вызываемого оркестратора процесса (стадии — построенные дата-эксперты)
         orchestrator = None
