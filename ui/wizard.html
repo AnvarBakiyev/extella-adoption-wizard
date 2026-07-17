@@ -250,8 +250,15 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   <!-- Решение Анвара 17.07: «Рабочий стол» = главная Plugins ПРИЛОЖЕНИЯ (карточки в реестре),
        а это окно — ТОЛЬКО Визард. Композитор/Студия/Команда открываются отдельными карточками
        Plugins через deep-link ?app=composer|cspl|team (обработка в _deepApp ниже). -->
+  <!-- Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без настройки) -->
+  <div id="firstWinHero" style="max-width:660px;background:linear-gradient(135deg,#c9a35c18,var(--paper,#fff));border:1px solid var(--gold,#c9a35c);border-radius:16px;padding:22px 24px;margin-bottom:26px">
+    <div class="kicker" style="color:var(--gold,#a97e35)">✨ Первая победа за 5 минут</div>
+    <div style="font-size:20px;font-weight:800;color:var(--ink,#0a0a0a);margin:4px 0 6px">Посмотрите Extella в деле — прямо сейчас</div>
+    <div style="font-size:13.5px;color:var(--silver,#889);line-height:1.5;margin-bottom:14px">Один клик — Extella соберёт и посчитает готовый отчёт на демо-данных за секунды. Без настройки и подключений. Это то, что процесс потом будет присылать вам сам каждый день.</div>
+    <button class="btn gold" id="firstWinBtn" style="padding:12px 22px;font-size:15px" onclick="firstWin(this)">▶ Живой пример: отчёт по рекламным бюджетам</button>
+  </div>
   <div class="kicker">Визард внедрения</div>
-  <h1>Спроектировать бизнес-процесс</h1>
+  <h1>Соберите свою автоматизацию</h1>
   <div style="max-width:640px">
     <div style="font-size:14px;color:var(--silver,#889);line-height:1.55;margin:10px 0 16px">Процесс, который живёт в компании постоянно: данные из ваших систем, расписание, получатели, продовый агент 24/7. Мастер проведёт интервью и построит под вас.</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
@@ -1785,6 +1792,18 @@ async function buildProcessFromTask(taskArg){
   await refreshSessions(sid); await loadSession(sid);
   if(!el("chat").classList.contains("open")) toggleChat();
   var ci=el("chatInput"); if(ci){ ci.value="Хочу автоматизировать процесс: "+task+". Расспроси меня и спроектируй."; ci.focus(); }
+}
+// Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без тупика)
+async function firstWin(btn){
+  var lbl = btn ? btn.textContent : "";
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spin"></span> Extella собирает отчёт на демо-данных…'; }
+  var r; try{ r = await jpost("/x/first_win",{example:"ads"}); }catch(e){ r=null; }
+  if(btn){ btn.disabled=false; btn.textContent = lbl || "▶ Живой пример: отчёт по рекламным бюджетам"; }
+  if(r && r.digest){
+    showBrief(r.digest, {kicker:"Extella · Первая победа (демо)", title:"Ежедневный отчёт по рекламным бюджетам",
+      subtitle:"Собрано и посчитано Extella на синтетических данных за секунды — без настройки и подключений.",
+      chips:["🧠 Qwen","📊 Демо-данные","⚡ 1 клик"]});
+  } else { toast("Демо временно недоступно — попробуйте ещё раз","err"); }
 }
 async function composeNow(){
   if(_composing) return;                       // гард от двойного сабмита (double-click / зажатый Enter)

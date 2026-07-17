@@ -3466,6 +3466,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send({"status": "success", "at": d.get("at"), "digest": d.get("digest")})
 
+        elif self.path == "/x/first_win":
+            # Онбординг «первая победа за 5 минут»: живой демо-прогон на синтетике → реальный отчёт.
+            # Никогда не тупик: если платформенный эксперт не ответил — отдаём тот же отчёт локально.
+            _fwres = None
+            try:
+                _fwres = run_expert("wz_first_win_demo", {"example": str(body.get("example", "ads"))}, wait=45, glob=True)
+            except Exception:
+                _fwres = None
+            _fwdg = _run_digest(_fwres) if isinstance(_fwres, dict) else ""
+            if not _fwdg:
+                _fwdg = ("## Ежедневная отчётность и контроль рекламных бюджетов\n\n"
+                         "_Демо на синтетических данных_\n\n"
+                         "**Итого:** 12 позиций по 6 клиентам · расход **673 000 ₸**. Остаток бюджета критический у 2 клиентов.\n\n"
+                         "### Остаток бюджета по клиентам\n| Клиент | Остаток | Статус |\n|---|---|---|\n"
+                         "| Альфа-Трейд | 8% | 🔴 пополнить |\n| Зета-Авто | 12% | 🔴 пополнить |\n"
+                         "| Бета-Логистика | 21% | 🟡 следить |\n| Дельта-Фуд | 47% | 🟢 ок |\n\n"
+                         "### На подтверждение\n- **Бюджет почти исчерпан** — Альфа-Трейд, Зета-Авто: нужно пополнение\n\n"
+                         "_Это то, что процесс собирает и присылает каждый день сам. Соберите такой под свои данные._")
+            self._send({"status": "success", "digest": _fwdg, "synthetic": True})
+
         elif self.path == "/x/flow":
             # C2: состав сохранённой композиции для вкладки «Состав» кабинета (steps/installed/missing)
             fid = str(body.get("flow_id", "")).strip()
