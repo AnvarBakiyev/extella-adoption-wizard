@@ -654,6 +654,18 @@ def _run_build(session_id, build_id):
         prog["updated_at"] = now()
         (bdir / "build_progress.json").write_text(json.dumps(prog, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _unlock():
+        # снять указатель идущей стройки (building) с сессии — стройка завершилась или упала;
+        # иначе UI при возврате бесконечно переподключался бы к уже мёртвой стройке
+        try:
+            _sp = SESS_DIR / (session_id + ".json")
+            _s = json.loads(_sp.read_text(encoding="utf-8"))
+            if _s.pop("building", None) is not None:
+                _s["updated_at"] = now()
+                _sp.write_text(json.dumps(_s, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     def stage(sid, title, status="running", **extra):
         for s in prog["stages"]:
             if s["id"] == sid:
@@ -847,7 +859,7 @@ def _run_build(session_id, build_id):
             prog["error"] = ("обязательный конвейер не закрыт: не собраны стадии — " + ", ".join(map(str, missing))
                              if missing else ("оркестратор не собрался" if (stage_experts and not orchestrator)
                                               else "вертикальный срез не прошёл"))
-            save(); return
+            save(); _unlock(); return
 
         prog["status"] = "built"
         save()
@@ -856,6 +868,7 @@ def _run_build(session_id, build_id):
             sp = SESS_DIR / (session_id + ".json")
             s = json.loads(sp.read_text(encoding="utf-8"))
             s["stage"] = "built"
+            s.pop("building", None)   # стройка успешно завершилась — снять указатель идущей стройки
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
                                                "params_contract": 1,   # F2: оркестратор+стадии принимают rules_json/fields_json
@@ -878,4 +891,4 @@ def _run_build(session_id, build_id):
         except Exception:
             pass
     except Exception as e:
-        prog["status"] = "error"; prog["error"] = str(e)[:300]; save()
+        prog["status"] = "error"; prog["error"] = str(e)[:300]; save(); _unlock()

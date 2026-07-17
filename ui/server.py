@@ -1988,6 +1988,9 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"build_id": build_id, "session_id": sid, "status": "running", "stages": [],
                             "kind": "build", "resume_sched": False},   # F1: журнал работы для recovery
                            ensure_ascii=False), encoding="utf-8")
+            # указатель идущей стройки на сессии — UI переподключит прогресс после ухода с экрана/перезагрузки
+            # (снимается в _run_build по завершении/ошибке; для orphan — в _recover_orphan_build при старте моста)
+            _update_session(sid, lambda sx: sx.__setitem__("building", build_id))
             threading.Thread(target=_run_build, args=(sid, build_id), daemon=True).start()
             self._send({"status": "success", "build_id": build_id})
 

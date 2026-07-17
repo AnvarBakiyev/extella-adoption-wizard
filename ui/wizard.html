@@ -2641,8 +2641,16 @@ async function showDemoResult(runId){
 function lastBuild(){ const b = S.session.builds||[]; return b.length? b[b.length-1] : null; }
 function renderTest(){
   const bp = S.blueprint && S.blueprint.blueprint;
-  const running = !!S.buildId && !S.buildDone;
   const lb = lastBuild();
+  // Переподключение к идущей стройке после ухода с экрана/перезагрузки визарда.
+  // session.building — авторитетный указатель (ставит /x/build, снимает мост по завершении);
+  // если стройка ещё идёт, а состояние в памяти потеряно — восстановим и продолжим поллинг,
+  // чтобы вместо пустой карточки «Построить процесс» снова показать живой прогресс.
+  if(!S.buildId && !S.buildDone && S.session && S.session.building
+     && !(lb && lb.build_id === S.session.building)){
+    S.buildId = S.session.building; S.buildDone = false;
+  }
+  const running = !!S.buildId && !S.buildDone;
   const noFiles = !((S.session&&S.session.files)||[]).length;
   el("buildRunner").innerHTML = `
     <div class="kicker">Сборка процесса</div>
@@ -2687,6 +2695,7 @@ async function genSample(){
 }
 async function pollBuild(){
   if(!S.buildId || S.buildDone) return;
+  if(S.buildTimer){ clearTimeout(S.buildTimer); S.buildTimer=null; }  // не плодим параллельные поллинги при повторном рендере
   let d; try{ d = await jget("/x/build_progress?build_id="+S.buildId); }catch(e){ d=null; }
   if(d && d.status==="success"){
     const p = d.progress;
