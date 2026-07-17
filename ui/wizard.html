@@ -3147,6 +3147,25 @@ function _reportBriefOpts(at){
     chips: experts.length ? ['🧩 '+experts.length+(experts.length===1?' компонент':' компонентов'),'🧠 Qwen'] : ['🧠 Qwen']
   };
 }
+// Скачивание отчёта с render-check: мост проверяет, что файл реально открывается; битый → предложить
+// «скачать как есть» (force). Так клиент не получает молча 0-байт/повреждённый файл как «готовый отчёт».
+async function dlReport(encPath){
+  var raw; try{ raw = decodeURIComponent(encPath); }catch(e){ raw = encPath; }
+  try{
+    const r = await fetch("/x/download?path="+encPath);
+    if(r.ok){
+      const blob = await r.blob(), url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download=(raw.split('/').pop()||'report'); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000); return;
+    }
+    const j = await r.json().catch(()=>({}));
+    if(r.status===422 && j.code==="artifact_corrupt"){
+      ask("⚠ Отчёт повреждён", (j.reason||"файл битый")+".\n\nЛучше переиграть прогон. Скачать файл как есть (для отладки)?","",()=>{
+        window.open("/x/download?path="+encPath+"&force=1","_blank");
+      });
+    } else toast(j.message||"Файл недоступен","err");
+  }catch(e){ window.open("/x/download?path="+encPath,"_blank"); }
+}
 // «Открыть отчёт» с финиш-экрана: сохранённый digest последнего прогона (тот же, что в кабинете),
 // но прямо здесь — не заходя в кабинет
 async function openReport(){
@@ -3946,7 +3965,7 @@ function _wzCabLaunch(a){
         (lr.total_sum!=null?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
         '</div>'
         : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
-      (lr.report_xlsx?'<div style="margin-top:8px"><a href="/x/download?path='+encodeURIComponent(lr.report_xlsx)+'" target="_blank" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')+
+      (lr.report_xlsx?'<div style="margin-top:8px"><a href="#" onclick="dlReport(\''+encodeURIComponent(lr.report_xlsx).replace(/\x27/g,"%27")+'\');return false" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')+
       '<div id="wz_digest_box" style="margin-top:10px"></div>'
     ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
   if(lr) setTimeout(function(){ _wzDigestLoad(a.session_id); }, 40);   // C3: подтянуть сохранённый дайджест
@@ -4004,7 +4023,7 @@ function _wzCabRuns(a){
     if(r.findings!=null) bits.push('находок '+fmt(r.findings));
     if(r.digest_source==='flow') bits.push('бриф в приложении');
     var files=[];
-    if(r.report_xlsx) files.push('<a href="/x/download?path='+encodeURIComponent(r.report_xlsx)+'" target="_blank" style="color:#c60">отчёт .xlsx</a>');
+    if(r.report_xlsx) files.push('<a href="#" onclick="dlReport(\''+encodeURIComponent(r.report_xlsx).replace(/\x27/g,"%27")+'\');return false" style="color:#c60">отчёт .xlsx</a>');
     return '<div style="display:flex;align-items:baseline;gap:10px;padding:10px 0;border-top:1px solid var(--cream-dark);flex-wrap:wrap">'+
       '<span style="font-size:14px">'+ic+'</span>'+
       '<span style="font-size:13px;color:var(--ink-soft);min-width:120px">'+when+'</span>'+
@@ -4373,7 +4392,7 @@ async function runProcess(i){
     return;
   }
   const run = r.run||{}; const fmt=n=>(typeof n==="number")?n.toLocaleString("ru-RU"):esc(n);
-  const dl = run.report_xlsx?` · <a href="/x/download?path=${encodeURIComponent(run.report_xlsx)}" target="_blank" style="color:#c60">скачать отчёт</a>`:"";
+  const dl = run.report_xlsx?` · <a href="#" onclick="dlReport('${encodeURIComponent(run.report_xlsx).replace(/'/g,"%27")}');return false" style="color:#c60">скачать отчёт</a>`:"";
   const _dl = Array.isArray(r.delivered) ? r.delivered : (r.delivered?[r.delivered]:[]);
   const dlv = _dl.length ? " · " + _dl.map(d=>d.ok?`<span style="color:var(--ok,#2a2)">→ ${esc(chName(d.channel))} ✓</span>`:`<span style="color:var(--bad,#c33)">→ ${esc(chName(d.channel))} не прошла: ${esc(d.err||"")}</span>`).join(" · ") : "";
   out.innerHTML = `<div class="card pack-card" style="margin:6px 0"><b>✓ Прогон завершён</b> · позиций ${fmt(run.total_count)} · сумма <b>${fmt(run.total_sum)}</b>${dl}${dlv}</div>`;
