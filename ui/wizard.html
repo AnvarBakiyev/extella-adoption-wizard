@@ -594,7 +594,7 @@ async function openAgentManager(){
     return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+(on?'var(--gold,#c9a35c)':'var(--cream-dark,#e5e0d5)')+';border-radius:9px;margin-bottom:6px;background:'+(on?'#c9a35c14':'transparent')+'">'+
       '<div style="flex:1"><div style="font-weight:600;font-size:13px">'+(on?'✓ ':'')+esc(a.name)+'</div>'+
       '<div style="font-size:11px;color:var(--silver,#889)">'+esc(a.id)+' · '+(a.source==='created'?'создан визардом':'привязан')+'</div></div>'+
-      (on?'<span style="font-size:11px;color:var(--gold,#a97e35);font-weight:600">строим сюда</span>':
+      (on?'<button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="openBrain()">🧠 Мозг</button><span style="font-size:11px;color:var(--gold,#a97e35);font-weight:600">строим сюда</span>':
           '<button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="agentSelect(\''+a.id+'\')">Выбрать</button>')+
       '<button class="btn ghost" title="Убрать из визарда" style="padding:4px 8px;font-size:12px" onclick="agentUnlink(\''+a.id+'\')">✕</button>'+
     '</div>';
@@ -636,6 +636,46 @@ async function agentSelect(id){
 async function agentUnlink(id){
   const r=await jpost("/x/agent_unlink",{agent_id:id});
   if(r.status==="success"){ await refreshAgentBadge(); openAgentManager(); }
+}
+/* ============ Ф3: кабинет-мозг агента (Знания / Правила — читать и править словами) ============ */
+function _brainRender(res){
+  if(!res || res.status!=="success"){ toast(res&&res.message||"Мозг недоступен","err"); return; }
+  const cs=res.concepts||[], rs=res.rules||[];
+  const sec=(title,hint,items,delOp,addOp)=>
+    '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px">'+title+' <span style="color:var(--silver,#889);font-weight:400">'+items.length+'</span></div>'+
+    '<div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 6px">'+hint+'</div>'+
+    (items.map(function(it){
+      return '<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:7px;margin-bottom:4px">'+
+        '<div style="flex:1;font-size:12px;color:var(--ink-soft);white-space:pre-wrap">'+esc(it.text)+'</div>'+
+        '<button class="btn ghost" style="padding:2px 7px;font-size:11px" onclick="brainDel(\''+delOp+'\','+JSON.stringify(it.id)+')">✕</button></div>';
+    }).join('') || '<div style="font-size:12px;color:var(--silver,#889);padding:2px 0 4px">пусто</div>')+
+    '<button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="brainAdd(\''+addOp+'\')">＋ добавить словами</button></div>';
+  resetModInput();
+  el("modTitle").textContent="🧠 Мозг агента · "+esc((res.agent&&res.agent.name)||"");
+  el("modHint").innerHTML="Знания и правила этого агента (его личный мозг). Концепты — что он знает о клиенте; правила — как он должен действовать/говорить. Эксперты (умения) — общий граф платформы.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden">'+
+    sec("📚 Знания (концепты)","Факты о клиенте, данных, определения. Копятся сами (контур) и вручную.",cs,"del_concept","add_concept")+
+    sec("📏 Правила","Как действовать и каким голосом отвечать (регламент, тон).",rs,"del_rule","add_rule");
+  el("modBack").classList.add("open");
+  const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
+  _modCb=null;
+}
+async function openBrain(){
+  let r; try{ r=await fetch("/x/brain").then(x=>x.json()); }catch(e){ r=null; }
+  if(r && r.status==="error" && /не выбран/.test(r.message||"")){ toast("Сначала выберите агента","err"); openAgentManager(); return; }
+  _brainRender(r);
+}
+async function brainAdd(op){
+  const isC=op==="add_concept";
+  ask(isC?"Новое знание (концепт)":"Новое правило", isC?"Факт/определение для мозга агента, напр.: «CPL считаем как бюджет ÷ лиды»":"Правило поведения/голоса, напр.: «Всегда отвечать на языке клиента»","",async (t)=>{
+    if(!t) return; busy("Записываю в мозг…");
+    const r=await jpost("/x/brain_edit",{op:op,text:t}); busyOff();
+    if(r.status==="success"){ toast("✓ Записано","ok"); _brainRender(r); } else toast("Не удалось: "+(r.message||""),"err");
+  });
+}
+async function brainDel(op,id){
+  const r=await jpost("/x/brain_edit",{op:op,id:id});
+  if(r.status==="success"){ _brainRender(r); } else toast("Не удалось удалить","err");
 }
 
 /* ================= modal + toast (замена prompt/alert) ================= */
