@@ -4647,11 +4647,13 @@ function renderGoalJournal(res){
     return '<div style="border-left:2px solid var(--cream-dark);padding:5px 0 5px 12px;margin-bottom:6px"><div style="font-size:12.5px"><b>'+k[0]+' '+esc(k[1])+'</b> · '+esc(String(j.step||'').slice(0,90))+'</div>'+body+'</div>';
   }).join('');
   var mem=res.memory||{}, mc=mem.concepts||[], mr=mem.rules||[];
+  var sv=res.saved_to_agent;
+  var savedLine=(sv&&(sv.concepts||sv.rules))?'<div style="margin-top:5px;padding-top:5px;border-top:1px dashed var(--cream-dark,#e5e0d5);color:var(--petrol,#2a6b6b);font-weight:600">💾 Сохранено в мозг агента «'+esc(sv.name||sv.id)+'»: '+(sv.concepts||0)+' концепт., '+(sv.rules||0)+' правил → пригодится в след. процессах</div>':'';
   var memPanel=(mc.length||mr.length)?'<div style="background:var(--cream);border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:12px">'+
     '<div style="font-weight:600;margin-bottom:4px">🧠 Память контура (накоплена по ходу)</div>'+
     (mc.length?'<div style="color:var(--ink-soft)"><b>Концепты:</b> '+esc(mc.map(function(c){return c.k+'='+c.v}).join(' · ').slice(0,300))+'</div>':'')+
     (mr.length?'<div style="color:var(--ink-soft);margin-top:2px"><b>Правила:</b> '+esc(mr.join(' · ').slice(0,300))+'</div>':'')+
-    '</div>':'';
+    savedLine+'</div>':'';
   var SM={done:['✅','Цель достигнута (после проверки доверием)'],need_human:['🙋','Контур честно остановился — нужен человек'],max_iters:['⏹','Дошёл до предела итераций']};
   var sm=SM[res.status]||['·',String(res.status)];
   var q=res.question?'<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:13px;color:#7a5b1a">🙋 '+esc(res.question)+'</div>':'';
