@@ -2438,7 +2438,8 @@ class Handler(BaseHTTPRequestHandler):
             if (res or {}).get("needs_review_reason"):   # WZ-B02 → Exception Inbox: причина словами
                 run_rec["needs_review_reason"] = str(res["needs_review_reason"])[:200]
             s = _update_session(sid, lambda s: s.setdefault("runs", []).append(run_rec))
-            _save_digest(sid, _run_digest(res))   # C3: и процесс-на-файле оставляет отчёт (виджет/«Открыть отчёт»/расписание)
+            _dg = _run_digest(res)
+            _save_digest(sid, _dg)   # C3: и процесс-на-файле оставляет отчёт (виджет/«Открыть отчёт»/расписание)
             # доставка результата в канал (как по расписанию) — чтобы РУЧНОЙ запуск тоже слал, а не только тик
             delivered = None
             recips = _recipients(s)   # несколько получателей: шлём результат в каждый подключённый канал
@@ -2462,7 +2463,11 @@ class Handler(BaseHTTPRequestHandler):
                                 dout = {}
                     delivered.append({"channel": deliver, "ok": bool(isinstance(dout, dict) and dout.get("ok")),
                                       "err": ((dout or {}).get("err") if isinstance(dout, dict) else None)})
-            self._send({"status": "success", "run": run_rec, "delivered": delivered})
+            _rs = (run_rec or {}).get("status")   # честный статус: раньше слали success даже при error оркестратора
+            self._send({"status": "success" if _rs in ("success", "partial") else "error",
+                        "run": run_rec, "delivered": delivered, "digest": _dg,
+                        "message": (str(run_rec.get("needs_review_reason") or "прогон не дал результата")
+                                    if _rs not in ("success", "partial") else None)})
 
         elif self.path == "/x/schedule":
             sid = str(body.get("session_id", ""))

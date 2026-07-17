@@ -4036,7 +4036,7 @@ async function runProcess(i){
   // обновляем строку «последний прогон» ЭТОЙ карточки на месте (без перерисовки всего списка)
   const rr = el("runrow-"+i);
   if(rr) rr.innerHTML = `Последний прогон: ${esc((run.at||"").slice(0,16).replace("T"," "))} · ${esc(run.status)} · сумма ${fmt(run.total_sum)}${dl}`;
-  if(a.last_run) a.last_run = run;
+  a.last_run = run;   // безусловно: виджет «Последний результат» должен наполниться и после ПЕРВОГО прогона (был баг: только если last_run уже существовал)
   renderMonitor();
 }
 const SCHED_PRESETS = [
