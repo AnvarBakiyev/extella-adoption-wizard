@@ -4481,22 +4481,54 @@ function renderTrustReport(res, delta){
     var lg=LG[f.light]||LG.gray;
     var flaky=(f.flaky||[]).length? '<div style="font-size:12px;color:var(--silver);margin-top:5px;line-height:1.5">'+f.flaky.map(function(fl){return '⚠ «'+esc(fl.item)+'» → '+esc((fl.answers||[]).join(' · '));}).join('<br>')+'</div>':'';
     var refine=(f.light==='red'||f.light==='amber')?'<button class="btn ghost sm" style="font-size:11.5px;padding:3px 10px;margin-top:6px" onclick="refineField('+fi+')">✏ Уточнить определение</button>':'';
+    var agr=(f.agreement!=null)?'<span style="font-size:12px;color:var(--silver);margin-left:8px">согласие с эталоном '+f.agreement+'%</span>':'';
     return '<div style="border:1px solid var(--cream-dark);border-radius:10px;padding:10px 14px;margin-bottom:8px">'+
       '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:16px">'+lg[0]+'</span>'+
-      '<b style="flex:1;font-size:14px">'+esc(f.field)+'</b>'+
+      '<b style="flex:1;font-size:14px">'+esc(f.field)+agr+'</b>'+
       '<span style="font-weight:700;color:'+lg[1]+'">'+(f.reproducibility==null?'неопр.':f.reproducibility+'%')+'</span></div>'+flaky+refine+'</div>';
   }).join('');
   window._tcFields=res.fields||[];
+  var hasGold=(res.fields||[]).some(function(f){return f.agreement!=null;});
   var ov=(res.overall==null?'':' · общая '+res.overall+'%');
   var deltaNote=delta?'<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.3);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;color:#237a44">✎ Уточнено «'+esc(delta.field)+'»: воспроизводимость '+esc(delta.before)+'% → <b>'+esc(delta.after)+'%</b></div>':'';
   resetModInput();
   el("modTitle").textContent="Где суждению можно доверять";
-  el("modHint").innerHTML="Прогонов: "+esc(res.runs)+ov+" · без эталона. 🟢 стабильно · 🟡 шатко · 🔴 определение размыто — уточните формулировку поля.";
+  el("modHint").innerHTML="Прогонов: "+esc(res.runs)+ov+" · "+(hasGold?"воспроизводимость + согласие с эталоном":"без эталона")+". 🟢 стабильно · 🟡 шатко · 🔴 размыто.";
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+deltaNote+rows+
-    '<div style="font-size:12px;color:var(--silver);margin-top:6px">«Уточнить» правит ОПРЕДЕЛЕНИЕ поля словами (не отдельный кейс) и перепрогоняет — один разговор чинит класс ошибок.</div>';
+    '<div style="margin-top:8px"><button class="btn ghost sm" style="font-size:12px" onclick="trustGolden()">✓ Сверить с эталоном</button>'+
+    '<span style="font-size:12px;color:var(--silver);margin-left:8px">Воспроизводимость = согласие с собой. Эталон = согласие с человеком (по желанию).</span></div>';
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Готово";
   _modCb=null;
+}
+function trustGolden(){
+  var ctx=window._tcCtx; if(!ctx||!ctx.sample||!ctx.fields){ toast("Сначала запустите проверку","err"); return; }
+  var stin='class="sess-select" style="max-width:none;font-size:12px;margin:0 6px 4px 0;width:auto;display:inline-block"';
+  var rows=ctx.sample.map(function(s,i){
+    var flds=ctx.fields.map(function(f,fi){return '<input id="gold_'+i+'_'+fi+'" '+stin+' placeholder="'+esc(f)+'">';}).join('');
+    return '<div style="border-bottom:1px solid var(--cream);padding:7px 0"><div style="font-size:12.5px;margin-bottom:4px">'+(i+1)+') '+esc(String(s).slice(0,80))+'</div>'+flds+'</div>';
+  }).join('');
+  resetModInput();
+  el("modTitle").textContent="✓ Эталон — как правильно";
+  el("modHint").innerHTML="Впишите ПРАВИЛЬНЫЙ ответ там, где знаете (можно не для всех строк). Сверим ответ модели с вашим — это согласие с человеком поверх воспроизводимости.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden"><div style="max-height:300px;overflow:auto">'+rows+'</div>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Сверить →";
+  _modCb=async ()=>{
+    var golden={};
+    ctx.sample.forEach(function(s,i){
+      var obj={};
+      ctx.fields.forEach(function(f,fi){ var v=((el('gold_'+i+'_'+fi)||{}).value||'').trim(); if(v) obj[f]=v; });
+      if(Object.keys(obj).length) golden[String(i+1)]=obj;
+    });
+    if(!Object.keys(golden).length){ toast("Впишите хотя бы один правильный ответ","err"); return; }
+    busy("Сверяю ответ модели с вашим эталоном… (до ~2 минут)");
+    var r=await jpost("/x/trust_check",{task:ctx.task, fields:ctx.fields, sample:ctx.sample, runs:3, golden:golden});
+    busyOff();
+    var res=(r&&r.result)||{};
+    if(!res.ok){ toast("Не удалось сверить: "+(res.err||(r&&r.message)||"—"),"err"); return; }
+    renderTrustReport(res);
+  };
 }
 function refineField(fi){
   var ctx=window._tcCtx, F=(window._tcFields||[])[fi]; if(!ctx||!F) return;
