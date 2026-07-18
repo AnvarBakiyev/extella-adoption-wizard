@@ -3764,7 +3764,7 @@ async function cabReportPreview(btn){
   var miss=(r.missing||[]).length
     ? ' <span style="color:#C57E33">Разрезов по '+esc((r.missing||[]).join(', '))+' в последнем прогоне не было — в превью их нет.</span>' : '';
   _cabPush(_cabA('Превью собрано по числам прогона от '+esc(String(r.based_on||'').slice(0,16).replace('T',' '))+'.'+miss+
-    ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="dlReport(\''+encodeURIComponent(r.path).replace(/'/g,"%27")+'\')">📄 Открыть PDF</button>'));
+    ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="dlReport(\''+encodeURIComponent(r.path).replace(/'/g,"%27")+'\')">📄 Открыть '+(r.format==='docx'?'Word':'PDF')+'</button>'));
 }
 async function cabReportApply(){
   var a=AUTOS[_wzCabI], spec=window._cabReportSpec;

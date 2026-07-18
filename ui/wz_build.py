@@ -669,23 +669,36 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     # ── ФИРМЕННЫЙ PDF: оформитель — отдельный эксперт (способность зашита в него, не в оркестратор).
     # Идёт на ТО ЖЕ устройство, что и стадии, и читает файл последней стадии по месту —
     # так не упираемся ни в размер полезной нагрузки, ни в наличие браузера.
-    _pdf = ""
+    _pdf, _docx = "", ""
     if report_spec_json and not report_spec_json.startswith("{{") and last_out:
+        # формат выбирает владелец словами: PDF отправляют как есть, DOCX — дорабатывают
         try:
-            _pdf_try = str(wd / "report.pdf")
-            _fb = {"expert_name": "fmt_report_pdf", "global": True,
-                   "params": {"input_path": last_out, "spec_json": report_spec_json,
-                              "output_path": _pdf_try}}
-            if target:
-                _fb["target"] = target
-            requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers, json=_fb, timeout=180)
-            if Path(_pdf_try).exists() and Path(_pdf_try).stat().st_size > 1000:
-                _pdf = _pdf_try
+            _fmt = str((json.loads(report_spec_json) or {}).get("format") or "pdf").lower()
         except Exception:
-            _pdf = ""   # отчёт .md/.xlsx уже собран — красивый PDF не обязан ронять прогон
+            _fmt = "pdf"
+        _jobs = []
+        if _fmt in ("pdf", "both", "all"):
+            _jobs.append(("fmt_report_pdf", str(wd / "report.pdf")))
+        if _fmt in ("docx", "word", "both", "all"):
+            _jobs.append(("fmt_report_docx", str(wd / "report.docx")))
+        for _exp, _dst in _jobs:
+            try:
+                _fb = {"expert_name": _exp, "global": True,
+                       "params": {"input_path": last_out, "spec_json": report_spec_json,
+                                  "output_path": _dst}}
+                if target:
+                    _fb["target"] = target
+                requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers, json=_fb, timeout=180)
+                if Path(_dst).exists() and Path(_dst).stat().st_size > 1000:
+                    if _dst.endswith(".pdf"):
+                        _pdf = _dst
+                    else:
+                        _docx = _dst
+            except Exception:
+                pass   # .md/.xlsx уже собраны — оформленный документ не обязан ронять прогон
 
     result = {"status": _status, "summary": summary, "total_count": tc, "total_sum": ts,
-              "report_pdf": _pdf,
+              "report_pdf": _pdf, "report_docx": _docx,
               "adapter_applied": _adapt_applied,   # AC-05: видно в прогоне, что выгрузку подстроили под процесс
               "report_md": str(md), "report_xlsx": str(xlsx), "host": __import__("socket").gethostname()}
     if _reason:
