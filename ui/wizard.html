@@ -4883,7 +4883,8 @@ async function sourceProcess(i){
           + `<label class="opt" style="font-weight:600"><input type="radio" name="srcAct" value="keep" checked><span>Ничего не менять</span></label>`
           + `<label class="opt"><input type="radio" name="srcAct" value="bind"><span>Привязать источник:</span></label>`
           + `<select id="srcKind" class="sess-select" style="width:100%;max-width:none;margin:4px 0 4px 22px" onchange="var b=document.querySelector('input[name=srcAct][value=bind]');if(b)b.checked=true">${opts}</select>`
-          + `<div style="font-size:11.5px;color:var(--silver);text-align:left;margin:0 0 8px 22px">Данные тянутся из уже подключённого источника (настроен в блоке «🔌 Подключения» — там же задаётся, какая таблица/диапазон).</div>`
+          + `<div id="srcSheetBox" style="margin:0 0 8px 22px"></div>`
+          + `<div style="font-size:11.5px;color:var(--silver);text-align:left;margin:0 0 8px 22px">Данные тянутся из подключённого источника. Для Google Sheets укажите ссылку на нужный лист — покажу, что в нём, до привязки.</div>`
           + (curKind?`<label class="opt" style="color:#999"><input type="radio" name="srcAct" value="off"><span>Отвязать источник (вернуться к загрузке файла)</span></label>`:``);
   } else {
     body += `<div style="font-size:13px;color:#888;text-align:left;margin-bottom:6px">Пока не подключён ни один источник данных.</div>`
@@ -4895,6 +4896,8 @@ async function sourceProcess(i){
         + `<div style="font-size:11.5px;color:var(--silver);margin-top:5px">Нет в списке? Опишите API и вставьте ключ — Extella сама соберёт подключение и покажет первые строки.</div></div>`;
   el("modInput").outerHTML = body;
   el("modBack").classList.add("open");
+  _srcSheetSync();
+  const _sk=el("srcKind"); if(_sk) _sk.addEventListener("change", _srcSheetSync);
   _modCb = async ()=>{
     const act = (document.querySelector('input[name=srcAct]:checked')||{}).value || "keep";
     if(act==="keep") return;   // безопасный дефолт — ничего не делаем
@@ -4906,6 +4909,11 @@ async function sourceProcess(i){
     }
     const kind = (el("srcKind")||{}).value;
     if(!kind){ toast("Нет подключённых источников — подключите в блоке «Подключения»","err"); return; }
+    if(kind==='src_gsheets' && window._srcSheetPick){
+      // владелец увидел содержимое листа и подтвердил — фиксируем ИМЕННО эту таблицу
+      await jpost('/x/sheet_use', window._srcSheetPick, 30000);
+      window._srcSheetPick=null;
+    }
     busy("Привязываю источник и тяну данные…");
     let r; try{ r = await jpost("/x/source_bind",{session_id:a.session_id, kind:kind}, 75000); }
     finally{ busyOff(); }
@@ -4913,6 +4921,37 @@ async function sourceProcess(i){
     toast("✓ Источник подключён"+(r.rows!=null?(", строк: "+r.rows):""),"ok");
     renderAutomations();
   };
+}
+// «Какой именно Google Sheets?» — вопрос владельца, на который система обязана ответить ДО привязки.
+// Раньше таблица молча бралась из старого секрета: у Анвара так привязался «Семейный бюджет»
+// из отладки коннекторов. Теперь: вставил ссылку → сходили в таблицу → показали её содержимое.
+function _srcSheetSync(){
+  var box=el('srcSheetBox'); if(!box) return;
+  var kind=(el('srcKind')||{}).value||'';
+  if(kind!=='src_gsheets'){ box.innerHTML=''; return; }
+  box.innerHTML='<div style="display:flex;gap:6px;margin:6px 0">'+
+    '<input id="srcSheetUrl" class="sess-select" style="flex:1;max-width:none;font-size:12.5px" '+
+    'placeholder="ссылка на таблицу: https://docs.google.com/spreadsheets/d/…">'+
+    '<button class="btn ghost sm" onclick="checkSheetLink()">Проверить</button></div>'+
+    '<div id="srcSheetOut" style="font-size:12px;text-align:left"></div>';
+}
+async function checkSheetLink(){
+  var u=((el('srcSheetUrl')||{}).value||'').trim();
+  var out=el('srcSheetOut'); if(!out) return;
+  if(!u){ out.innerHTML='<span style="color:#C57E33">вставьте ссылку на таблицу</span>'; return; }
+  out.innerHTML='<span class="spin"></span> открываю таблицу…';
+  var r; try{ r=await jpost('/x/sheet_link',{url:u}, 60000); }catch(e){ r=null; }
+  if(!r||r.status!=='success'){ out.innerHTML='<span style="color:#c0392b">'+esc((r&&r.message)||'не удалось открыть')+'</span>'; return; }
+  window._srcSheetPick={spreadsheet_id:r.spreadsheet_id, gid:r.gid};
+  var head=(r.columns||[]).slice(0,8).join(' · ');
+  var prevRows=(r.preview||[]).map(function(row){
+    return '<div style="color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(row.join(' · '))+'</div>';
+  }).join('');
+  out.innerHTML = (r.columns||[]).length
+    ? '<div style="color:#2f9e56;margin-bottom:4px">✓ Нашёл: строк '+esc(String(r.rows))+', колонки:</div>'+
+      '<div style="font-weight:600;margin-bottom:4px">'+esc(head)+'</div>'+prevRows+
+      '<div style="color:var(--silver);margin-top:4px">Это ваши данные? Тогда нажмите OK — привяжу этот лист.</div>'
+    : '<span style="color:#C57E33">'+esc(r.warning||'в листе нет заголовков — укажите ссылку на лист с данными')+'</span>';
 }
 // Рецепты площадок: как получить токен СЕЙЧАС (до Composio) + преднастройка полей
 var GEN_RECIPES = {
