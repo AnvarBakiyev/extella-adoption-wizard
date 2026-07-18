@@ -285,7 +285,7 @@ include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
-def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "") -> dict:
+def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "") -> dict:
     """Автосгенерированный оркестратор процесса. Гоняет контрактную цепочку стадий
     (input_path -> output_path) на исходном файле, чистит заголовки, возвращает сводку
     и рисует отчёт .md + .xlsx. Параметры: source_file, work_dir, api_token, target
@@ -297,6 +297,14 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
 
     STAGES = %(STAGES)s
     KP_STAGES = %(KP_STAGES)s
+    # A1 КАРТА РАЗМЕЩЕНИЯ: {стадия: target}. Процесс больше не живёт целиком на одном устройстве —
+    # чтение 1С на машине с 1С, отчёт и доставка на хостинге. Пусто = старое поведение (один target).
+    PLACEMENT = {}
+    if placement_json and not placement_json.startswith("{{"):
+        try:
+            PLACEMENT = json.loads(placement_json) or {}
+        except Exception:
+            PLACEMENT = {}
     if not api_token:
         cfg = Path.home() / "extella_wizard" / "app" / "config.json"
         try:
@@ -408,12 +416,13 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
             _params["rules_json"] = rules_json
         if not (fields_json or "").startswith("{{") and fields_json:
             _params["fields_json"] = fields_json
+        _tgt = PLACEMENT.get(name) or target   # A1: устройство ЭТОЙ стадии
         if name in KP_STAGES:   # knowledge-стадия реюзает kp_ask — нужен target (где лежит база) и токен
-            _params["target"] = target
+            _params["target"] = _tgt
             _params["api_token"] = api_token
         body = {"expert_name": name, "params": _params, "global": True}
-        if target:
-            body["target"] = target
+        if _tgt:
+            body["target"] = _tgt
         r = requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers, json=body, timeout=600)
         try:
             res = r.json().get("result", r.json())
@@ -674,7 +683,7 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None,
                                                  "returns summary and renders .md/.xlsx report. Params: source_file, work_dir, api_token, target, source_key.",
                                   "code": code, "kwargs": {"source_file": "", "work_dir": work_dir, "rules_json": "", "fields_json": "",
                                                            "api_token": "", "api_base": "https://api.extella.ai",
-                                                           "target": "", "source_key": ""},
+                                                           "target": "", "source_key": "", "placement_json": ""},
                                   "cspl": "fython", "global": True})
     ok = sv.get("status") == "success" or sv.get("id") is not None
     if want_code:
@@ -915,6 +924,7 @@ def _run_build(session_id, build_id):
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
                                                "params_contract": 1,   # F2: оркестратор+стадии принимают rules_json/fields_json
+                                               "placement_contract": 1,   # A1: оркестратор понимает карту размещения (стадия→устройство)
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
                                                "source_file": sample_file})

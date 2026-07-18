@@ -418,6 +418,9 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                 run_params["source_key"] = skey     # резолвер материализует файл из общего стора
             # F2 (контракт параметров): rules/fields — ТОЛЬКО контрактным оркестраторам
             # (params_contract пишет /x/schedule из builds; старые процессы упали бы на лишних kwargs)
+            # A1: карта размещения (стадия → устройство). Мост кладёт её в KV уже развёрнутой.
+            if isinstance(cfg.get("placement"), dict) and cfg["placement"]:
+                run_params["placement_json"] = json.dumps(cfg["placement"], ensure_ascii=False)
             if int(cfg.get("params_contract", 0) or 0) >= 1:
                 # текстовые правила (кодогенным стадиям) + структурные фильтры (оркестратор применяет сам)
                 _rp = list(cfg.get("rules") or []) + [r for r in (cfg.get("rules_struct") or []) if isinstance(r, dict)]

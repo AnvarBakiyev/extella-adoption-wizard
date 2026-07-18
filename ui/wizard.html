@@ -4022,8 +4022,9 @@ function _wzCabLaunch(a){
       (a.schedule&&a.schedule.period?'⏰ По расписанию — <b>Хостинг Extella (VPS, 24/7)</b><br>':'')+
       '▶ Вручную — <b>это устройство</b> (мост визарда)'+
       (a.knowledge_pack&&a.knowledge_pack.pack_id?'<br>📚 База знаний <code>'+esc(a.knowledge_pack.pack_id)+'</code> — на устройстве прогона':'')+
-      '</div><div id="wz_targets_'+i+'" style="margin-top:8px;font-size:12px;color:var(--silver)"><span class="spin"></span></div>');
-  setTimeout(function(){ _wzTargetsLoad(i); }, 60);
+      '</div><div id="wz_targets_'+i+'" style="margin-top:8px;font-size:12px;color:var(--silver)"><span class="spin"></span></div>'+
+      '<div id="wz_place_'+i+'" style="margin-top:12px;border-top:1px solid var(--cream-dark);padding-top:10px"><span class="spin"></span></div>');
+  setTimeout(function(){ _wzTargetsLoad(i); _wzPlaceLoad(i, a.session_id); }, 60);
   return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
       '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
@@ -4031,6 +4032,62 @@ function _wzCabLaunch(a){
     + result
     + execCard
     + '<details style="max-width:720px;margin-bottom:14px"><summary style="cursor:pointer;color:var(--nav);font:600 13px var(--sans);padding:6px 0;list-style:none">⚙ Под капотом — как устроено</summary><div style="margin-top:8px">'+_wzCabOverview(a)+'</div></details>';
+}
+// A1 КАРТА РАЗМЕЩЕНИЯ: какая стадия на каком устройстве. Процесс перестал быть «одним куском
+// на одной машине»: чтение 1С — там, где 1С; отчёт и доставка — на хостинге 24/7.
+// Наружу приходят только ref устройств — настоящий device id браузер не видит и не может утечь.
+var _WZPLACE = {};
+async function _wzPlaceLoad(i, sid){
+  var box=el('wz_place_'+i); if(!box) return;
+  var d; try{ d=await jget('/x/placement?sid='+encodeURIComponent(sid)); }catch(e){ d=null; }
+  if(!d||d.status!=='success'||!(d.stages||[]).length){ box.innerHTML=''; return; }
+  _WZPLACE[i]={sid:sid, data:d, map:Object.assign({}, d.map||{})};
+  if(!Object.keys(_WZPLACE[i].map).length)
+    (d.proposal||[]).forEach(function(p){ _WZPLACE[i].map[p.stage]=p.ref; });
+  _wzPlaceRender(i);
+}
+function _wzPlaceRender(i){
+  var st=_WZPLACE[i]; if(!st) return;
+  var box=el('wz_place_'+i); if(!box) return;
+  var d=st.data, why={}; (d.proposal||[]).forEach(function(p){ why[p.stage]=p.why; });
+  var opts=function(sel){ return (d.devices||[]).map(function(dev){
+      return '<option value="'+esc(dev.ref)+'"'+(dev.ref===sel?' selected':'')+'>'+
+             (dev.online?'🟢 ':'🔴 ')+esc(dev.label||'')+'</option>'; }).join(''); };
+  var rows=(d.stages||[]).map(function(s){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;flex-wrap:wrap">'+
+      '<code style="font-size:11.5px;color:var(--nav);min-width:170px">'+esc(s)+'</code>'+
+      '<select onchange="_wzPlaceSet('+i+',this.getAttribute(\'data-s\'),this.value)" data-s="'+esc(s)+'" '+
+        'style="font-size:12px;padding:3px 6px;border:1px solid var(--cream-dark);border-radius:6px;background:#fff">'+
+        opts(st.map[s]||'')+'</select>'+
+      (why[s]?'<span style="font-size:11px;color:var(--silver)">'+esc(why[s])+'</span>':'')+'</div>';
+  }).join('');
+  var mark=d.supported===false
+      ? '<span style="color:#C57E33">процесс собран до появления карты — назначения сохранятся, но применятся после пересборки</span>'
+      : (d.confirmed?'<span style="color:#2f9e56">✓ карта подтверждена — шаги идут по ней</span>'
+                    :'<span style="color:#C57E33">предложение — подтвердите, иначе весь процесс идёт на одном устройстве</span>');
+  box.innerHTML='<div style="font:600 12px var(--sans);color:var(--nav);margin-bottom:4px">Карта размещения по шагам</div>'+
+    '<div style="font-size:11.5px;margin-bottom:6px">'+mark+'</div>'+rows+
+    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+    '<button class="btn gold" style="font-size:12px;padding:6px 14px" onclick="_wzPlaceSave('+i+',true)">Подтвердить карту</button>'+
+    '<button class="btn" style="font-size:12px;padding:6px 12px" onclick="_wzPlaceReset('+i+')">Вернуть предложение</button>'+
+    '<span id="wz_place_msg_'+i+'" style="font-size:11.5px;color:var(--silver)"></span></div>';
+}
+function _wzPlaceSet(i,s,ref){ if(_WZPLACE[i]) _WZPLACE[i].map[s]=ref; }
+function _wzPlaceReset(i){
+  var st=_WZPLACE[i]; if(!st) return;
+  st.map={}; (st.data.proposal||[]).forEach(function(p){ st.map[p.stage]=p.ref; });
+  _wzPlaceRender(i);
+}
+async function _wzPlaceSave(i, confirm){
+  var st=_WZPLACE[i]; if(!st) return;
+  var m=el('wz_place_msg_'+i); if(m) m.textContent='сохраняю…';
+  var r; try{ r=await jpost('/x/placement_set',{sid:st.sid, map:st.map, confirm:!!confirm}); }catch(e){ r=null; }
+  if(!r||r.status!=='success'){ if(m) m.textContent=(r&&r.message)||'не сохранилось'; return; }
+  st.data.confirmed=r.confirmed; st.data.map=r.map;
+  var pf=r.preflight||{};
+  _wzPlaceRender(i);
+  var m2=el('wz_place_msg_'+i);
+  if(m2) m2.textContent = pf.ok===false ? ('⚠ '+(pf.message||'')) : 'сохранено';
 }
 async function _wzTargetsLoad(i){
   var box=el('wz_targets_'+i); if(!box) return;
