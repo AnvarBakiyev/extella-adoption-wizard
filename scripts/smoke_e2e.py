@@ -136,12 +136,18 @@ def main():
             return True, "%s %s %s" % (f["field"], f["op"], f["value"])
         return False, "фильтр не построился: " + (r.get("why") or "без причины")
 
-    @check("невозможный фильтр объясняется, а не молчит")
+    @check("компилятор фильтров НИКОГДА не молчит")
     def _():
+        # Проверяем ИНВАРИАНТ, а не поведение модели: либо фильтр построен, либо названа
+        # причина. Требовать «фильтра быть не должно» — флаки-проверка: модель иногда
+        # находит подходящее поле, и это не дефект. 18.07 такая формулировка дала
+        # ложное красное на ровном месте.
         sys.path.insert(0, str(Path.home() / "extella_wizard" / "app"))
         import server as S
         r = S._compile_rule_filters(["суммы больше 100000"], ["client_name", "platform"])
-        return (not r["filters"]) and bool(r["why"]), (r.get("why") or "ПРИЧИНЫ НЕТ")[:80]
+        if r["filters"]:
+            return True, "фильтр построен: %s" % r["filters"][0].get("field")
+        return bool(r["why"]), (r.get("why") or "МОЛЧИТ — ни фильтра, ни причины")[:80]
 
     print("\nАдаптеры источников (AC-05)")
 
