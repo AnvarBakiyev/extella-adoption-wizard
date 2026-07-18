@@ -4873,7 +4873,18 @@ async function runProcess(i){
   let r; try{ r = await jpost("/x/run_process",{session_id:a.session_id}); }
   finally{ window._runningSid=null; _wzLifeRefresh(); }
   if(r.code==="source_drift"){ out.innerHTML=""; _wzDriftDialog(a, r); return; }
-  if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">${WLANG==='en'?'Error':'Ошибка'}: ${esc(r.message||"")}</span>`; return; }
+  if(r.status!=="success"){
+    // Провал прогона обязан отвечать на «что делать». Владелец видел «прогон не дал
+    // результата» и не понимал: чинить логику, данные или звать нас.
+    var e=r.error||{};
+    out.innerHTML =
+      '<div style="max-width:640px;border:1px solid #e0b4b4;background:#fff6f6;border-radius:10px;padding:12px 14px">'+
+        '<div style="color:#c0392b;font-weight:700;font-size:14px">'+esc(e.message||r.message||'Прогон не дал результата')+'</div>'+
+        (e.stage?'<div style="font-size:12px;color:var(--silver);margin-top:3px">шаг: <code>'+esc(e.stage)+'</code></div>':'')+
+        (e.remedy?'<div style="font-size:13px;margin-top:9px;padding:9px 11px;background:#fff;border-radius:8px"><b>Что делать:</b> '+esc(e.remedy)+'</div>':'')+
+        (e.code==='no_input'?'<div style="margin-top:9px"><button class="btn gold sm" onclick="wzCabTab(\'settings\')">Открыть «Источник данных» →</button></div>':'')+
+      '</div>';
+    return; }
   if(r.digest){
     out.innerHTML = `<span style="color:var(--ok,#2a2)">✓ ${WLANG==='en'?'Done — '+(r.findings||0)+' signals. Opening brief…':'Готово — '+(r.findings||0)+' находок. Открываю бриф…'}</span>`;
     showBrief(r.digest, r.findings);
