@@ -4001,23 +4001,33 @@ function _wzSourceBanner(a, i){
 //   • у дайджеста ценность в тексте находок, а не в числах — бриф должен идти выше цифр;
 //   • «позиций» для потока документов и обращений — чужое слово.
 // Данные мы НЕ выдумываем: подписываем и трактуем ровно то, что вернул прогон.
+// noun = три русские формы [1, 2-4, 5+]: «3 документов» вместо «3 документа» —
+// мелочь, которую клиент замечает первой.
 var ARCH_UI={
-  recurring_report:    {noun:'позиций',   zeroGood:false, briefFirst:false,
+  recurring_report:    {noun:['позиция','позиции','позиций'], zeroGood:false, briefFirst:false,
                         nudge:'Отчёт готов. Чтобы приходил сам — поставьте расписание.'},
-  document_processing: {noun:'документов',zeroGood:false, briefFirst:false,
+  document_processing: {noun:['документ','документа','документов'], zeroGood:false, briefFirst:false,
                         nudge:'Документы обработаны. Проверьте получателей, чтобы результат уходил сразу.'},
-  monitoring_alerts:   {noun:'срабатываний', zeroGood:true, briefFirst:false,
+  monitoring_alerts:   {noun:['срабатывание','срабатывания','срабатываний'], zeroGood:true, briefFirst:false,
                         nudge:'Мониторинг работает в фоне. Подключите оповещения, чтобы узнавать сразу.'},
-  research_digest:     {noun:'находок',   zeroGood:false, briefFirst:true,
+  research_digest:     {noun:['находка','находки','находок'], zeroGood:false, briefFirst:true,
                         nudge:'Главное — в брифе. Настройте, кому его отправлять.'},
-  flow_quality_control:{noun:'проверено', zeroGood:false, briefFirst:false,
+  flow_quality_control:{noun:['запись проверена','записи проверены','записей проверено'], zeroGood:false, briefFirst:false,
                         nudge:'Контроль отработал. Правила отбора — во вкладке «Настройка».'},
-  routing_triage:      {noun:'обращений', zeroGood:false, briefFirst:false,
+  routing_triage:      {noun:['обращение','обращения','обращений'], zeroGood:false, briefFirst:false,
                         nudge:'Поток разобран. Проверьте, куда уходят результаты.'},
-  lead_pipeline:       {noun:'лидов',     zeroGood:false, briefFirst:false,
+  lead_pipeline:       {noun:['лид','лида','лидов'], zeroGood:false, briefFirst:false,
                         nudge:'Работа с лидами — на вкладке «Работа».'}
 };
-function _wzArch(a){ return ARCH_UI[String((a&&a.archetype)||'')] || {noun:'позиций', zeroGood:false, briefFirst:false, nudge:''}; }
+function _wzArch(a){ return ARCH_UI[String((a&&a.archetype)||'')] || {noun:['позиция','позиции','позиций'], zeroGood:false, briefFirst:false, nudge:''}; }
+function _wzPlural(n, forms){
+  if(!Array.isArray(forms)) return String(forms||'');
+  var k=Math.abs(Number(n))%100, k1=k%10;
+  if(k>10&&k<20) return forms[2];
+  if(k1===1) return forms[0];
+  if(k1>=2&&k1<=4) return forms[1];
+  return forms[2];
+}
 function _wzArchTitle(a){
   var m={recurring_report:'Регулярный отчёт', document_processing:'Поток документов',
          monitoring_alerts:'Мониторинг', research_digest:'Исследование и дайджест',
@@ -4533,9 +4543,28 @@ async function renderAutomations(){
   box.innerHTML = '<div class="auto-grid">' + AUTOS.map((a,i)=>{
     const lr = a.last_run;
     const rc = a.recipients||[];
-    const runLine = lr
-      ? `${esc((lr.at||"").slice(5,16).replace("T"," "))} · ${esc(lr.status||"")}${lr.total_sum!=null?(" · "+fmt(lr.total_sum)):""}`
-      : (WLANG==='en'?"no runs yet":"запусков ещё не было");
+    // Плитка обязана за секунду сказать ГЛАВНОЕ по этому процессу. Раньше она печатала
+    // «дата · success · 0» — и ноль-сумма (у процессов, где сумм нет) читался как сбой.
+    // Теперь число подписано жанром, ноль трактуется по жанру, сумма — только настоящая.
+    const AR = _wzArch(a);
+    let runLine;
+    if(!lr){
+      runLine = (WLANG==='en'?"no runs yet":"запусков ещё не было");
+    } else {
+      const when = esc((lr.at||"").slice(5,16).replace("T"," "));
+      const bad = lr.status && lr.status!=="success";
+      const parts = [];
+      if(lr.total_count!=null){
+        parts.push(lr.total_count===0
+          ? (AR.zeroGood ? '<span style="color:#2f9e56">без срабатываний ✓</span>'
+                         : '<span style="color:#C57E33">пусто — проверьте источник</span>')
+          : `<b>${fmt(lr.total_count)}</b> ${esc(_wzPlural(lr.total_count, AR.noun))}`);
+      }
+      if(lr.total_sum!=null && Number(lr.total_sum)!==0) parts.push(`<b>${fmt(lr.total_sum)}</b>`);
+      if(lr.findings!=null && lr.total_count==null) parts.push(`<b>${fmt(lr.findings)}</b> ${esc(_wzPlural(lr.findings, AR.noun))}`);
+      if(bad) parts.unshift(`<span style="color:#c0392b">${esc(lr.status)}</span>`);
+      runLine = when + (parts.length ? " · " + parts.join(" · ") : " · " + esc(lr.status||""));
+    }
     return `<div class="auto-tile" onclick="openWzCabinet(${i})">
       ${_wzHeroHTML(a)}
       <div class="tile-badges">
