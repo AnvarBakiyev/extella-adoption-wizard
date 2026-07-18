@@ -599,7 +599,11 @@ async function refreshAgentBadge(){
   b.textContent = cur ? ("🤖 "+cur.name) : "🤖 Выбрать агента";
   b.style.color = cur ? "" : "#a97e35"; b.style.fontWeight = cur ? "" : "700";
   // прямой вход в Мозг из шапки — иначе он закопан на два уровня (обратная связь Анвара)
-  const bb=el("brainBtn"); if(bb) bb.style.display = cur ? "" : "none";
+  // Раньше кнопка ПРЯТАЛАСЬ без выбранного агента: способность есть, входа не видно,
+  // и никто не объясняет почему (вопрос Анвара «где кабинет с мозгами?»).
+  // Теперь она видна всегда и сама ведёт к недостающему шагу.
+  const bb=el("brainBtn");
+  if(bb){ bb.style.display=""; bb.textContent = cur ? "🧠 Мозг" : "🧠 Мозг агента"; }
 }
 async function openAgentManager(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){}
@@ -703,7 +707,20 @@ function _brainRender(res){
 }
 async function openBrain(){
   let r; try{ r=await fetch("/x/brain").then(x=>x.json()); }catch(e){ r=null; }
-  if(r && r.status==="error" && /не выбран/.test(r.message||"")){ toast("Сначала выберите агента","err"); openAgentManager(); return; }
+  if(!r || (r.status==="error" && /не выбран|агент/.test(r.message||""))){
+    // Объясняем, ЧТО такое мозг и почему он пока пуст, а не выдаём «Мозг недоступен».
+    resetModInput();
+    el("modTitle").textContent="🧠 Мозг агента";
+    el("modHint").innerHTML="Мозг — это память вашего агента: <b>знания</b> о компании, <b>правила</b> работы, освоенные <b>умения</b> и <b>голос</b>. Всё, что визард узнаёт при проектировании и прогонах, копится сюда.";
+    el("modInput").outerHTML='<input id="modInput" type="hidden">'+
+      '<div style="font-size:13.5px;color:var(--ink-soft);margin:12px 0 6px">Мозг принадлежит агенту — а агент пока не выбран, поэтому копить знания некуда.</div>'+
+      '<div style="display:flex;gap:8px;margin-top:12px">'+
+      '<button class="btn gold" style="flex:1" onclick="modCancel();openAgentManager()">Выбрать или создать агента →</button></div>';
+    el("modBack").classList.add("open");
+    var ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
+    _modCb=null;
+    return;
+  }
   _brainRender(r);
 }
 async function brainAdd(op){
@@ -4581,7 +4598,47 @@ async function renderAutomations(){
         <span class="tile-open">${WLANG==='en'?'Open →':'Открыть →'}</span>
       </div>
     </div>`;
-  }).join("") + '</div>';
+  }).join("") + '</div>' +
+    '<div id="wz_archive_row" style="margin-top:14px;font-size:12.5px;color:var(--silver)"></div>';
+  _wzArchiveRow();
+}
+// Удаление обещает «можно вернуть» — значит возврат должен быть в интерфейсе, а не в терминале.
+async function _wzArchiveRow(){
+  var box=el('wz_archive_row'); if(!box) return;
+  var d; try{ d=await jget('/x/archive'); }catch(e){ d=null; }
+  var n=((d&&d.archived)||[]).length;
+  if(!n){ box.innerHTML=''; return; }
+  box.innerHTML='🗄 В архиве: <b>'+n+'</b> — <a href="#" onclick="openArchive();return false" style="color:#c60">посмотреть и вернуть</a>';
+}
+async function openArchive(){
+  var d; try{ d=await jget('/x/archive'); }catch(e){ d=null; }
+  var items=(d&&d.archived)||[];
+  var rows=items.length?items.map(function(x,i){
+    var when=esc(String(x.archived_at||'').slice(0,10));
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--cream-dark)">'+
+      '<div style="flex:1;min-width:0"><div style="font:600 13.5px var(--sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.name)+'</div>'+
+      '<div style="font-size:11.5px;color:var(--silver)">убрана '+when+(x.runs?' · прогонов '+x.runs:'')+(x.built?'':' · не достроена')+'</div></div>'+
+      (x.conflict
+        ? '<span style="font-size:11.5px;color:#C57E33">такой процесс уже в списке</span>'
+        : '<button class="btn ghost sm" onclick="restoreArchived(\''+esc(x.session_id)+'\')">Вернуть</button>')+
+      '</div>';
+  }).join(''):'<div style="color:var(--silver);font-size:13px;padding:10px 0">Архив пуст.</div>';
+  resetModInput();
+  el("modTitle").textContent="🗄 Архив автоматизаций";
+  el("modHint").innerHTML="Удалённые процессы не пропадают. Возвращаются <b>на паузе</b> — расписание и приём входящих не включаются сами, чтобы вернувшийся процесс не начал слать письма клиенту без вашего ведома.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden"><div style="max-height:340px;overflow-y:auto">'+rows+'</div>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
+  _modCb=null;
+}
+async function restoreArchived(sid){
+  busy('Возвращаю из архива…');
+  var r=await jpost('/x/archive_restore',{session_id:sid});
+  busyOff();
+  if(!r||r.status!=='success'){ toast('Не вернулось: '+((r&&r.message)||''),'err'); return; }
+  modCancel();
+  toast('✓ Вернулась — '+(r.note||'на паузе'),'ok');
+  await renderAutomations();
 }
 function _mdInline(s){
   // экранируем И кавычку: URL из недоверенных источников идёт в href="$2" (иначе атрибут-инъекция/XSS)
