@@ -285,7 +285,7 @@ include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
-def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "") -> dict:
+def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "") -> dict:
     """Автосгенерированный оркестратор процесса. Гоняет контрактную цепочку стадий
     (input_path -> output_path) на исходном файле, чистит заголовки, возвращает сводку
     и рисует отчёт .md + .xlsx. Параметры: source_file, work_dir, api_token, target
@@ -365,8 +365,38 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
                 Path(path).write_text(json.dumps(cl, ensure_ascii=False, default=str), encoding="utf-8")
 
     prev, last_out = source_file, None
+    # A2 ЧЕКПОИНТЫ: длинный процесс не переигрывается с нуля. Чекпоинт привязан к run_id ЭТОГО прогона —
+    # stage-файлы ЧУЖОГО/прошлого прогона не реюзаются НИКОГДА (урок data-integrity: упавшая стадия при
+    # живом старом файле давала вчерашний отчёт как сегодняшний).
+    import uuid as _uuid
+    _ckpt_p = wd / "checkpoint.json"
+    _resume_from = 0
+    if not run_id or run_id.startswith("{{"):
+        run_id = _uuid.uuid4().hex[:12]
+        _ck = {"run_id": run_id, "done": []}
+    else:
+        try:
+            _ck = json.loads(_ckpt_p.read_text(encoding="utf-8"))
+        except Exception:
+            _ck = {}
+        if _ck.get("run_id") != run_id:
+            _ck = {"run_id": run_id, "done": []}   # чекпоинт от другого прогона — начинаем с нуля
+        else:
+            _done = []
+            for _d in (_ck.get("done") or []):     # доверяем только подряд идущим стадиям с живым файлом
+                _op = Path(_d.get("out", ""))
+                if _op.exists() and _op.stat().st_size > 0:
+                    _done.append(_d)
+                else:
+                    break
+            _ck["done"] = _done
+            _resume_from = len(_done)
+            if _done:
+                prev = last_out = _done[-1]["out"]
     for i, name in enumerate(STAGES):
         outp = str(wd / ("stage%%d.json" %% i))
+        if i < _resume_from:
+            continue   # стадия уже успешно отработала В ЭТОМ прогоне — не переигрываем
         try:
             Path(outp).unlink()   # не тащим stage-файл прошлого прогона: упавшая стадия иначе «успешна» на чужих данных
         except OSError:
@@ -393,8 +423,14 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
         if ok and i == 0:
             clean_file(outp)
         if not ok or not Path(outp).exists():   # ok теперь честный (файл прошлого прогона удалён) — провал стадии не маскируется
-            return {"status": "error", "failed_stage": name, "detail": str(res)[:200]}
+            return {"status": "error", "failed_stage": name, "detail": str(res)[:200],
+                    "run_id": run_id, "resumable": True, "done_stages": _resume_from}
         prev, last_out = outp, outp
+        _ck["done"].append({"i": i, "name": name, "out": outp})   # A2: стадия зачтена в ЭТОМ прогоне
+        try:
+            _ckpt_p.write_text(json.dumps(_ck, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     summary = {}
     try:
