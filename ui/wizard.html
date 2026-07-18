@@ -231,6 +231,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   </div>
   <div class="spacer"></div>
   <button class="btn ghost" id="agentBadge" onclick="openAgentManager()" title="Для какого агента строим (концепты, правила, память — в его мозг)">🤖 Агент…</button>
+  <button class="btn ghost" id="brainBtn" onclick="openBrain()" title="Мозг агента: знания, правила, голос, умения" style="display:none">🧠 Мозг</button>
   <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
   <button class="btn ghost" id="wNewSess" onclick="newSession()">+ Новая сессия</button>
   <button class="btn ghost" id="wLangBtn" onclick="toggleWLang()" title="Language / Язык">EN</button>
@@ -597,6 +598,8 @@ async function refreshAgentBadge(){
   const cur=(_agents.agents||[]).find(a=>a.id===_agents.current);
   b.textContent = cur ? ("🤖 "+cur.name) : "🤖 Выбрать агента";
   b.style.color = cur ? "" : "#a97e35"; b.style.fontWeight = cur ? "" : "700";
+  // прямой вход в Мозг из шапки — иначе он закопан на два уровня (обратная связь Анвара)
+  const bb=el("brainBtn"); if(bb) bb.style.display = cur ? "" : "none";
 }
 async function openAgentManager(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){}

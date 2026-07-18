@@ -7,6 +7,7 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
     обратно в KV и переносит next_due. Вешается на cron always-on устройства.
     Параметры: api_token (или из bridge-конфига устройства)."""
     import json
+    import re
     import requests
     from datetime import datetime, timezone, timedelta
     from pathlib import Path
@@ -694,5 +695,110 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
     except Exception:
         pass
 
+    # ── A4: авто-обновление ЗНАНИЙ агентов из живых источников (мозг не устаревает) ──────────────
+    # Глобальный индекс knowsrc:__all__ ведёт мост (готовые KV-ключи — тику не считать namespace).
+    # Для каждого созревшего источника: verify живых строк → Qwen извлекает факты → СТАРЫЕ факты
+    # этого источника удаляем по id и пишем свежие (замена, не накопление) → двигаем next_due.
+    knowledge_refreshed = []
+    try:
+        _all_raw = kv("get", {"key": "knowsrc:__all__"}).get("value")
+        _all = json.loads(_all_raw) if _all_raw else []
+    except Exception:
+        _all = []
+    for _ent in (_all if isinstance(_all, list) else [])[:20]:
+        try:
+            if not isinstance(_ent, dict) or not _ent.get("key"):
+                continue
+            _rec_raw = kv("get", {"key": _ent["key"]}).get("value")
+            _rec = json.loads(_rec_raw) if _rec_raw else None
+            if not isinstance(_rec, dict):
+                continue
+            _nd = _rec.get("next_due")
+            if _nd:
+                try:
+                    if now() < datetime.fromisoformat(str(_nd).replace("Z", "+00:00")):
+                        continue   # ещё не созрел
+                except Exception:
+                    pass
+            _aid, _gid = _rec.get("agent_id"), _rec.get("gen_id")
+            _llm = _rec.get("llm_agent")
+            if not (_aid and _gid and _llm):
+                continue
+            # СТОЛБИМ СЛОТ до тяжёлой работы (как у расписаний): наложенный тик прочитает уже сдвинутый
+            # next_due и пропустит. Иначе два тика делают обновление параллельно и факты ДВОЯТСЯ
+            # (проверено вживую: в мозге 38 концептов при 19 отслеживаемых — 19 осиротело).
+            try:
+                _ivl0 = int(_rec.get("interval_hours", 24) or 24)
+                _rec["next_due"] = (now() + timedelta(hours=max(1, _ivl0))).isoformat()
+                kv("set", {"key": _ent["key"], "value": json.dumps(_rec, ensure_ascii=False),
+                           "description": "knowledge source"})
+            except Exception:
+                pass
+            # 1) свежие живые строки из генеративного источника
+            _vr = requests.post(base + "/api/expert/run", headers=headers, json={
+                "expert_name": "wz_source_gen_run", "global": True, **({"target": _rec["target"]} if _rec.get("target") else {}),
+                "params": {"api_token": api_token, "client": _rec.get("client", "default"), "mode": "verify",
+                           "gen_id": _gid, "api_base": base, "limit": 25}}, timeout=180).json()
+            # результат эксперта приходит ПИТОНОВСКИМ repr (канон платформы) → только json.loads мало,
+            # нужен ast-фолбэк; в тике для этого уже есть _j (иначе источник ложно «молчит»)
+            _vo = _j(_vr.get("result", _vr), {}) if isinstance(_vr.get("result", _vr), str) else _vr.get("result", _vr)
+            _rows = (_vo or {}).get("preview") if isinstance(_vo, dict) else None
+            if not (isinstance(_vo, dict) and _vo.get("ok") and _rows):
+                knowledge_refreshed.append({"gen_id": _gid, "status": "source_silent"})
+                continue
+            # 2) Qwen дробит живые строки на атомарные факты
+            _pr = ("Живые данные из источника («" + str(_rec.get("description", ""))[:120] + "»):\n" +
+                   json.dumps(_rows[:25], ensure_ascii=False)[:3500] +
+                   "\n\nИзвлеки АТОМАРНЫЕ факты для памяти агента (конкретные значения из ДАННЫХ, каждый "
+                   'самодостаточен). Верни JSON {"facts":[...]}. Только из данных, без выдумок, 3-20 штук.')
+            _ar = requests.post(base + "/api/agent/run", headers=headers, json={
+                "agent_id": _llm, "input": _pr, "store": False, "run_timeout": 90}, timeout=140).json()
+            _txt = ""
+            for _it in (_ar or {}).get("output", []):
+                if isinstance(_it, dict) and _it.get("type") == "message":
+                    for _c in _it.get("content", []):
+                        if isinstance(_c, dict) and _c.get("type") == "output_text":
+                            _txt += _c.get("text", "")
+            _txt = _txt or (_ar or {}).get("output_text", "")
+            _m = re.search(r"\{.*\}", _txt, re.S)
+            _facts = []
+            if _m:
+                try:
+                    _facts = [str(f).strip() for f in (json.loads(_m.group(0)).get("facts") or []) if str(f).strip()][:20]
+                except Exception:
+                    _facts = []
+            if not _facts:
+                knowledge_refreshed.append({"gen_id": _gid, "status": "no_facts"})
+                continue
+            # 3) замена: старые факты этого источника — прочь, свежие — в мозг АГЕНТА (X-Agent-Id override)
+            _ah = dict(headers)
+            _ah["X-Agent-Id"] = _aid
+            for _cid in (_rec.get("ids") or []):
+                try:
+                    requests.post(base + "/api/concept/delete", headers=_ah,
+                                  json={"concept_id": _cid}, timeout=30)
+                except Exception:
+                    pass
+            _new_ids = []
+            for _f in _facts:
+                try:
+                    _cr = requests.post(base + "/api/concept/add", headers=_ah,
+                                        json={"text": _f[:400]}, timeout=30).json()
+                    if isinstance(_cr, dict) and _cr.get("id"):
+                        _new_ids.append(_cr["id"])
+                except Exception:
+                    pass
+            _ivl = int(_rec.get("interval_hours", 24) or 24)
+            _rec["ids"] = _new_ids
+            _rec["refreshed_at"] = now().isoformat()
+            _rec["next_due"] = (now() + timedelta(hours=max(1, _ivl))).isoformat()
+            kv("set", {"key": _ent["key"], "value": json.dumps(_rec, ensure_ascii=False),
+                       "description": "knowledge source"})
+            knowledge_refreshed.append({"gen_id": _gid, "status": "refreshed", "facts": len(_new_ids)})
+        except Exception as _ke:
+            knowledge_refreshed.append({"gen_id": (_ent or {}).get("gen_id"), "status": "error",
+                                        "err": str(_ke)[:120]})
+
     return {"status": "success", "checked": checked, "fired": fired,
-            "inbound": inbound_fired, "inbound_dbg": _dbg, "tick_at": now().isoformat()}
+            "inbound": inbound_fired, "inbound_dbg": _dbg,
+            "knowledge": knowledge_refreshed, "tick_at": now().isoformat()}
