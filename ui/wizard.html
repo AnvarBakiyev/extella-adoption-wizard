@@ -3649,6 +3649,7 @@ function _wzCabRender(){
         '<div style="min-width:0;flex:1">'+
           '<div style="font:700 21px/1.25 var(--sans);color:#fff;text-shadow:0 1px 5px rgba(0,0,0,.32)">'+nm+'</div>'+
           (tag?'<div style="font-size:13px;color:rgba(255,255,255,.94);margin-top:4px;text-shadow:0 1px 4px rgba(0,0,0,.3)">'+esc(tag)+'</div>':'')+
+          (_wzArchTitle(a)?'<div style="display:inline-block;margin-top:6px;padding:2px 10px;border-radius:20px;background:rgba(255,255,255,.2);font:600 11px var(--sans);color:#fff">'+esc(_wzArchTitle(a))+'</div>':'')+
           _wzLifeRow(a)+
           '<div style="margin-top:6px;font:500 10px var(--mono,monospace);color:rgba(255,255,255,.55)">'+esc(a.orchestrator||a.session_id||'')+'</div>'+
         '</div>'+
@@ -3992,6 +3993,38 @@ function _wzSourceBanner(a, i){
     '<div style="flex:1;min-width:220px;font-size:13px;color:#7a5b1a">⚠ <b>Данные загружаются вручную файлом.</b> Чтобы процесс работал сам 24/7 — подключите живой источник (своё API / CRM / рекламный кабинет).</div>'+
     '<button class="btn gold sm" style="font-size:12.5px;white-space:nowrap" onclick="sourceProcess('+i+')">✨ Подключить источник</button></div>';
 }
+// ── ЖАНРЫ ПРОЦЕССОВ ───────────────────────────────────────────────────────────
+// Жанр (архетип) определяется ещё при проектировании. До сих пор кабина его игнорировала:
+// «12 позиций · 0 сумма» показывалось и отчёту, и мониторингу, и дайджесту.
+// Разница существенная и НЕ косметическая:
+//   • у мониторинга ноль срабатываний — ХОРОШАЯ новость, у отчёта ноль позиций — тревога;
+//   • у дайджеста ценность в тексте находок, а не в числах — бриф должен идти выше цифр;
+//   • «позиций» для потока документов и обращений — чужое слово.
+// Данные мы НЕ выдумываем: подписываем и трактуем ровно то, что вернул прогон.
+var ARCH_UI={
+  recurring_report:    {noun:'позиций',   zeroGood:false, briefFirst:false,
+                        nudge:'Отчёт готов. Чтобы приходил сам — поставьте расписание.'},
+  document_processing: {noun:'документов',zeroGood:false, briefFirst:false,
+                        nudge:'Документы обработаны. Проверьте получателей, чтобы результат уходил сразу.'},
+  monitoring_alerts:   {noun:'срабатываний', zeroGood:true, briefFirst:false,
+                        nudge:'Мониторинг работает в фоне. Подключите оповещения, чтобы узнавать сразу.'},
+  research_digest:     {noun:'находок',   zeroGood:false, briefFirst:true,
+                        nudge:'Главное — в брифе. Настройте, кому его отправлять.'},
+  flow_quality_control:{noun:'проверено', zeroGood:false, briefFirst:false,
+                        nudge:'Контроль отработал. Правила отбора — во вкладке «Настройка».'},
+  routing_triage:      {noun:'обращений', zeroGood:false, briefFirst:false,
+                        nudge:'Поток разобран. Проверьте, куда уходят результаты.'},
+  lead_pipeline:       {noun:'лидов',     zeroGood:false, briefFirst:false,
+                        nudge:'Работа с лидами — на вкладке «Работа».'}
+};
+function _wzArch(a){ return ARCH_UI[String((a&&a.archetype)||'')] || {noun:'позиций', zeroGood:false, briefFirst:false, nudge:''}; }
+function _wzArchTitle(a){
+  var m={recurring_report:'Регулярный отчёт', document_processing:'Поток документов',
+         monitoring_alerts:'Мониторинг', research_digest:'Исследование и дайджест',
+         flow_quality_control:'Контроль качества', routing_triage:'Маршрутизация потока',
+         lead_pipeline:'Работа с лидами'};
+  return m[String((a&&a.archetype)||'')]||'';
+}
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
   var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
@@ -4001,17 +4034,33 @@ function _wzCabLaunch(a){
       _wzReadyChip(a.source&&a.source.kind?'ok':(a.panel_url?'ok':'idle'), _srcLabel)
     + _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Получатели: не заданы')
     + _wzReadyChip(a.schedule&&a.schedule.period?'ok':'idle', a.schedule&&a.schedule.period?('Расписание: '+a.schedule.period):'Запуск вручную');
-  var lr=a.last_run;
+  var lr=a.last_run, AR=_wzArch(a);
+  // Главное число подписываем ЖАНРОМ и трактуем по жанру. Сумму показываем только там,
+  // где она осмысленна и не нулевая — «0 сумма» крупным шрифтом читалась как сбой,
+  // хотя у контроля бюджетов суммы в результате просто нет.
+  var cnt=lr&&lr.total_count!=null?lr.total_count:null, sum=lr&&lr.total_sum!=null?lr.total_sum:null;
+  // Жанр решает, КАК ЧИТАТЬ результат, но не имеет права прятать настоящее число:
+  // флаг «у этого жанра сумм не бывает» скрыл у автосверки реальные 1 055 700.
+  // Правило простое и честное: есть ненулевая сумма — показываем, ноль/нет — не шумим.
+  var showSum = sum!=null && Number(sum)!==0;
+  var zeroNote = (cnt===0)
+      ? (AR.zeroGood
+         ? '<div style="font-size:13px;color:#2f9e56;margin-top:6px">Ничего не сработало — это хорошая новость: отклонений нет.</div>'
+         : '<div style="font-size:13px;color:#C57E33;margin-top:6px">Пусто. Стоит проверить источник данных и правила отбора.</div>')
+      : '';
+  var nums = (cnt!=null||showSum)
+      ? '<div style="display:flex;gap:24px">'+
+        (cnt!=null?'<div><div style="font:700 24px var(--sans)'+(cnt===0&&AR.zeroGood?';color:#2f9e56':'')+'">'+fmt(cnt)+'</div><div style="font-size:12px;color:var(--silver)">'+esc(AR.noun)+'</div></div>':'')+
+        (showSum?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
+        '</div>'+zeroNote
+      : '<div style="font-size:13px;color:var(--ink-soft)">'+esc((lr&&(lr.summary||lr.status))||'выполнено')+'</div>';
+  var digestBox='<div id="wz_digest_box" style="margin-top:10px"></div>';
   var result = lr ? _wzCard(
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+_wzH('Последний результат')+'<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
-      ((lr.total_count!=null||lr.total_sum!=null)?
-        '<div style="display:flex;gap:24px">'+
-        (lr.total_count!=null?'<div><div style="font:700 24px var(--sans)">'+fmt(lr.total_count)+'</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>':'')+
-        (lr.total_sum!=null?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
-        '</div>'
-        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
-      (lr.report_xlsx?'<div style="margin-top:8px"><a href="#" onclick="dlReport(\''+encodeURIComponent(lr.report_xlsx).replace(/\x27/g,"%27")+'\');return false" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')+
-      '<div id="wz_digest_box" style="margin-top:10px"></div>'
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+_wzH('Последний результат')+
+      '<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
+      // у дайджеста ценность в тексте, а не в цифрах → бриф выше чисел
+      (AR.briefFirst ? digestBox+nums : nums+digestBox)+
+      (lr.report_xlsx?'<div style="margin-top:8px"><a href="#" onclick="dlReport(\''+encodeURIComponent(lr.report_xlsx).replace(/\x27/g,"%27")+'\');return false" style="color:#c60;font-size:13px">скачать отчёт</a></div>':'')
     ) : _wzCard('<div style="color:var(--silver);font-size:13px">Ещё не запускалось. Нажмите «Запустить сейчас».</div>');
   if(lr) setTimeout(function(){ _wzDigestLoad(a.session_id); }, 40);   // C3: подтянуть сохранённый дайджест
   var panelCard = a.panel_url ? _wzCard(
@@ -4042,10 +4091,18 @@ function _wzCabLaunch(a){
       + _wzCard(_wzH('Готовность')+'<div>'+ready+'</div>')
       + execCard + _wzCabHow(a);
   }
+  // Подсказка «что дальше» — жанровая и УМЕСТНАЯ: советовать расписание тому, у кого оно
+  // уже стоит, значит шуметь. Показываем только пока обвязка не достроена.
+  var _needSched = !(a.schedule&&a.schedule.period) && !a.inbound;
+  var _needRcpt = !((a.recipients||[]).length);
+  var nudge = (AR.nudge && (_needSched || _needRcpt))
+      ? '<div style="font-size:12.5px;color:var(--ink-soft);margin-top:12px;padding:9px 12px;background:var(--cream);border-radius:8px">'+esc(AR.nudge)+
+        ' <a href="#" onclick="wzCabTab(\'settings\');return false" style="color:#c60">Настроить →</a></div>' : '';
   return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
       '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button>'+
       '<button class="btn ghost" style="margin-left:8px" onclick="configureProcess('+i+')">⚙ Изменить словами</button></div>'+
+      nudge+
       '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
     + result
     + execCard
