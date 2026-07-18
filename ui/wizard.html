@@ -4295,8 +4295,27 @@ function _wzCabSettings(a){
   var recipientsCard = _wzCard(_wzH('Кому отправлять результат')+recRows+
      '<button class="btn ghost sm" onclick="addRecipient('+_wzCabI+')">+ Добавить получателя</button>'+
      '<div id="wz_recadd-'+_wzCabI+'"></div>');
-  var srcCard = _wzCard(_wzH('Источник данных')+
-     '<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">'+((a.source&&a.source.kind)? esc(_srcName(a.source.kind))+' <span style="color:#2f9e56">✓</span>' : '<span style="color:var(--silver)">файл загружается вручную при запуске</span>')+'</div>'+
+  // Раньше карточка писала только «Google Sheets ✓» — владелец не мог проверить,
+  // ЧТО именно привязано (вопрос Анвара: «я не выбирал файл, где он?»).
+  // Теперь называем таблицу, доступ, число строк и колонки, и даём ссылку открыть.
+  var _si=(a.source||{}), _id=_si.identity||{};
+  var srcBody;
+  if(_si.kind){
+    var bits=[];
+    if(_id.url) bits.push('<a href="'+esc(_id.url)+'" target="_blank" rel="noopener noreferrer" style="color:#c60">открыть таблицу ↗</a>');
+    if(_id.access) bits.push('доступ: '+esc(_id.access));
+    if(_si.rows!=null) bits.push('строк при привязке: '+esc(String(_si.rows)));
+    var cols=(_si.schema||[]);
+    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:6px">'+esc(_srcName(_si.kind))+' <span style="color:#2f9e56">✓</span></div>'+
+      (_id.spreadsheet_id?'<div style="font-size:12px;color:var(--silver);margin-bottom:4px">таблица <code>'+esc(_id.spreadsheet_id)+'</code>'+(_id.gid?' · лист '+esc(_id.gid):'')+(_id.range?' · '+esc(_id.range):'')+'</div>':'')+
+      (bits.length?'<div style="font-size:12px;color:var(--silver);margin-bottom:4px">'+bits.join(' · ')+'</div>':'')+
+      (cols.length
+        ? '<div style="font-size:12px;color:var(--silver);margin-bottom:10px">колонки: '+esc(cols.slice(0,10).join(', '))+(cols.length>10?' …':'')+'</div>'
+        : '<div style="font-size:12.5px;color:#C57E33;margin-bottom:10px">⚠ структура источника неизвестна — процесс не заметит, если колонки изменятся. Привяжите источник заново.</div>');
+  } else {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px"><span style="color:var(--silver)">файл загружается вручную при запуске</span></div>';
+  }
+  var srcCard = _wzCard(_wzH('Источник данных')+srcBody+
      '<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">'+((a.source&&a.source.kind)?'Сменить источник':'Привязать источник')+'</button> '+
      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>');
   // Мультитаргет T2: требования к устройству — preflight не пустит прогон, если они не выполнены

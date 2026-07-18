@@ -132,7 +132,13 @@ def wz_source_gsheets(api_token: str = "", client: str = "default", mode: str = 
             return {"ok": False, "err": "не удалось записать meta источника в стор"}
         for i in range(len(parts), old_n):
             requests.post(api_base.rstrip("/") + "/api/kv/remove", headers=headers, json={"key": base + ":" + str(i)}, timeout=25)
+        # columns + identity ОБЯЗАТЕЛЬНЫ: без колонок мост не умеет ловить дрифт схемы,
+        # без identity владелец не видит, ЧТО именно привязали (жалоба Анвара: «а что он привязал?»).
         return {"ok": True, "rows": max(0, len(vals) - 1), "source_key": base, "basename": basename,
+                "columns": [str(c).strip() for c in (vals[0] if vals else []) if str(c).strip()],
+                "identity": {"kind": "Google Sheets", "spreadsheet_id": sheet_id, "gid": gid,
+                             "url": "https://docs.google.com/spreadsheets/d/" + sheet_id + ("/edit#gid=" + gid if gid else ""),
+                             "access": "открыта по ссылке"},
                 "bytes": len(raw), "host": socket.gethostname(), "source": "gsheets", "access": "public-link"}
 
     client_email = saj.get("client_email", "")
@@ -241,7 +247,12 @@ def wz_source_gsheets(api_token: str = "", client: str = "default", mode: str = 
             return {"ok": False, "err": "не удалось записать meta источника в стор"}
         for i in range(len(parts), old_n):   # удалить хвост старых чанков
             requests.post(api_base.rstrip("/") + "/api/kv/remove", headers=headers, json={"key": base + ":" + str(i)}, timeout=25)
+        # та же обязанность, что и у ветки public-link: колонки для контроля дрифта + чем именно привязались
         return {"ok": True, "rows": max(0, len(vals) - 1), "source_key": base, "basename": basename,
+                "columns": [str(c).strip() for c in (vals[0] if vals else []) if str(c).strip()],
+                "identity": {"kind": "Google Sheets", "spreadsheet_id": sheet_id, "range": a1,
+                             "url": "https://docs.google.com/spreadsheets/d/" + sheet_id,
+                             "access": "сервис-аккаунт " + str(client_email)[:40]},
                 "bytes": len(raw), "host": socket.gethostname(), "source": "gsheets"}
     except Exception as e:
         return {"ok": False, "err": "sheets: " + str(e)[:120]}
