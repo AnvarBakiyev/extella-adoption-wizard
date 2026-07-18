@@ -3809,7 +3809,18 @@ async function cabApply(){
     (function pollB(){
       jget('/x/build_progress?build_id='+encodeURIComponent(bid)).then(function(p){
         var pr=(p&&p.progress)||{};
-        if(pr.status==='running' && Date.now()-t0<8*60*1000){ setTimeout(pollB,4000); return; }
+        if(pr.status==='running' && Date.now()-t0<8*60*1000){
+          // Показываем ЖИВОЙ прогресс: система знает, что сделано 5 шагов из 7, и обязана это сказать.
+          // Немое «стройка идёт…» заставляет владельца гадать, живая она вообще или зависла.
+          var sg=(pr.stages||[]), done=sg.filter(function(s){return s.status==='success';}).length;
+          var cur=(sg.filter(function(s){return s.status==='running';})[0]||{}).title||'';
+          var mins=Math.floor((Date.now()-t0)/60000), secs=Math.floor(((Date.now()-t0)%60000)/1000);
+          var bx=el('cabchat_build');
+          if(bx) bx.innerHTML='<span class="spin"></span> стройка идёт — шаг '+(done+1)+' из '+Math.max(sg.length,done+1)+
+            (cur?': '+esc(cur.replace(/^Собираю и проверяю:\s*/,'')):'')+
+            ' <span style="color:var(--silver)">· '+(mins?mins+' мин ':'')+secs+' с</span>';
+          setTimeout(pollB,4000); return;
+        }
         window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_build')<0;});
         var wb=el('cabchat_build'); if(wb) wb.remove();
         if(pr.status==='error'){

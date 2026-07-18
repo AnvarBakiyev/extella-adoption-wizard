@@ -9,6 +9,17 @@ set -u
 cd "$(dirname "$0")/.."
 fail=0
 
+# Перезапуск моста ОБРЫВАЕТ живые стройки (треды умирают, F1 помечает их orphaned).
+# 18.07 так была убита стройка Анвара на 6-м шаге из 7 при выкатке мелкой правки UI.
+echo "→ идут ли стройки прямо сейчас"
+if _busy=$(python3 "$(dirname "$0")/check_builds_busy.py"); then
+  echo "   ✓ живых строек нет"
+else
+  echo "   ✗ ИДЁТ СТРОЙКА: $_busy"
+  echo "     Перезапуск моста её оборвёт — дождитесь конца."
+  fail=1
+fi
+
 echo "→ python-модули моста"
 for f in ui/*.py; do
   python3 -c "import ast,sys; ast.parse(open('$f',encoding='utf-8').read())" \
