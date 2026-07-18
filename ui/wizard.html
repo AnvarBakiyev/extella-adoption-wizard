@@ -4038,6 +4038,8 @@ var ARCH_UI={
 };
 function _wzArch(a){ return ARCH_UI[String((a&&a.archetype)||'')] || {noun:['позиция','позиции','позиций'], zeroGood:false, briefFirst:false, nudge:''}; }
 function _wzPlural(n, forms){
+  // страховка: массив форм НИКОГДА не должен попасть в вёрстку целиком
+  // (в кабине один вызов остался без склонения и печатал «позиция,позиции,позиций»)
   if(!Array.isArray(forms)) return String(forms||'');
   var k=Math.abs(Number(n))%100, k1=k%10;
   if(k>10&&k<20) return forms[2];
@@ -4077,7 +4079,7 @@ function _wzCabLaunch(a){
       : '';
   var nums = (cnt!=null||showSum)
       ? '<div style="display:flex;gap:24px">'+
-        (cnt!=null?'<div><div style="font:700 24px var(--sans)'+(cnt===0&&AR.zeroGood?';color:#2f9e56':'')+'">'+fmt(cnt)+'</div><div style="font-size:12px;color:var(--silver)">'+esc(AR.noun)+'</div></div>':'')+
+        (cnt!=null?'<div><div style="font:700 24px var(--sans)'+(cnt===0&&AR.zeroGood?';color:#2f9e56':'')+'">'+fmt(cnt)+'</div><div style="font-size:12px;color:var(--silver)">'+esc(_wzPlural(cnt, AR.noun))+'</div></div>':'')+
         (showSum?'<div><div style="font:700 24px var(--sans);color:var(--gold)">'+fmt(sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+
         '</div>'+zeroNote
       : '<div style="font-size:13px;color:var(--ink-soft)">'+esc((lr&&(lr.summary||lr.status))||'выполнено')+'</div>';
