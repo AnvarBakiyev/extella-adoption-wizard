@@ -4264,6 +4264,55 @@ async function rollbackProcess(i){
   })();
 }
 // ── вкладка «Правила и поля» (§7bis ступень 2): бизнес-правила словами + факты-поля per-automation ──
+// AC-05 АДАПТЕР: клиент переименовал колонки в выгрузке. Раньше это был тупик — «прогон остановлен,
+// разбирайтесь». Теперь показываем предложенное сопоставление построчно и даём подтвердить одним
+// действием. Подтверждает ЧЕЛОВЕК: автоприменение означало бы, что система сама решит, что «Сумма»
+// это «Скидка», и никто об этом не узнает.
+var _WZADAPT={};
+function _wzDriftDialog(a, r){
+  var prop=r.adapter_proposal||{}, keys=Object.keys(prop);
+  if(!keys.length){
+    ask("⚠ Источник изменил структуру",
+        (r.message||"колонки изменились")+"\n\nПрогон остановлен, чтобы не считать по чужой схеме.","",function(){});
+    return;
+  }
+  _WZADAPT[a.session_id]={map:prop, columns:r.columns_now||[]};
+  var rows=keys.map(function(k){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--cream-dark)">'+
+      '<code style="font-size:12px;flex:1">'+esc(k)+'</code><span style="color:var(--silver)">→</span>'+
+      '<code style="font-size:12px;flex:1;color:var(--nav)">'+esc(prop[k])+'</code></div>';
+  }).join('');
+  var un=(r.adapter_unmatched||[]);
+  resetModInput();
+  el("modTitle").textContent="Подстроить процесс под новую выгрузку?";
+  el("modHint").innerHTML=esc(r.message||'');
+  el("modInput").outerHTML='<input id="modInput" type="hidden">'+
+    '<div style="font-size:12px;color:var(--silver);margin:10px 0 2px">Колонка выгрузки → поле процесса</div>'+rows+
+    (un.length?'<div style="font-size:12px;color:#C57E33;margin-top:8px">Без пары остались: '+esc(un.join(', '))+
+               ' — эти данные процесс использовать не будет.</div>':'')+
+    '<div style="font-size:12px;color:var(--silver);margin-top:10px">Проверьте пары глазами: ошибка здесь означает, что процесс будет считать не то поле.</div>'+
+    '<div style="display:flex;gap:8px;margin-top:12px">'+
+    '<button class="btn gold" style="flex:1" onclick="_wzAdapterGo(\''+esc(a.session_id)+'\')">Подтвердить и запустить</button>'+
+    '<button class="btn ghost" style="flex:0 0 40%" onclick="modCancel()">Не сейчас</button></div>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
+  _modCb=null;
+}
+async function _wzAdapterGo(sid){
+  modCancel();
+  var a=(AUTOS||[]).filter(function(x){return x.session_id===sid;})[0];
+  if(a) await _wzAdapterConfirm(a);
+}
+async function _wzAdapterConfirm(a){
+  var st=_WZADAPT[a.session_id]; if(!st) return;
+  busy('Сохраняю адаптер…');
+  var r=await jpost('/x/adapter_confirm', {sid:a.session_id, map:st.map, columns:st.columns});
+  busyOff();
+  if(!r||r.status!=='success'){ toast('Адаптер не сохранился: '+((r&&r.message)||''),'err'); return; }
+  if(r.supported===false){ toast('Адаптер сохранён (v'+r.v+'), но применится после пересборки процесса','ok'); return; }
+  toast('✓ Адаптер v'+r.v+' подтверждён — запускаю процесс','ok');
+  runProcess(_wzCabI);
+}
 // A6: правила живут на платформе (переживают потерю этого Мака и видны с другого устройства),
 // файл сессии — только кэш. При открытии вкладки подтягиваем правду; молчит платформа —
 // работаем по кэшу и говорим об этом прямо, а не показываем пустой список.
@@ -4513,7 +4562,7 @@ async function runProcess(i){
   window._runningSid=a.session_id; _wzLifeRefresh();   // C1: шапка «⏳ прогон идёт», кнопки не дублируют запуск
   let r; try{ r = await jpost("/x/run_process",{session_id:a.session_id}); }
   finally{ window._runningSid=null; _wzLifeRefresh(); }
-  if(r.code==="source_drift"){ out.innerHTML=""; ask("⚠ Источник изменил структуру", (r.message||"колонки источника изменились")+"\n\nПрогон остановлен, чтобы не считать по чужой схеме.","",()=>{}); return; }
+  if(r.code==="source_drift"){ out.innerHTML=""; _wzDriftDialog(a, r); return; }
   if(r.status!=="success"){ out.innerHTML = `<span style="color:var(--bad)">${WLANG==='en'?'Error':'Ошибка'}: ${esc(r.message||"")}</span>`; return; }
   if(r.digest){
     out.innerHTML = `<span style="color:var(--ok,#2a2)">✓ ${WLANG==='en'?'Done — '+(r.findings||0)+' signals. Opening brief…':'Готово — '+(r.findings||0)+' находок. Открываю бриф…'}</span>`;

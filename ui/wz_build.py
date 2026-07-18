@@ -285,7 +285,7 @@ include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
-def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "") -> dict:
+def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "", adapter_json: str = "") -> dict:
     """Автосгенерированный оркестратор процесса. Гоняет контрактную цепочку стадий
     (input_path -> output_path) на исходном файле, чистит заголовки, возвращает сводку
     и рисует отчёт .md + .xlsx. Параметры: source_file, work_dir, api_token, target
@@ -371,6 +371,32 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
             cl = [r for r in data if not is_headerish(r)]
             if cl and len(cl) != len(data):
                 Path(path).write_text(json.dumps(cl, ensure_ascii=False, default=str), encoding="utf-8")
+
+    # AC-05 АДАПТЕР: клиент поменял выгрузку (переименовал/переставил колонки) — процесс не должен
+    # ломаться и, что хуже, считать по чужой схеме. Адаптер — явный именованный маппинг
+    # «колонка выгрузки → поле процесса», подтверждённый человеком. Применяем к ЗАГОЛОВКУ исходного
+    # файла до первой стадии: дальше весь процесс видит привычные ему поля.
+    _adapt = {}
+    if adapter_json and not adapter_json.startswith("{{"):
+        try:
+            _adapt = (json.loads(adapter_json) or {}).get("map") or {}
+        except Exception:
+            _adapt = {}
+    _adapt_applied = []
+    if _adapt and str(source_file).lower().endswith((".xlsx", ".xlsm")):
+        try:
+            import openpyxl
+            _wb = openpyxl.load_workbook(source_file)
+            _ws = _wb.active
+            for _c in next(_ws.iter_rows(min_row=1, max_row=1)):
+                _old = str(_c.value or "").strip()
+                if _old in _adapt and _adapt[_old] and _adapt[_old] != _old:
+                    _c.value = _adapt[_old]
+                    _adapt_applied.append(_old + " → " + _adapt[_old])
+            if _adapt_applied:
+                _wb.save(source_file)
+        except Exception as _ae:
+            return {"status": "error", "message": "адаптер источника не применился: " + str(_ae)[:150]}
 
     prev, last_out = source_file, None
     # A2 ЧЕКПОИНТЫ: длинный процесс не переигрывается с нуля. Чекпоинт привязан к run_id ЭТОГО прогона —
@@ -562,6 +588,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
                    " записей, а итоговая сводка пуста — процесс потерял данные, проверьте стадии")
 
     result = {"status": _status, "summary": summary, "total_count": tc, "total_sum": ts,
+              "adapter_applied": _adapt_applied,   # AC-05: видно в прогоне, что выгрузку подстроили под процесс
               "report_md": str(md), "report_xlsx": str(xlsx), "host": __import__("socket").gethostname()}
     if _reason:
         result["needs_review_reason"] = _reason
@@ -683,7 +710,7 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None,
                                                  "returns summary and renders .md/.xlsx report. Params: source_file, work_dir, api_token, target, source_key.",
                                   "code": code, "kwargs": {"source_file": "", "work_dir": work_dir, "rules_json": "", "fields_json": "",
                                                            "api_token": "", "api_base": "https://api.extella.ai",
-                                                           "target": "", "source_key": "", "placement_json": ""},
+                                                           "target": "", "source_key": "", "placement_json": "", "adapter_json": ""},
                                   "cspl": "fython", "global": True})
     ok = sv.get("status") == "success" or sv.get("id") is not None
     if want_code:
@@ -923,6 +950,7 @@ def _run_build(session_id, build_id):
             s.pop("building", None)   # стройка успешно завершилась — снять указатель идущей стройки
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
+                                               "adapter_contract": 1,   # AC-05: оркестратор умеет применять адаптер источника
                                                "params_contract": 1,   # F2: оркестратор+стадии принимают rules_json/fields_json
                                                "placement_contract": 1,   # A1: оркестратор понимает карту размещения (стадия→устройство)
                                                "orchestrator": orchestrator,
