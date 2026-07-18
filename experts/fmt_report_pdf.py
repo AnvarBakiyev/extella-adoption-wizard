@@ -3,7 +3,7 @@ include("import fpdf", ["extella-pip install fpdf2"])
 
 def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str = "",
                    output_path: str = "", brand_name: str = "", accent: str = "",
-                   footer_note: str = "") -> dict:
+                   footer_note: str = "", sections_json: str = "") -> dict:
     """Оформитель отчётов: записи + СПЕКА ВИДА → PDF. Чистый Python (fpdf2) — работает на любом
     устройстве с листенером, без системного Chrome: у клиента может не быть ни нашего хостинга,
     ни браузера (требование Анвара «способность зашита в эксперта»).
@@ -23,6 +23,15 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
     from datetime import datetime, timezone
     from fpdf import FPDF
 
+    # ── готовые разрезы: превью рисуется по числам ПОСЛЕДНЕГО ПРОГОНА, без повторного
+    #    похода за данными. Владелец видит свой отчёт, а не выдуманный образец. ──
+    ready = []
+    if sections_json and not sections_json.startswith("{{"):
+        try:
+            ready = [s for s in (json.loads(sections_json) or []) if isinstance(s, dict) and s.get("items")]
+        except Exception:
+            ready = []
+
     # ── записи: из файла стадии или строкой ──
     recs = []
     if records_json and not records_json.startswith("{{"):
@@ -36,11 +45,14 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
         except Exception:
             return {"status": "error", "message": "вход не читается как JSON: " + str(input_path)[:120]}
         recs = data if isinstance(data, list) else (data.get("records") or data.get("rows") or [])
-    if not isinstance(recs, list) or not recs:
-        return {"status": "error", "message": "нет записей для отчёта (ни records_json, ни input_path)"}
-    recs = [r for r in recs if isinstance(r, dict)]
-    if not recs:
-        return {"status": "error", "message": "записи не в формате объектов"}
+    if not ready:
+        if not isinstance(recs, list) or not recs:
+            return {"status": "error", "message": "нет данных для отчёта (ни records_json, ни input_path, ни sections_json)"}
+        recs = [r for r in recs if isinstance(r, dict)]
+        if not recs:
+            return {"status": "error", "message": "записи не в формате объектов"}
+    else:
+        recs = [r for r in (recs or []) if isinstance(r, dict)]
 
     spec = {}
     if spec_json and not spec_json.startswith("{{"):
@@ -53,7 +65,7 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
     brand_name = brand_name or style.get("brand_name") or ""
     footer_note = footer_note or style.get("footer") or ""
 
-    cols = list(recs[0].keys())
+    cols = list(recs[0].keys()) if recs else []
 
     def _num(v):
         try:
@@ -72,8 +84,8 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
                 cand.append((uniq, c))
         views = [{"group_by": c, "title": "По полю «" + c + "»"} for _, c in sorted(cand)[:3]]
 
-    sections = []
-    for v in views[:4]:
+    sections = list(ready)   # готовые разрезы имеют приоритет: это факты прошлого прогона
+    for v in ([] if ready else views[:4]):
         g = v["group_by"]
         agg = {}
         for r in recs:
@@ -89,7 +101,11 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
 
     # ── главное число ──
     hl = spec.get("headline") or {}
-    if str(hl.get("metric", "")) == "sum" and hl.get("field") in cols:
+    if ready and not recs:
+        _tot = spec.get("total")
+        headline = {"value": _tot if _tot is not None else sum(sum(s["items"].values()) for s in ready),
+                    "label": hl.get("label") or "записей\nв отчёте"}
+    elif str(hl.get("metric", "")) == "sum" and hl.get("field") in cols:
         tot = sum(_num(r.get(hl["field"])) or 0 for r in recs)
         headline = {"value": ("%.0f" % tot).replace(",", " "), "label": hl.get("label") or hl["field"]}
     else:
@@ -220,5 +236,5 @@ def fmt_report_pdf(input_path: str = "", records_json: str = "", spec_json: str 
     except Exception as e:
         return {"status": "error", "message": "PDF не сохранился: " + str(e)[:140]}
     return {"status": "success", "path": out, "bytes": os.path.getsize(out),
-            "records": len(recs), "sections": [s["title"] for s in sections],
+            "records": len(recs), "preview": bool(ready and not recs), "sections": [s["title"] for s in sections],
             "font": os.path.basename(reg)}

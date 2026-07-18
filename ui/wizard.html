@@ -3733,6 +3733,7 @@ async function cabChat(){
       : '';
     _cabPush(_cabA('Отчёт будет выглядеть так:'+ch+rj+flHtml+note+
       ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px;margin-top:6px" onclick="cabReportApply()">Применить к отчёту</button>'+
+      ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabReportPreview(this)">👁 Посмотреть документ</button>'+
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
     return;
   }
@@ -3749,6 +3750,21 @@ async function cabChat(){
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabApplyKind(\'master\')">Открыть в Мастере</button>'+
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
   }
+}
+// Превью ДО применения: список изменений словами — это не документ. Владелец должен
+// увидеть свой отчёт на СВОИХ числах (берём последний прогон), и только потом решать.
+async function cabReportPreview(btn){
+  var a=AUTOS[_wzCabI], spec=window._cabReportSpec;
+  if(!a||!spec){ _cabPush(_cabA('Предложение устарело — сформулируйте заново.')); return; }
+  if(btn){ btn.disabled=true; btn.textContent='собираю…'; }
+  var r;
+  try{ r=await jpost('/x/report_spec_ask_preview',{sid:a.session_id, spec:spec}, 120000); }catch(e){ r=null; }
+  if(btn){ btn.disabled=false; btn.textContent='👁 Посмотреть документ'; }
+  if(!r||r.status!=='success'){ _cabPush(_cabA('Превью не собралось: '+esc((r&&r.message)||''))); return; }
+  var miss=(r.missing||[]).length
+    ? ' <span style="color:#C57E33">Разрезов по '+esc((r.missing||[]).join(', '))+' в последнем прогоне не было — в превью их нет.</span>' : '';
+  _cabPush(_cabA('Превью собрано по числам прогона от '+esc(String(r.based_on||'').slice(0,16).replace('T',' '))+'.'+miss+
+    ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px" onclick="dlReport(\''+encodeURIComponent(r.path).replace(/'/g,"%27")+'\')">📄 Открыть PDF</button>'));
 }
 async function cabReportApply(){
   var a=AUTOS[_wzCabI], spec=window._cabReportSpec;
