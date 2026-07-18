@@ -3711,6 +3711,31 @@ async function cabChat(){
   var w=el('cabchat_wait'); if(w) w.remove();
   window._cabChat.items=window._cabChat.items.filter(function(h){return h.indexOf('cabchat_wait')<0;});
   if(!r||r.status!=='success'){ _cabPush(_cabA('Не разобрал: '+esc((r&&r.message)||'попробуйте иначе'))); return; }
+  if(r.op==='report'){
+    // Правка ВИДА отчёта словами. Показываем, ЧТО изменится, и что отвергнуто —
+    // модель охотно выдумывает колонки, и владелец должен об этом узнать сразу,
+    // а не увидеть отчёт без обещанного разреза.
+    var pr=await jpost('/x/report_spec_ask',{sid:a.session_id, message:msg}, 90000);
+    if(!pr||pr.status!=='success'){ _cabPush(_cabA('Не смог собрать отчёт: '+esc((pr&&pr.message)||''))); return; }
+    window._cabReportSpec=pr.spec;
+    var ch=(pr.changes||[]).map(function(x){return '<div style="font-size:12.5px">• '+esc(x)+'</div>';}).join('')
+           || '<div style="font-size:12.5px;color:var(--silver)">заметных изменений нет</div>';
+    var rj=(pr.rejected||[]).length
+      ? '<div style="font-size:12px;color:#C57E33;margin-top:6px">Не смог применить: '+esc((pr.rejected||[]).join('; '))+'</div>' : '';
+    var note=(pr.supported===false)
+      ? '<div style="font-size:12px;color:var(--silver);margin-top:6px">Процесс собран до появления оформителя — вид применится после пересборки.</div>' : '';
+    // Просьбу про поле, которого нет («разрез по выручке»), модель может молча проигнорировать:
+    // формально изменения есть, а обещанного разреза нет. Поэтому всегда показываем,
+    // ЧТО в данных вообще есть — владелец сам увидит, почему получилось не всё.
+    var fl=(pr.fields||[]);
+    var flHtml=fl.length
+      ? '<div style="font-size:11.5px;color:var(--silver);margin-top:6px">Разрезы возможны по полям: '+esc(fl.slice(0,10).join(', '))+(fl.length>10?' …':'')+'</div>'
+      : '';
+    _cabPush(_cabA('Отчёт будет выглядеть так:'+ch+rj+flHtml+note+
+      ' <button class="btn gold sm" style="padding:3px 12px;font-size:11.5px;margin-top:6px" onclick="cabReportApply()">Применить к отчёту</button>'+
+      ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
+    return;
+  }
   if(r.depth==='light' && r.op!=='other'){
     window._cabAct={op:r.op, args:r.args, msg:msg};
     _cabPush(_cabA(esc(r.summary||'Сделаю.')+_cabBtns('Применить')));
@@ -3724,6 +3749,14 @@ async function cabChat(){
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabApplyKind(\'master\')">Открыть в Мастере</button>'+
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
   }
+}
+async function cabReportApply(){
+  var a=AUTOS[_wzCabI], spec=window._cabReportSpec;
+  if(!a||!spec){ _cabPush(_cabA('Правка уже применена или отменена — сформулируйте заново.')); return; }
+  window._cabReportSpec=null;
+  var r=await jpost('/x/report_spec_set',{sid:a.session_id, spec:spec}, 30000);
+  if(!r||r.status!=='success'){ _cabPush(_cabA('Не сохранилось: '+esc((r&&r.message)||''))); return; }
+  _cabPush(_cabA('✓ Вид отчёта сохранён'+(r.supported===false?' (применится после пересборки процесса)':' — следующий прогон соберёт PDF по-новому')+'.'));
 }
 function cabApplyKind(k){ if(window._cabAct) window._cabAct.op=k; cabApply(); }
 function cabCancel(){ window._cabAct=null; _cabPush(_cabA('Отменено.')); }
