@@ -364,7 +364,7 @@ include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
-def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "", adapter_json: str = "") -> dict:
+def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "", adapter_json: str = "", report_spec_json: str = "") -> dict:
     """Автосгенерированный оркестратор процесса. Гоняет контрактную цепочку стадий
     (input_path -> output_path) на исходном файле, чистит заголовки, возвращает сводку
     и рисует отчёт .md + .xlsx. Параметры: source_file, work_dir, api_token, target
@@ -666,7 +666,26 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
         _reason = ("вход содержит " + str(_in_count) +
                    " записей, а итоговая сводка пуста — процесс потерял данные, проверьте стадии")
 
+    # ── ФИРМЕННЫЙ PDF: оформитель — отдельный эксперт (способность зашита в него, не в оркестратор).
+    # Идёт на ТО ЖЕ устройство, что и стадии, и читает файл последней стадии по месту —
+    # так не упираемся ни в размер полезной нагрузки, ни в наличие браузера.
+    _pdf = ""
+    if report_spec_json and not report_spec_json.startswith("{{") and last_out:
+        try:
+            _pdf_try = str(wd / "report.pdf")
+            _fb = {"expert_name": "fmt_report_pdf", "global": True,
+                   "params": {"input_path": last_out, "spec_json": report_spec_json,
+                              "output_path": _pdf_try}}
+            if target:
+                _fb["target"] = target
+            requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers, json=_fb, timeout=180)
+            if Path(_pdf_try).exists() and Path(_pdf_try).stat().st_size > 1000:
+                _pdf = _pdf_try
+        except Exception:
+            _pdf = ""   # отчёт .md/.xlsx уже собран — красивый PDF не обязан ронять прогон
+
     result = {"status": _status, "summary": summary, "total_count": tc, "total_sum": ts,
+              "report_pdf": _pdf,
               "adapter_applied": _adapt_applied,   # AC-05: видно в прогоне, что выгрузку подстроили под процесс
               "report_md": str(md), "report_xlsx": str(xlsx), "host": __import__("socket").gethostname()}
     if _reason:
@@ -789,7 +808,7 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None,
                                                  "returns summary and renders .md/.xlsx report. Params: source_file, work_dir, api_token, target, source_key.",
                                   "code": code, "kwargs": {"source_file": "", "work_dir": work_dir, "rules_json": "", "fields_json": "",
                                                            "api_token": "", "api_base": "https://api.extella.ai",
-                                                           "target": "", "source_key": "", "placement_json": "", "adapter_json": ""},
+                                                           "target": "", "source_key": "", "placement_json": "", "adapter_json": "", "report_spec_json": ""},
                                   "cspl": "fython", "global": True})
     ok = sv.get("status") == "success" or sv.get("id") is not None
     if want_code:
@@ -1041,6 +1060,7 @@ def _run_build(session_id, build_id):
             s.pop("building", None)   # стройка успешно завершилась — снять указатель идущей стройки
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
+                                               "report_contract": 1,   # оформитель PDF по спеке вида
                                                "adapter_contract": 1,   # AC-05: оркестратор умеет применять адаптер источника
                                                "params_contract": 1,   # F2: оркестратор+стадии принимают rules_json/fields_json
                                                "placement_contract": 1,   # A1: оркестратор понимает карту размещения (стадия→устройство)
