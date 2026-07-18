@@ -2054,6 +2054,24 @@ async function buildProcessFromTask(taskArg){
   var ci=el("chatInput"); if(ci){ ci.value="Хочу автоматизировать процесс: "+task+". Расспроси меня и спроектируй."; ci.focus(); }
 }
 // Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без тупика)
+// «Первая победа» нужна ровно один раз. У человека с работающими автоматизациями большой
+// баннер «посмотрите Extella в деле» — шум и намёк, что система не заметила его работы.
+// Сворачиваем его в одну строку, но НЕ убираем: демо иногда зовут показать коллеге.
+function _fwHeroTune(){
+  var hero=el('firstWinHero'); if(!hero) return;
+  // AUTOS объявлена НЕ в window (var верхнего уровня в инлайн-скрипте) — window.AUTOS всегда
+  // undefined, и проверка молча считала любого клиента новичком. Читаем переменную напрямую.
+  var has=false;
+  try{ has=(AUTOS||[]).length>0; }catch(e){ has=false; }
+  if(!has){ hero.dataset.collapsed=''; return; }
+  if(hero.dataset.collapsed==='1') return;
+  hero.dataset.collapsed='1';
+  hero.style.padding='12px 16px';
+  hero.innerHTML='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px">'+
+    '<span style="color:var(--gold,#a97e35);font-weight:600">✨ Демо-пример</span>'+
+    '<span style="color:var(--silver,#889)">показать Extella в деле на демо-данных</span>'+
+    '<a href="#" onclick="firstWin(null);return false" style="color:var(--gold,#a97e35);font-weight:600;text-decoration:none;margin-left:auto">Показать →</a></div>';
+}
 async function firstWin(btn, example){
   example = example || "ads";
   var META = { ads:{title:"Ежедневный отчёт по рекламным бюджетам", chip:"📊 Реклама"},
@@ -2070,6 +2088,38 @@ async function firstWin(btn, example){
     // косметика: после демо мягко направляем к «соберите своё» — подсвечиваем поле сборки
     var fi=el("fwComposeInput"); if(fi){ try{ fi.focus(); fi.style.boxShadow="0 0 0 3px rgba(201,163,92,.35)"; setTimeout(function(){ fi.style.boxShadow=""; },2600); }catch(e){} }
   } else { toast("Демо временно недоступно — попробуйте ещё раз","err"); }
+}
+// ПЕРВЫЙ экран человека, который только что купил Extella. Сухое «пока пусто, идите
+// в Мастер» — тупик: объясняет отсутствие, но не даёт сделать ничего здесь и сейчас.
+// Даём то же, что онбординг: живой результат в один клик + сборка своего словами.
+// Вынесено в функцию, чтобы состояние можно было проверить, а не только увидеть случайно.
+function _emptyShowcase(){
+  var chips=['сводка по заявкам каждое утро','найти забытые подписки в выписках','сверить счета-фактуры с актами'];
+  return '<div style="max-width:680px;background:linear-gradient(135deg,#c9a35c18,var(--paper,#fff));border:1px solid var(--gold,#c9a35c);border-radius:16px;padding:24px 26px">'+
+    '<div class="kicker" style="color:var(--gold,#a97e35)">✨ Здесь появятся ваши автоматизации</div>'+
+    '<div style="font-size:20px;font-weight:800;color:var(--ink,#0a0a0a);margin:6px 0 8px">Пока их нет — но результат можно увидеть прямо сейчас</div>'+
+    '<div style="font-size:13.5px;color:var(--ink-soft);line-height:1.55;margin-bottom:16px">'+
+      'Автоматизация — это процесс, который работает сам: берёт данные, считает и присылает готовый отчёт. '+
+      'Посмотрите на живом примере за секунды, без настройки и подключений.</div>'+
+    '<button class="btn gold" style="padding:12px 22px;font-size:15px" onclick="firstWin(this)">▶ Показать готовый отчёт на демо-данных</button>'+
+    '<div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--cream-dark)">'+
+      '<div style="font-size:13.5px;font-weight:600;margin-bottom:8px">…или сразу соберите свою — опишите задачу словами</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<input id="emptyComposeInput" class="sess-select" style="flex:1;min-width:260px;max-width:none" '+
+          'placeholder="например: каждое утро сводка по заявкам из Google Sheets в Telegram" '+
+          'onkeydown="if(event.key===\'Enter\')emptyCompose()">'+
+        '<button class="btn gold" style="padding:0 20px" onclick="emptyCompose()">Собрать</button></div>'+
+      '<div style="margin-top:9px;display:flex;gap:6px;flex-wrap:wrap">'+
+        chips.map(function(x){ return '<span class="chip-ex" onclick="emptyCompose(this.textContent)">'+x+'</span>'; }).join('')+
+      '</div></div></div>';
+}
+// Сборка из ПУСТОЙ витрины: переиспользуем путь онбординга (firstWinCompose), не заводя второй.
+// Разница только в том, откуда пришёл текст — поэтому подставляем его в то же поле.
+function emptyCompose(taskArg){
+  var t = (typeof taskArg==='string' && taskArg.trim()) || ((el('emptyComposeInput')||{}).value||'').trim();
+  if(!t){ var i=el('emptyComposeInput'); if(i) i.focus(); return; }
+  var fi=el('fwComposeInput'); if(fi) fi.value=t;
+  firstWinCompose(t);
 }
 // Гибрид ч.2: личная сборка из онбординга — Композитор собирает под задачу (одноразовые), процессные
 // честно уводит в Мастера; на ошибке — фолбэк (Мастер / готовый пример), без тупика.
@@ -4632,7 +4682,8 @@ async function renderAutomations(){
   box.innerHTML = `<div class="empty"><span class="spin"></span> загружаю автоматизации…</div>`;
   let d; try{ d = await jget("/x/automations"); }catch(e){ d=null; }
   AUTOS = (d && d.automations) || [];
-  if(!AUTOS.length){ box.innerHTML = `<div class="empty">Пока нет собранных автоматизаций. Соберите процесс в «Мастере» (шаг «Стройка»).</div>`; return; }
+  _fwHeroTune();   // герой «Первая победа» — только новичкам
+  if(!AUTOS.length){ box.innerHTML = _emptyShowcase(); return; }
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n);
   const SRCNAME = k=>({src_gsheets:"Google Sheets",src_bitrix24:"Bitrix24",src_postgres:"PostgreSQL",src_mysql:"MySQL",src_amocrm:"amoCRM",src_1c_file:"1С (файл)",src_1c_winrm:"1С (сервер)"}[k]||k);
   const CHNAME = k=>({telegram:"Telegram",email:"Email",slack:"Slack",whatsapp:"WhatsApp",sms:"SMS"}[k]||k);
