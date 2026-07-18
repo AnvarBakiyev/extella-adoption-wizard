@@ -4264,7 +4264,20 @@ async function rollbackProcess(i){
   })();
 }
 // ── вкладка «Правила и поля» (§7bis ступень 2): бизнес-правила словами + факты-поля per-automation ──
+// A6: правила живут на платформе (переживают потерю этого Мака и видны с другого устройства),
+// файл сессии — только кэш. При открытии вкладки подтягиваем правду; молчит платформа —
+// работаем по кэшу и говорим об этом прямо, а не показываем пустой список.
+async function _wzRulesSync(a){
+  if(!a||!a.session_id||a._rulesSynced) return;
+  a._rulesSynced=true;
+  var d; try{ d=await jget('/x/rules?sid='+encodeURIComponent(a.session_id)); }catch(e){ d=null; }
+  if(d&&d.status==='success'){
+    a.rules=d.rules||[]; a.rules_src=d.source; a.rules_stale=!!d.stale;
+    if(_wzCabI>=0) _wzCabRender();
+  }
+}
 function _wzCabRules(a){
+  setTimeout(function(){ _wzRulesSync(a); }, 30);
   var i=_wzCabI, rules=(a.rules||[]), fields=(a.fields||{});
   var isFlow = (a.orchestrator==='wz_flow_run');
   var applyNote = isFlow
@@ -4283,8 +4296,14 @@ function _wzCabRules(a){
       '<b style="font-size:13px">'+esc(k)+'</b><span style="font-size:13px;color:var(--ink-soft);flex:1">'+esc(fields[k])+'</span>'+
       '<button onclick="removeField('+i+','+fi+')" title="убрать поле" style="border:none;background:transparent;color:var(--silver);cursor:pointer;font-size:16px;line-height:1">✕</button></div>';
   }).join('') : '<div style="color:var(--silver);font-size:13px;margin-bottom:8px">Полей пока нет. Например: «валюта — тенге», «директор — Рустам», «филиалов — 28».</div>';
+  var whereNote = a.rules_stale
+      ? '<span style="color:#C57E33">⚠ Платформа сейчас не отвечает — показаны правила из локального кэша; правки не сохранятся, пока связь не вернётся.</span>'
+      : (a.rules_src==='platform'
+         ? 'Хранятся в Extella, а не на этом компьютере: видны с любого устройства и переживут его потерю.'
+         : '');
   return _wzCard(_wzH('Правила процесса')+
-      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">'+applyNote+'</div>'+
+      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">'+applyNote+
+      (whereNote?'<br>'+whereNote:'')+'</div>'+
       ruleRows+
       '<div style="display:flex;gap:8px;margin-top:8px"><input id="wz_newrule-'+i+'" class="sess-select" placeholder="новое правило словами…" style="flex:1;max-width:none" onkeydown="if(event.key===\'Enter\')addRule('+i+')">'+
       '<button class="btn ghost sm" onclick="addRule('+i+')">＋ Добавить</button></div>')+
@@ -4303,7 +4322,9 @@ async function _saveRules(a){
     a.rules=r.rules; a.fields=r.fields; a.rules_struct=r.rules_struct||[];
     // F2: показать владельцу, как система поняла правило (скомпилированный фильтр)
     var st=(r.rules_struct||[]).map(function(f){return f.field+' '+f.op+' '+f.value;}).join('; ');
-    toast(st ? ('✓ Правила сохранены · понято как фильтр: '+st) : '✓ Правила сохранены','ok');
+    a.rules_src = r.synced ? 'platform' : 'cache'; a.rules_stale = !r.synced;
+    if(r.synced===false) toast('⚠ '+(r.sync_note||'сохранено только на этом устройстве'),'err');
+    else toast(st ? ('✓ Правила сохранены · понято как фильтр: '+st) : '✓ Правила сохранены','ok');
     if(_wzCabI>=0) _wzCabRender();
   }
   else toast('Ошибка: '+((r&&r.message)||''),'err');

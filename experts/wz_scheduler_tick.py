@@ -422,8 +422,24 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
             if isinstance(cfg.get("placement"), dict) and cfg["placement"]:
                 run_params["placement_json"] = json.dumps(cfg["placement"], ensure_ascii=False)
             if int(cfg.get("params_contract", 0) or 0) >= 1:
+                # A6: источник истины правил — платформа (/api/rules в скоупе агента процесса, тег [процесс:sid]).
+                # Копия в записи расписания остаётся ФОЛБЭКОМ: молчит платформа — прогон идёт по ней, а не встаёт.
+                _rtext = list(cfg.get("rules") or [])
+                _rag = cfg.get("rules_agent")
+                if _rag:
+                    try:
+                        _h = dict(headers); _h["X-Agent-Id"] = _rag
+                        _lr = requests.post(base + "/api/rules/list", headers=_h, json={}, timeout=25).json()
+                        _tag = "[процесс:" + str(cfg.get("session_id") or "") + "]"
+                        _live = [x for x in (_lr.get("results") or [])
+                                 if str(x.get("rule") or "").startswith(_tag)]
+                        if _lr.get("status") != "error":
+                            _live.sort(key=lambda x: (str(x.get("created_at") or ""), str(x.get("id") or "")))
+                            _rtext = [str(x["rule"])[len(_tag):].strip() for x in _live]
+                    except Exception:
+                        pass   # сеть подвела — остаёмся на копии из расписания
                 # текстовые правила (кодогенным стадиям) + структурные фильтры (оркестратор применяет сам)
-                _rp = list(cfg.get("rules") or []) + [r for r in (cfg.get("rules_struct") or []) if isinstance(r, dict)]
+                _rp = _rtext + [r for r in (cfg.get("rules_struct") or []) if isinstance(r, dict)]
                 if _rp:
                     run_params["rules_json"] = json.dumps(_rp, ensure_ascii=False)
                 if cfg.get("fields"):
