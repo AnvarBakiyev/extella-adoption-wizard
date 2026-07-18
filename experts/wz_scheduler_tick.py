@@ -624,9 +624,24 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                         continue
                 except Exception:
                     pass
-                dbody = {"expert_name": "wz_connector_" + deliver, "global": True,
-                         "params": {"api_token": api_token, "client": cfg.get("client", "default"),
-                                    "mode": "send", "text": msg}}
+                # ДОКУМЕНТ ВЛОЖЕНИЕМ: прогон собрал PDF/Word/презентацию/Excel — их надо ДОСТАВИТЬ,
+                # иначе красивый файл останется лежать на устройстве, а получатель увидит текст.
+                # Каналы разные: Telegram умеет sendDocument, почта — вложение, остальные пока нет.
+                _doc = ""
+                for _k in ("report_pdf", "report_docx", "report_pptx", "report_xlsx"):
+                    _v = (out or {}).get(_k) if isinstance(out, dict) else None
+                    if _v:
+                        _doc = str(_v)
+                        break
+                _params = {"api_token": api_token, "client": cfg.get("client", "default"),
+                           "mode": "send", "text": msg}
+                if _doc and deliver == "telegram":
+                    _params["mode"] = "send_document"
+                    _params["file_path"] = _doc
+                elif _doc and deliver == "email":
+                    _params["file_path"] = _doc
+                    _params["subject"] = str(cfg.get("name") or "Отчёт процесса")[:120]
+                dbody = {"expert_name": "wz_connector_" + deliver, "global": True, "params": _params}
                 if cfg.get("target"):
                     dbody["target"] = cfg["target"]
                 _dok, _derr = False, None
@@ -649,7 +664,16 @@ def wz_scheduler_tick(api_token: str = "", api_base: str = "https://api.extella.
                     except Exception:
                         pass
                 _deliv = _deliv or []
-                _deliv.append({"channel": deliver, "ok": _dok, "err": _derr})   # #19: доставка больше не молчит — исход в возврат тика/лог
+                # #19: доставка больше не молчит — исход в возврат тика/лог.
+                # Фиксируем И вложение: «ушло письмо» и «ушёл отчёт» — разные факты,
+                # и владелец должен видеть, доехал ли документ, а не только текст.
+                _dinfo = {"channel": deliver, "ok": _dok, "err": _derr}
+                if _doc:
+                    _dinfo["document"] = _doc.split("/")[-1]
+                    _dinfo["attached"] = deliver in ("telegram", "email")
+                    if deliver not in ("telegram", "email"):
+                        _dinfo["note"] = "канал " + deliver + " не умеет вложения — ушёл только текст"
+                _deliv.append(_dinfo)
         fired.append({"key": key, "status": run["status"], "total_sum": run["total_sum"], "delivered": _deliv})
 
     # Capability Registry: суточный ПОЛНЫЙ пересбор (событийные обновления делает мост;

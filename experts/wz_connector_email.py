@@ -6,7 +6,8 @@ $extens("include.py")
 include("from cryptography.fernet import Fernet", ["extella-pip install cryptography"])
 
 def wz_connector_email(api_token: str = "", client: str = "default", mode: str = "validate",
-                       text: str = "", api_base: str = "https://api.extella.ai") -> dict:
+                       text: str = "", api_base: str = "https://api.extella.ai",
+                       file_path: str = "", subject: str = "") -> dict:
     """Коннектор Email (вывод результата процесса по SMTP). Исполняется на устройстве-ХОСТИНГЕ:
     читает шифротекст секрета sec:<client>:email из общего KV, расшифровывает ЛОКАЛЬНЫМ vault.key,
     проверяет привязку конверта, достаёт SMTP-креды и шлёт письмо. SMTP через stdlib (без внешних deps).
@@ -18,6 +19,8 @@ def wz_connector_email(api_token: str = "", client: str = "default", mode: str =
     import smtplib
     import ssl
     from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.application import MIMEApplication
     from pathlib import Path
 
     def ns(s):
@@ -84,8 +87,26 @@ def wz_connector_email(api_token: str = "", client: str = "default", mode: str =
         if mode == "validate":
             srv.quit()
             return {"ok": True, "host": socket.gethostname(), "channel": "email", "smtp": host, "to": to}
-        msg = MIMEText(text or "Тест Extella", "plain", "utf-8")
-        msg["Subject"] = "Extella — результат процесса"
+        # Тема письма — НЕ наша: письмо уходит заказчикам клиента, и «Extella» в теме
+        # там так же неуместна, как наш логотип в его отчёте (замечание Анвара про документы).
+        _subj = (subject or "").strip() or "Отчёт процесса"
+        _att = str(file_path or "").strip()
+        if _att and not _att.startswith("{{"):
+            import os as _os
+            if not _os.path.isfile(_att):
+                return {"ok": False, "err": "файл вложения не найден на устройстве исполнения: " + _att[:120]}
+            if _os.path.getsize(_att) > 20 * 1024 * 1024:
+                return {"ok": False, "err": "вложение больше 20 МБ — почтовые серверы такое режут; "
+                                            "пришлите ссылку вместо файла"}
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(text or "", "plain", "utf-8"))
+            with open(_att, "rb") as _fh:
+                part = MIMEApplication(_fh.read(), Name=_os.path.basename(_att))
+            part["Content-Disposition"] = 'attachment; filename="%s"' % _os.path.basename(_att)
+            msg.attach(part)
+        else:
+            msg = MIMEText(text or "Проверка связи", "plain", "utf-8")
+        msg["Subject"] = _subj
         msg["From"] = frm
         msg["To"] = to
         srv.sendmail(frm, [to], msg.as_string())
