@@ -4301,9 +4301,16 @@ function _wzCabRules(a){
       : (a.rules_src==='platform'
          ? 'Хранятся в Extella, а не на этом компьютере: видны с любого устройства и переживут его потерю.'
          : '');
+  // Жёсткое правило (фильтр) исполняется детерминированно, мягкое — на усмотрение модели.
+  // Владелец обязан видеть, что именно у него получилось: иначе «фильтр» есть только в голове.
+  var hard=(a.rules_struct||[]);
+  var hardNote = hard.length
+    ? '<div style="font-size:12.5px;color:#2f9e56;margin-bottom:10px">Жёстко исполняется: '+
+      esc(hard.map(function(f){return f.field+' '+f.op+' '+f.value;}).join('; '))+'</div>'
+    : (a.filters_note ? '<div style="font-size:12.5px;color:#C57E33;margin-bottom:10px">'+esc(a.filters_note)+'</div>' : '');
   return _wzCard(_wzH('Правила процесса')+
       '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">'+applyNote+
-      (whereNote?'<br>'+whereNote:'')+'</div>'+
+      (whereNote?'<br>'+whereNote:'')+'</div>'+hardNote+
       ruleRows+
       '<div style="display:flex;gap:8px;margin-top:8px"><input id="wz_newrule-'+i+'" class="sess-select" placeholder="новое правило словами…" style="flex:1;max-width:none" onkeydown="if(event.key===\'Enter\')addRule('+i+')">'+
       '<button class="btn ghost sm" onclick="addRule('+i+')">＋ Добавить</button></div>')+
@@ -4323,8 +4330,11 @@ async function _saveRules(a){
     // F2: показать владельцу, как система поняла правило (скомпилированный фильтр)
     var st=(r.rules_struct||[]).map(function(f){return f.field+' '+f.op+' '+f.value;}).join('; ');
     a.rules_src = r.synced ? 'platform' : 'cache'; a.rules_stale = !r.synced;
+    a.filters_note = r.filters_note || '';
     if(r.synced===false) toast('⚠ '+(r.sync_note||'сохранено только на этом устройстве'),'err');
-    else toast(st ? ('✓ Правила сохранены · понято как фильтр: '+st) : '✓ Правила сохранены','ok');
+    else if(st) toast('✓ Правила сохранены · жёстко исполняется: '+st,'ok');
+    else if(r.filters_note) toast('Правила сохранены. '+r.filters_note,'ok');
+    else toast('✓ Правила сохранены','ok');
     if(_wzCabI>=0) _wzCabRender();
   }
   else toast('Ошибка: '+((r&&r.message)||''),'err');
