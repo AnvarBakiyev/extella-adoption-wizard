@@ -3039,7 +3039,19 @@ async function pollBuild(){
     const p = d.progress;
     renderBuildProgress(p);
     if(p.status==="built"){ S.buildDone=true; await reloadSession(); renderTest(); return; }
-    if(p.status==="error"){ S.buildDone=true; el("buildProgress").innerHTML += `<div class="card gap-card"><b>Сборка прервалась:</b> ${esc(p.error||"см. лог")}</div>`; el("buildBtn")&&(el("buildBtn").disabled=false); return; }
+    if(p.status==="error"){
+      // AC-06: сбой отвечает на три вопроса — что не получилось, из-за чего и ЧТО ДЕЛАТЬ.
+      // Раньше владелец видел одну строку и не понимал, его это проблема или наша.
+      S.buildDone=true;
+      var es=p.error_struct||{};
+      el("buildProgress").innerHTML += '<div class="card gap-card">'+
+        '<b>Сборка прервалась: '+esc(es.message||p.error||"см. лог")+'</b>'+
+        (es.detail?'<div style="font-size:13px;color:var(--ink-soft);margin-top:6px">'+esc(es.detail)+'</div>':'')+
+        (es.remedy?'<div style="font-size:13.5px;margin-top:10px;padding:10px 12px;background:var(--cream);border-radius:8px">'+
+                   '<b>Что делать:</b> '+esc(es.remedy)+'</div>':'')+
+        (es.code?'<div style="font-size:11px;color:var(--silver);margin-top:8px">код: '+esc(es.code)+'</div>':'')+
+        '</div>';
+      el("buildBtn")&&(el("buildBtn").disabled=false); return; }
   }
   S.buildTimer = setTimeout(pollBuild, 4000);
 }

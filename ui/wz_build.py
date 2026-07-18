@@ -280,6 +280,85 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
     return False, None, "3 попытки: " + str(why or last_err or "не прошли приёмку")[:150]
 
 
+# ─────────── AC-06: СТРУКТУРНЫЕ ОШИБКИ СТРОЙКИ ───────────
+# Сбой стройки должен отвечать владельцу на три вопроса: что не получилось, почему и что делать.
+# Свободный текст на это не отвечает — и не даёт UI/агенту действовать по коду. Каталог кодов ниже
+# = контракт: код + человеческая формулировка + КОНКРЕТНОЕ действие (remedy).
+BUILD_ERRORS = {
+    "no_sample_file": ("Стадии нечего обрабатывать: не приложен файл-образец",
+                       "Приложите типовую выгрузку (2–3 строки достаточно) и запустите стройку заново — "
+                       "по образцу собирается и проверяется каждая стадия."),
+    "plan_failed": ("Не удалось составить план стройки",
+                    "Уточните задачу словами в описании процесса: чем конкретнее цель и что на входе, "
+                    "тем точнее план. Затем повторите стройку."),
+    "plan_not_saved": ("План стройки не сохранился",
+                       "Похоже, платформа не приняла запись. Повторите стройку через минуту; "
+                       "если повторится — это вопрос к платформе, а не к описанию процесса."),
+    "no_components_built": ("Ни один компонент не собрался",
+                            "Чаще всего причина одна — нет файла-образца или он не читается. "
+                            "Проверьте, что файл открывается и в нём есть заголовки колонок."),
+    "stages_missing": ("Собрались не все шаги процесса",
+                       "Незакрытые шаги перечислены ниже. Обычно помогает уточнить, что именно должен "
+                       "делать этот шаг, и пересобрать процесс."),
+    "slice_failed": ("Проверка на реальных данных не прошла",
+                     "Процесс собран, но на Вашем файле не отработал. Проверьте образец: "
+                     "совпадают ли колонки с тем, что описано в задаче."),
+    "orchestrator_failed": ("Шаги собраны, но процесс не связался в цепочку",
+                            "Это внутренняя ошибка сборки. Повторите стройку; если повторится — "
+                            "нужна наша диагностика, данные не пострадали."),
+    "crashed": ("Стройка прервалась",
+                "Ничего необратимого не произошло. Повторите стройку; если ошибка повторяется — "
+                "пришлите нам этот экран."),
+}
+
+
+def _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file, slice_summary,
+                      kp_pack=None, build_id="", session_id=""):
+    """AC-06 МАНИФЕСТ: собранный процесс должен САМ СЕБЯ описывать — что ест, что отдаёт, из чего
+    состоит и какие контракты держит. Без этого процесс существует только как код: его нельзя
+    честно переиспользовать у другого клиента, положить в пак или проверить на совместимость.
+    Манифест декларативен и строится из ФАКТОВ стройки, а не из обещаний плана."""
+    inputs = []
+    try:
+        if sample_file and str(sample_file).lower().endswith((".xlsx", ".xlsm")):
+            import openpyxl as _ox
+            _ws = _ox.load_workbook(sample_file, read_only=True).active
+            inputs = [str(c.value).strip() for c in next(_ws.iter_rows(min_row=1, max_row=1))
+                      if c.value is not None and str(c.value).strip()]
+    except Exception:
+        inputs = []
+    outs = sorted(slice_summary.keys()) if isinstance(slice_summary, dict) else []
+    steps = []
+    for i, tk in enumerate(data_tasks or []):
+        nm = tk.get("expert_name") or (ns + "_" + tk.get("id", "t%d" % (i + 1)))
+        steps.append({"name": nm, "title": tk.get("title") or nm,
+                      "mode": "reuse" if str(tk.get("action", "build")).lower() == "reuse" else "built",
+                      "ok": nm in (built_ok or [])})
+    return {
+        "manifest_version": 1,
+        "process": ns, "orchestrator": orchestrator, "build_id": build_id, "session_id": session_id,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "input": {"kind": "file", "basename": Path(sample_file).name if sample_file else "",
+                  "fields": inputs},
+        "output": {"summary_keys": outs, "reports": ["md", "xlsx"]},
+        "steps": steps,
+        "knowledge_pack": kp_pack or None,
+        # контракты = что этот процесс УМЕЕТ принимать. По ним мост решает, что можно ему передать,
+        # не гадая по дате сборки (старым оркестраторам лишний kwarg = падение).
+        "contracts": {"params": 1, "placement": 1, "adapter": 1},
+    }
+
+
+def _build_error(code, detail="", **extra):
+    """Структурная ошибка стройки: код + что случилось + что делать. detail — фактура (какие шаги и т.п.)."""
+    msg, remedy = BUILD_ERRORS.get(code, ("Стройка не завершилась", "Повторите стройку."))
+    out = {"code": code, "message": msg, "remedy": remedy}
+    if detail:
+        out["detail"] = str(detail)[:300]
+    out.update(extra)
+    return out
+
+
 _ORCH_TEMPLATE = '''$extens("include.py")
 include("import requests", ["extella-pip install requests"])
 include("import openpyxl", ["extella-pip install openpyxl"])
@@ -781,11 +860,13 @@ def _run_build(session_id, build_id):
                            agents=[design_agent()])
         if not isinstance(r, dict) or r.get("status") == "error":
             stage("plan", "Составляю план стройки", "error", error=str(r)[:300])
-            prog["status"] = "error"; save(); _unlock(); return
+            prog["status"] = "error"; prog["error_struct"] = _build_error("plan_failed", str(r)[:200])
+            prog["error"] = prog["error_struct"]["message"]; save(); _unlock(); return
         plan_path = SESS_DIR / (session_id + "_build_plan.json")
         if not plan_path.exists():
             stage("plan", "Составляю план стройки", "error", error="план не сохранился")
-            prog["status"] = "error"; save(); _unlock(); return
+            prog["status"] = "error"; prog["error_struct"] = _build_error("plan_not_saved")
+            prog["error"] = prog["error_struct"]["message"]; save(); _unlock(); return
         pdoc = json.loads(plan_path.read_text(encoding="utf-8"))
         plan = pdoc.get("plan", pdoc)
         tasks = plan.get("tasks", [])
@@ -848,7 +929,8 @@ def _run_build(session_id, build_id):
             stage("task_" + tid, "Собираю и проверяю: " + title, "running")
             if not current_input:
                 stage("task_" + tid, "Ошибка: " + title, "error", expert=nm,
-                      detail="нет входа для стадии (не приложен файл-образец?)")
+                      detail="нет входа для стадии (не приложен файл-образец?)",
+                      **_build_error("no_sample_file", "шаг «" + str(title) + "» остался без входных данных"))
                 slice_ok = False
                 break
             if is_kp_task(t):
@@ -903,7 +985,8 @@ def _run_build(session_id, build_id):
         had_build_tasks = any(str(t.get("action", "build")).lower() != "reuse" for t in tasks)
         if had_build_tasks and not built_ok:
             prog["status"] = "error"
-            prog["error"] = "ни один компонент не собрался (сборщик не смог пройти приёмку — вероятно, нужен файл-образец)"
+            prog["error_struct"] = _build_error("no_components_built")
+            prog["error"] = prog["error_struct"]["message"]
             save(); _unlock(); return
 
         # 3. Автосоздание вызываемого оркестратора процесса (стадии — построенные дата-эксперты)
@@ -934,12 +1017,20 @@ def _run_build(session_id, build_id):
                    for i, t in enumerate(data_tasks)
                    if (t.get("expert_name") or (ns + "_" + t.get("id", "t%d" % (i + 1)))) not in built_ok]
         if missing or not slice_ok or (stage_experts and not orchestrator):
+            if missing:
+                prog["error_struct"] = _build_error("stages_missing",
+                                                    "не собраны шаги: " + ", ".join(map(str, missing)),
+                                                    missing=[str(m) for m in missing])
+            elif stage_experts and not orchestrator:
+                prog["error_struct"] = _build_error("orchestrator_failed")
+            else:
+                prog["error_struct"] = _build_error("slice_failed")
             prog["status"] = "error"
-            prog["error"] = ("обязательный конвейер не закрыт: не собраны стадии — " + ", ".join(map(str, missing))
-                             if missing else ("оркестратор не собрался" if (stage_experts and not orchestrator)
-                                              else "вертикальный срез не прошёл"))
+            prog["error"] = prog["error_struct"]["message"]
             save(); _unlock(); return
 
+        prog["manifest"] = _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file,
+                                             prog.get("slice_summary"), kp_pack, build_id, session_id)
         prog["status"] = "built"
         save()
         # отметка в сессии
@@ -955,6 +1046,7 @@ def _run_build(session_id, build_id):
                                                "placement_contract": 1,   # A1: оркестратор понимает карту размещения (стадия→устройство)
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
+                                               "manifest": prog.get("manifest"),   # AC-06: контракт собранного процесса
                                                "source_file": sample_file})
             # §7bis ступень 3: автопанель — новая автоматизация выходит из Строителя с готовой формой
             # настроек (best-effort; если Qwen моргнул — владелец соберёт кнопкой в кабинете).
@@ -972,4 +1064,6 @@ def _run_build(session_id, build_id):
         except Exception:
             pass
     except Exception as e:
-        prog["status"] = "error"; prog["error"] = str(e)[:300]; save(); _unlock()
+        prog["status"] = "error"
+        prog["error_struct"] = _build_error("crashed", str(e)[:200])
+        prog["error"] = prog["error_struct"]["message"]; save(); _unlock()
