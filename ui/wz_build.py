@@ -669,7 +669,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
     # ── ФИРМЕННЫЙ PDF: оформитель — отдельный эксперт (способность зашита в него, не в оркестратор).
     # Идёт на ТО ЖЕ устройство, что и стадии, и читает файл последней стадии по месту —
     # так не упираемся ни в размер полезной нагрузки, ни в наличие браузера.
-    _pdf, _docx = "", ""
+    _pdf, _docx, _pptx = "", "", ""
     if report_spec_json and not report_spec_json.startswith("{{") and last_out:
         # формат выбирает владелец словами: PDF отправляют как есть, DOCX — дорабатывают
         try:
@@ -681,6 +681,8 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
             _jobs.append(("fmt_report_pdf", str(wd / "report.pdf")))
         if _fmt in ("docx", "word", "both", "all"):
             _jobs.append(("fmt_report_docx", str(wd / "report.docx")))
+        if _fmt in ("pptx", "slides", "all"):
+            _jobs.append(("fmt_report_pptx", str(wd / "report.pptx")))
         for _exp, _dst in _jobs:
             try:
                 _fb = {"expert_name": _exp, "global": True,
@@ -692,13 +694,15 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
                 if Path(_dst).exists() and Path(_dst).stat().st_size > 1000:
                     if _dst.endswith(".pdf"):
                         _pdf = _dst
-                    else:
+                    elif _dst.endswith(".docx"):
                         _docx = _dst
+                    else:
+                        _pptx = _dst
             except Exception:
                 pass   # .md/.xlsx уже собраны — оформленный документ не обязан ронять прогон
 
     result = {"status": _status, "summary": summary, "total_count": tc, "total_sum": ts,
-              "report_pdf": _pdf, "report_docx": _docx,
+              "report_pdf": _pdf, "report_docx": _docx, "report_pptx": _pptx,
               "adapter_applied": _adapt_applied,   # AC-05: видно в прогоне, что выгрузку подстроили под процесс
               "report_md": str(md), "report_xlsx": str(xlsx), "host": __import__("socket").gethostname()}
     if _reason:
