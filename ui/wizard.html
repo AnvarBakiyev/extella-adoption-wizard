@@ -3676,7 +3676,9 @@ function _wzLifeRow(a){
   if(L.k==='attention'&&L.reason){
     var act='';
     if(/tourvisor|токен/i.test(L.reason)) act='<button onclick="closeWzCabinet();setMode(\'automations\');setTimeout(function(){var e=document.querySelector(\'#connBar details\');if(e){e.open=true;e.scrollIntoView({block:\'center\'});}},400)" style="border:none;background:rgba(255,255,255,.92);color:#7a5b1a;border-radius:8px;padding:3px 12px;cursor:pointer;font:700 11.5px var(--sans)">Обновить токен</button>';
-    else if(/прогон/i.test(L.reason)) act='<button onclick="wzCabTab(\'overview\')" style="border:none;background:rgba(255,255,255,.92);color:#7a5b1a;border-radius:8px;padding:3px 12px;cursor:pointer;font:700 11.5px var(--sans)">Запустить снова</button>';
+    // Кнопка называлась «Запустить снова», а только переключала вкладку — ничего не запускала.
+    // Хуже немого отказа: кнопка обещает действие и не делает его, а владелец решает, что система висит.
+    else if(/прогон/i.test(L.reason)) act='<button onclick="wzCabTab(\'overview\');runProcess(_wzCabI)" style="border:none;background:rgba(255,255,255,.92);color:#7a5b1a;border-radius:8px;padding:3px 12px;cursor:pointer;font:700 11.5px var(--sans)">Запустить снова</button>';
     html+='<div style="margin-top:7px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(0,0,0,.22);border-radius:10px;padding:7px 12px;font:600 12px var(--sans);color:#FFE9C2">⚠ '+esc(L.reason)+' '+act+'</div>';
   }
   return html;
