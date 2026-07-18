@@ -3569,7 +3569,7 @@ function _wzHeroHTML(a){
 }
 // ── Кабинет агента (оверлей с вкладками) ──
 var _wzCabI=-1, _wzCabTab='overview';
-function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : (a&&a.stages_meta&&a.stages_meta.length ? 'process' : 'overview'); }
+function _wzDomainTab(a){ return a&&a.panel_url ? 'panel' : 'overview'; }
 function openWzCabinet(i){ _wzCabI=i; _wzCabTab=_wzDomainTab(AUTOS[i]); _wzCabRender(); }
 // Exception Inbox: открытие кабинета по session_id (инбокс рендерится раньше, чем загрузились AUTOS)
 async function openWzCabinetBySid(sid){
@@ -3630,9 +3630,16 @@ function _wzCabRender(){
   var o=el('wz_cab'); if(!o){ o=document.createElement('div'); o.id='wz_cab'; o.style.cssText='position:fixed;inset:0;background:var(--cream);z-index:99998;display:flex;flex-direction:column;overflow:hidden'; document.body.appendChild(o); }
   var acc=_wzAcc(a), em=_wzEmoji(a), tag=_wzTag(a), nm=esc(a.process_name||a.client_name||'Процесс');
   // доменная вкладка ПЕРВОЙ: ручная панель пака (Travel «🧳 Работа») ИЛИ генерируемый вид процесса из blueprint
-  var domainTab = a.panel_url ? [['panel','🧳 Работа']] : ((a.stages_meta&&a.stages_meta.length) ? [['process','🧭 Процесс']] : []);
+  // «Работа» пака остаётся отдельной — там РАБОТАЮТ (лиды, договоры), а не управляют
+  // автоматизацией. А «Процесс» (что делает, этапы) перестал быть вкладкой: его читают
+  // один раз, а место он занимал всегда → свёрнутый блок в Обзоре.
+  var domainTab = a.panel_url ? [['panel','🧳 Работа']] : [];
   if(a.flow_id) domainTab.push(['compose','🧩 Состав·Доводка']);   // C2: композиция — доводка не теряется после сохранения
-  var tabs=domainTab.concat([['overview','Запуск'],['settings','Настройка'],['rules','Правила'],['template','Шаблон'],['runs','Прогоны']]);
+  // UX: кабина отвечает на три вопроса по порядку — работает ли и что выдало (Обзор),
+  // как это устроено (Настройка), что было (История). Шесть вкладок наросли по мере
+  // появления способностей и развели ОДНО действие по трём местам: «Собрать сейчас»,
+  // «Запустить сейчас» и кнопка в «Прогонах» были одним и тем же запуском.
+  var tabs=domainTab.concat([['overview','Обзор'],['settings','Настройка'],['runs','История']]);
   var tabBar=tabs.map(function(t){var on=_wzCabTab===t[0];return '<button onclick="wzCabTab(\''+t[0]+'\')" style="border:none;background:'+(on?'var(--gold-bg)':'transparent')+';color:'+(on?'var(--gold)':'var(--nav)')+';font:600 13px var(--sans);padding:8px 16px;border-radius:8px;cursor:pointer">'+t[1]+'</button>';}).join('');
   o.innerHTML=
     '<div style="'+_wzHeroStyle(acc)+';padding:20px 26px 18px;position:relative;flex-shrink:0">'+
@@ -3805,12 +3812,12 @@ function _wzCabBody(a){
   if(_wzCabTab==='compose' && a.flow_id) return _wzCabComposeTab(a);
   // Слой 1 честный статус: если живого источника нет — предупреждающий баннер на ЛЮБОЙ содержательной вкладке
   var _sb = ((a.source&&a.source.kind)||a.panel_url) ? "" : _wzSourceBanner(a, _wzCabI);
-  if(_wzCabTab==='process' && a.stages_meta && a.stages_meta.length) return _sb + _wzCabProcess(a);
+  // старые адреса вкладок ведут в новые места — внешние ссылки и наш же код не ломаются
+  if(_wzCabTab==='process') _wzCabTab='overview';
+  if(_wzCabTab==='rules'||_wzCabTab==='template') _wzCabTab='settings';
   if(_wzCabTab==='overview') return _sb + _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _sb + _wzCabRuns(a);
   if(_wzCabTab==='settings') return _sb + _wzCabSettings(a);
-  if(_wzCabTab==='rules') return _sb + _wzCabRules(a);
-  if(_wzCabTab==='template') return _sb + _wzCabTemplate(a);
   return '';
 }
 function _wzChip(c){ return '<span style="display:inline-block;font-size:12px;color:var(--ink-soft);background:var(--cream);border:1px solid var(--cream-dark);border-radius:7px;padding:4px 10px;margin:0 6px 6px 0">'+esc(c)+'</span>'; }
@@ -3873,10 +3880,13 @@ async function cabComposeChat(){
   inp.disabled=false; inp.focus();
 }
 // ── вкладка «🧭 Процесс» (§7bis ступень 3, срез 1): доменный вид, СГЕНЕРированный из blueprint ──
-function _wzCabProcess(a){
-  var i=_wzCabI, sm=a.stages_meta||[], lr=a.last_run;
-  var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(String(n));};
-  var stageCards = sm.map(function(st,si){
+function _wzCabStages(a){
+  // Только «из чего состоит процесс». Ни результата, ни кнопки запуска — они живут в Обзоре
+  // в единственном экземпляре (раньше «Последний результат» рисовался на двух вкладках,
+  // а запуск — на трёх, под двумя разными именами).
+  var sm=a.stages_meta||[];
+  if(!sm.length) return '';
+  return sm.map(function(st,si){
     var ins=st.inputs? '<div style="font-size:12px;color:var(--silver);margin-top:4px"><b>нужно:</b> '+esc(String(st.inputs).slice(0,140))+'</div>':'';
     var outs=st.outputs? '<div style="font-size:12px;color:var(--ink-soft);margin-top:2px"><b>даёт:</b> '+esc(String(st.outputs).slice(0,140))+'</div>':'';
     var isLast=si===sm.length-1;
@@ -3884,30 +3894,22 @@ function _wzCabProcess(a){
       '<div style="flex:0 0 26px;height:26px;border-radius:50%;background:'+(isLast?'var(--gold,#c60)':_wzAcc(a))+';color:#fff;display:flex;align-items:center;justify-content:center;font:700 13px var(--sans)">'+(si+1)+'</div>'+
       '<div style="flex:1;min-width:0"><div style="font:600 14px var(--sans)">'+esc(st.title||('Шаг '+(si+1)))+(isLast?' <span style="font-size:11px;color:var(--gold,#c60)">· результат</span>':'')+'</div>'+ins+outs+'</div></div>';
   }).join('');
-  // C3: нулевое состояние — свежесобранный процесс не пустая витрина, а «что я буду делать + первый прогон»
-  if(!lr && !(a.runs_count>0)){
-    return _wzCard(
-      _wzH('Что будет делать эта автоматизация')+
-      '<div style="font-size:14px;color:var(--ink-soft);line-height:1.55;margin-bottom:14px">'+esc(a.goal||a.slice_summary||'Процесс собран и готов к первому прогону.')+'</div>'+
-      '<button class="btn gold" style="font-size:15px;padding:10px 22px" onclick="wzCabTab(\'overview\')">▶ Сделать первый прогон</button>'+
-      '<div style="font-size:12px;color:var(--silver);margin-top:8px">После первого прогона здесь появится живой результат.</div>')
-      + _wzCard(_wzH('Этапы процесса')+stageCards);
-  }
-  var resultCard = lr ? _wzCard(
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('Последний результат')+'<span style="font-size:12px;color:var(--silver)">'+esc((lr.at||'').slice(0,16).replace('T',' '))+' · '+esc(lr.status||'')+'</span></div>'+
-      ((lr.total_count!=null||lr.total_sum!=null)?'<div style="display:flex;gap:24px">'+
-        (lr.total_count!=null?'<div><div style="font:700 22px var(--sans)">'+fmt(lr.total_count)+'</div><div style="font-size:12px;color:var(--silver)">позиций</div></div>':'')+
-        (lr.total_sum!=null?'<div><div style="font:700 22px var(--sans);color:var(--gold)">'+fmt(lr.total_sum)+'</div><div style="font-size:12px;color:var(--silver)">сумма</div></div>':'')+'</div>'
-        : '<div style="font-size:13px;color:var(--ink-soft)">'+esc(lr.summary||lr.status||'выполнено')+'</div>')+
-      '<div id="wz_digest_box" style="margin-top:8px"></div>'+
-      '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'+
-        '<button class="btn gold sm" onclick="runProcess('+i+');wzCabTab(\'overview\')">▶ Собрать сейчас</button>'+
-        '<button class="btn ghost sm" onclick="configureProcess('+i+')">⚙ Изменить словами</button>'+
-      '</div>') : '';
-  if(lr) setTimeout(function(){ _wzDigestLoad(a.session_id); }, 40);
-  // §7bis ступень 3: сгенерированные Строителем доменные поля (значения живут в a.fields → кормят синтез)
-  var pm=a.panel_manifest, flds=a.fields||{};
-  var panelCard;
+}
+function _wzCabHow(a){
+  // «Как устроено» — свёрнуто: читают один раз, а место занимало всегда.
+  var st=_wzCabStages(a);
+  return '<details style="max-width:720px;margin-bottom:14px"><summary style="cursor:pointer;color:var(--nav);font:600 13px var(--sans);padding:6px 0;list-style:none">🧭 Как устроено — что делает и из каких шагов</summary>'+
+    '<div style="margin-top:8px">'+
+    _wzCard(_wzH('Что делает')+'<div style="font-size:14px;line-height:1.6;color:var(--ink-soft)">'+esc(a.goal||a.process_name||'Собранный процесс.')+'</div>')+
+    (st?_wzCard(_wzH('Шаги процесса')+
+       '<div style="font-size:12.5px;color:var(--silver);margin-bottom:4px">Собраны Мастером под вашу задачу. Данные, правила и получатели — во вкладке «Настройка»; переделать шаги — «Открыть в Мастере».</div>'+st):'')+
+    _wzCabOverview(a)+
+    '</div></details>';
+}
+function _wzCabPanelFields(a){
+  // §7bis ступень 3: доменные поля, сгенерированные Строителем. Их место — в «Настройке»
+  // рядом с остальными настройками, а не на обзорном экране.
+  var i=_wzCabI, pm=a.panel_manifest, flds=a.fields||{};
   if(pm && pm.fields && pm.fields.length){
     var inputs=pm.fields.map(function(f){
       var val=flds[f.key]!=null?flds[f.key]:(f.default||'');
@@ -3921,28 +3923,18 @@ function _wzCabProcess(a){
       return '<div style="margin-bottom:10px"><label style="font-size:13px;font-weight:600;display:block;margin-bottom:3px">'+esc(f.label)+'</label>'+
         (f.hint?'<div style="font-size:11.5px;color:var(--silver);margin-bottom:4px">'+esc(f.hint)+'</div>':'')+ctrl+'</div>';
     }).join('');
-    panelCard=_wzCard(
+    return _wzCard(
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+_wzH('Настройки процесса')+
       '<a href="#" onclick="genPanel('+i+',true);return false" style="font-size:11.5px;color:var(--silver)">пересобрать поля</a></div>'+
       '<div style="font-size:12px;color:var(--silver);margin-bottom:12px">Сгенерированы Мастером под ваш процесс. Влияют на то, как собирается результат.</div>'+
       inputs+
       '<button class="btn gold sm" style="margin-top:4px" onclick="savePanelFields('+i+')">Сохранить настройки</button>');
-  } else {
-    panelCard=_wzCard(_wzH('Настройки процесса')+
-      '<div style="font-size:13px;color:var(--silver);margin-bottom:10px">Мастер может выделить настройки этого процесса (пороги, имена, период) — чтобы менять их прямо тут.</div>'+
-      '<button class="btn ghost sm" onclick="genPanel('+i+')">✨ Сгенерировать настройки</button>');
   }
-  return _wzCard(
-      _wzH('Что делает')+
-      '<div style="font-size:14px;line-height:1.6;color:var(--ink-soft);margin-bottom:6px">'+esc(a.goal||a.process_name||'Собранный процесс.')+'</div>'+
-      '<div style="margin-top:12px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
-      '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
-    + panelCard
-    + resultCard
-    + _wzCard(_wzH('Как проходит процесс')+
-      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:4px">Шаги собраны Мастером под вашу задачу. Правки данных/получателей — во вкладках; переделать шаги — «Открыть в Мастере».</div>'+
-      stageCards);
+  return _wzCard(_wzH('Настройки процесса')+
+    '<div style="font-size:13px;color:var(--silver);margin-bottom:10px">Мастер может выделить настройки этого процесса (пороги, имена, период) — чтобы менять их прямо тут.</div>'+
+    '<button class="btn ghost sm" onclick="genPanel('+i+')">✨ Сгенерировать настройки</button>');
 }
+
 async function genPanel(i, regen){
   var a=AUTOS[i]; if(!a) return;
   busy(regen?"Пересобираю поля процесса…":"Мастер выделяет настройки процесса…");
@@ -4037,13 +4029,27 @@ function _wzCabLaunch(a){
       '</div><div id="wz_targets_'+i+'" style="margin-top:8px;font-size:12px;color:var(--silver)"><span class="spin"></span></div>'+
       '<div id="wz_place_'+i+'" style="margin-top:12px;border-top:1px solid var(--cream-dark);padding-top:10px"><span class="spin"></span></div>');
   setTimeout(function(){ _wzTargetsLoad(i); _wzPlaceLoad(i, a.session_id); }, 60);
+  // C3: свежесобранный процесс — не пустая витрина, а «что я буду делать + первый прогон».
+  // Раньше это жило на отдельной вкладке «Процесс», и владелец видел нулевое состояние
+  // в одном месте, а кнопку запуска — в другом.
+  if(!lr && !(a.runs_count>0)){
+    return panelCard + _wzCard(
+        _wzH('Что будет делать эта автоматизация')+
+        '<div style="font-size:14px;color:var(--ink-soft);line-height:1.55;margin-bottom:14px">'+esc(a.goal||a.slice_summary||'Процесс собран и готов к первому прогону.')+'</div>'+
+        '<button class="btn gold" style="font-size:15px;padding:10px 22px" onclick="runProcess('+i+')">▶ Сделать первый прогон</button>'+
+        '<div style="font-size:12px;color:var(--silver);margin-top:8px">После первого прогона здесь появится живой результат.</div>'+
+        '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
+      + _wzCard(_wzH('Готовность')+'<div>'+ready+'</div>')
+      + execCard + _wzCabHow(a);
+  }
   return panelCard + _wzCard(
       _wzH('Готовность')+'<div>'+ready+'</div>'+
-      '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button></div>'+
+      '<div style="margin-top:14px"><button class="btn gold" onclick="runProcess('+i+')" style="font-size:15px;padding:10px 22px">▶ Запустить сейчас</button>'+
+      '<button class="btn ghost" style="margin-left:8px" onclick="configureProcess('+i+')">⚙ Изменить словами</button></div>'+
       '<div id="autoRun-'+i+'" style="margin-top:10px"></div>')
     + result
     + execCard
-    + '<details style="max-width:720px;margin-bottom:14px"><summary style="cursor:pointer;color:var(--nav);font:600 13px var(--sans);padding:6px 0;list-style:none">⚙ Под капотом — как устроено</summary><div style="margin-top:8px">'+_wzCabOverview(a)+'</div></details>';
+    + _wzCabHow(a);
 }
 // A1 КАРТА РАЗМЕЩЕНИЯ: какая стадия на каком устройстве. Процесс перестал быть «одним куском
 // на одной машине»: чтение 1С — там, где 1С; отчёт и доставка — на хостинге 24/7.
@@ -4141,7 +4147,10 @@ function _wzCabRuns(a){
       (files.length?'<span style="font-size:12.5px;margin-left:auto">'+files.join(' · ')+'</span>':'')+
       '</div>';
   }).join(''):'<div style="color:var(--silver);font-size:13px;padding:12px 0">Запусков пока нет. Нажмите «▶ Запустить сейчас» — история появится здесь.</div>';
-  return _wzCard('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('История запусков')+'<button class="btn gold sm" onclick="runProcess('+_wzCabI+')">▶ Запустить сейчас</button></div>'+list+'<div id="autoRun-'+_wzCabI+'" style="margin-top:10px"></div>');
+  // Запуск живёт в Обзоре в единственном экземпляре — здесь он был третьей копией
+  // одной кнопки. История отвечает на вопрос «что было», а не «сделай ещё раз».
+  return _wzCard('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'+_wzH('История запусков')+
+    '<a href="#" onclick="wzCabTab(\'overview\');return false" style="font-size:12.5px;color:#c60">запустить — в Обзоре →</a></div>'+list);
 }
 function _wzCabSchedule(a){
   var sc=a.schedule||{};
@@ -4184,6 +4193,9 @@ async function _saveRecipients(a,list){
   busyOff();
   if(r&&r.status==='success'){ a.recipients=r.recipients||list; toast('✓ Получатели обновлены','ok'); if(_wzCabI>=0) _wzCabRender(); }
   else toast('Ошибка: '+((r&&r.message)||''),'err');
+}
+function _wzSectionLabel(txt){
+  return '<div style="font:700 11px var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--silver);margin:22px 0 8px;max-width:720px">'+esc(txt)+'</div>';
 }
 function _wzCabSettings(a){
   // #2 ленивая подгрузка «куда шлём» (dest получателей) — один раз, потом перерисовать с адресами
@@ -4237,7 +4249,18 @@ function _wzCabSettings(a){
      '<div style="font:700 12px var(--sans);color:#c0392b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Опасная зона</div>'+
      '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Убрать автоматизацию из списка. Уходит в архив (можно вернуть), расписание снимается.</div>'+
      '<button class="btn ghost sm" style="color:#c0392b;border-color:#e0a0a0" onclick="deleteAutomation('+_wzCabI+')">🗑 Удалить автоматизацию</button>');
-  return recipientsCard+srcCard+trCard+scCard+deployCard+advCard+verCard+dangerCard;
+  // Настройка = один связный ответ на вопрос «как это устроено»: ЧТО процесс ест,
+  // по КАКИМ правилам считает, КОМУ и КАК отдаёт, КОГДА и ГДЕ исполняется.
+  // Раньше эта логика была разорвана на четыре вкладки (Настройка/Правила/Шаблон/Процесс),
+  // хотя настраивают обычно подряд, а не точечно.
+  return _wzSectionLabel('Данные и правила')
+       + srcCard + _wzCabPanelFields(a) + _wzCabRules(a)
+       + _wzSectionLabel('Кому и как отправлять')
+       + recipientsCard + _wzCabTemplate(a)
+       + _wzSectionLabel('Когда и где исполнять')
+       + scCard + trCard
+       + _wzSectionLabel('Процесс целиком')
+       + deployCard + advCard + verCard + dangerCard;
 }
 async function saveTargetReq(i){
   var a=AUTOS[i]; if(!a) return;
