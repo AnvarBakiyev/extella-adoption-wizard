@@ -185,6 +185,42 @@ def main():
             return True, "манифест v%s" % d["manifest"].get("manifest_version")
         return bool(d.get("note")), d.get("note") or "ни манифеста, ни пометки"
 
+    print("\nДоставка на ЭТОТ аккаунт")
+
+    @check("эксперты, которых зовёт код, есть на аккаунте")
+    def _():
+        # Самая дорогая находка 19.07: движок Workspace (1803 строки) жил ТОЛЬКО на аккаунте
+        # Анвара, при том что коллегам раскладывался клиент, который в него стучится, — Workspace
+        # у них открывался и молча не работал. Тот же класс — mcp_call: наш код его зовёт, а ни
+        # один установщик не создавал. «Работает у нас» и «работает у клиента» разъезжаются БЕЗ
+        # ЕДИНОЙ ЖАЛОБЫ, и увидеть это можно только отсюда — со стороны живого аккаунта.
+        # ГОНЯТЬ У КОЛЛЕГИ: на нашей машине проверка всегда зелёная и потому бесполезна.
+        import re as _re
+        sys.path.insert(0, str(Path.home() / "extella_wizard" / "app"))
+        import server as S
+        root = Path(__file__).resolve().parent.parent
+        pat = _re.compile(r'(?:run_expert\(\s*|expert_name["\']?\s*[:=]\s*)["\']([a-z][a-z0-9_]{3,50})["\']')
+        names = set()
+        for sub in ("ui", "experts", "dist"):
+            d = root / sub
+            if not d.is_dir():
+                continue
+            for f in d.rglob("*"):
+                if f.suffix not in (".py", ".html", ".js") or "__pycache__" in str(f):
+                    continue
+                try:
+                    names.update(pat.findall(f.read_text(encoding="utf-8", errors="ignore")))
+                except Exception:
+                    pass
+        # Имена, которые код СКЛЕИВАЕТ на лету («wz_source_» + вид), проверять нечего.
+        names = {n for n in names if not n.endswith("_")}
+        if not names:
+            return False, "не нашёл ни одного вызова эксперта — проверка ослепла"
+        missing = sorted(n for n in names if not S._expert_exists(n))
+        if missing:
+            return False, "НЕТ на аккаунте (%d из %d): %s" % (len(missing), len(names), ", ".join(missing[:6]))
+        return True, "все %d на месте" % len(names)
+
     print("\nАвтопилот")
 
     @check("мониторинг отдаёт живую картину")
