@@ -2099,6 +2099,29 @@ def _app_wrap_flow(app_id, purpose=""):
     """Полный путь «приложение → рабочий блок». В каталог пускает только живой прогон, и ответ
     обязан быть НЕПУСТЫМ: у приложения слишком легко получить вежливую страницу-заглушку вместо
     данных, а такой блок в процессе хуже, чем его отсутствие."""
+    # Идемпотентность: если блок этого приложения уже есть — не гоняем модель и прогон повторно.
+    # Триггер стоит на установке, а установку легко повторить (переустановил/перезапустил) — второй
+    # прогон был бы платной тратой и лишним дублем.
+    _slug = re.sub(r"[^a-z0-9_]", "_", str(app_id).split("/")[-1].lower())[:24].strip("_") or "app"
+    try:
+        g = api("/api/kv/get", {"key": "composer:catalog", "global": True})
+        blocks = (json.loads(g.get("value")) if isinstance(g, dict) and g.get("value") else {}).get("blocks") or []
+
+        def _same_app(b):
+            if not isinstance(b, dict):
+                return False
+            o = b.get("origin") or {}
+            if o.get("kind") == "app" and o.get("ref") == app_id:
+                return True
+            # блоки старше поля origin (searxng собран до backfill) узнаём по слагу в имени:
+            # cap_<slug>_… — иначе повторная установка плодит дубль-блок того же приложения.
+            return str(b.get("id") or "").startswith("cap_" + _slug + "_")
+        exist = next((b for b in blocks if _same_app(b)), None)
+        if exist:
+            return {"ok": True, "app": app_id, "expert": exist.get("id"), "already": True,
+                    "catalog": {"ok": True, "blocks": len(blocks)}}
+    except Exception:
+        pass
     info = _app_info(app_id)
     if not info.get("ok"):
         return {"ok": False, "stage": "app", "why": info.get("why")}
