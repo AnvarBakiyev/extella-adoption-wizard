@@ -233,6 +233,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   <button class="btn ghost" id="agentBadge" onclick="openAgentManager()" title="Для какого агента строим (концепты, правила, память — в его мозг)">🤖 Агент…</button>
   <button class="btn ghost" id="brainBtn" onclick="openBrain()" title="Мозг агента: знания, правила, голос, умения" style="display:none">🧠 Мозг</button>
   <select class="sess-select" id="sessSelect" onchange="loadSession(this.value)"></select>
+  <button class="btn ghost" id="wDelSess" onclick="deleteSession()" title="Убрать выбранную сессию в архив" style="padding:6px 9px">🗑</button>
   <button class="btn ghost" id="wNewSess" onclick="newSession()">+ Новая сессия</button>
   <button class="btn ghost" id="wLangBtn" onclick="toggleWLang()" title="Language / Язык">EN</button>
   <button class="btn gold" id="chatToggle" onclick="toggleChat()">💬 Помощник</button>
@@ -553,7 +554,9 @@ async function genQuestions(){
     el('stQGen').textContent='не вышло: '+((r&&r.message)||'')+' — остался стандартный конспект';
   }
 }
-const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch"};
+// built/launched обычно уводят в кабинет «Автоматизаций»; здесь они нужны на случай, когда кабинета нет
+// (процесс не попал в список) — тогда человек приземляется на «Стройку»/«Запуск», а не в ПУСТОЕ интервью.
+const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch", built:"test", launched:"launch"};
 const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
 let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
 
@@ -1835,11 +1838,42 @@ function newSession(){
     if(!el("chat").classList.contains("open")) toggleChat();
   });
 }
+// Убрать сессию. Раньше убрать НЕДОСТРОЕННУЮ сессию было нечем: удаление жило только в кабинете
+// «Автоматизаций», а туда попадают лишь собранные процессы. Брошенные на интервью/плане копились
+// в селекторе навсегда (у Анвара их 24) — искать среди них рабочую становилось невозможно.
+// Удаление = АРХИВ: файлы уезжают в sessions_archive, возврат — через «Архив» в Автоматизациях.
+async function deleteSession(){
+  var sid = (el("sessSelect")||{}).value || S.sessionId;
+  if(!sid){ toast("Сначала выберите сессию в списке","err"); return; }
+  var opt = el("sessSelect") && el("sessSelect").selectedOptions && el("sessSelect").selectedOptions[0];
+  var nm = (opt && opt.textContent) ? opt.textContent.split(" · ")[0] : "эту сессию";
+  var st = (S.sessionId===sid && S.session) ? S.session.stage : null;
+  var live = (st==="built" || st==="launched");
+  ask("Убрать «"+nm+"»?",
+      live ? "Это СОБРАННЫЙ процесс: расписание снимется, автозапуски прекратятся, из витрины уберётся. Уйдёт в архив — вернуть можно через «Архив» в Автоматизациях."
+           : "Уйдёт в архив — вернуть можно через «Архив» в Автоматизациях. Продолжить?",
+      "", async function(){
+    busy("Убираю в архив…");
+    var r = await jpost("/x/automation_delete",{session_id:sid});
+    busyOff();
+    if(!r || r.status!=="success"){ toast("Не удалось убрать: "+((r&&r.message)||"мост не ответил"),"err"); return; }
+    toast("✓ «"+nm+"» в архиве","ok");
+    if(S.sessionId===sid){ S.sessionId=null; S.session=null; S.blueprint=null; S.spec=null; }
+    await refreshSessions();
+    if(S.mode==="automations"){ try{ var d=await jget("/x/automations"); AUTOS=(d&&d.automations)||[]; renderAutomations(); }catch(e){} }
+    else render();
+  });
+}
 async function loadSession(sid){
   if(!sid){ S.sessionId=null; render(); return; }
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
   S.sessionId = sid;
+  // Селектор в шапке — единственный указатель «где я сейчас». При заходе не из него (карточка рабочего
+  // стола, deep-link, «Открыть в Мастере») он оставался на «— выбрать сессию —»: процесс открыт, а шапка
+  // говорит, что ничего не выбрано. Синхронизируем всегда — иначе и 🗑 непонятно, что удалит.
+  var _ss = el("sessSelect");
+  if(_ss && _ss.value !== sid) _ss.value = sid;
   await loadChatHistory(sid);                 // подтянуть стенограмму разговора этой сессии
   S.session = await jget("/x/session?id="+encodeURIComponent(sid));
   S.blueprint = null; S.spec = null;
@@ -1849,11 +1883,17 @@ async function loadSession(sid){
   // собранный/запущенный процесс живёт в КАБИНЕТЕ «Автоматизаций» — открываем его (а не пустое интервью
   // Мастера: STAGE2VIEW не знает launched/built → раньше падало в interview = «выбрал, но никуда не перешло»)
   if(st==="launched" || st==="built"){
+    var _found = false;
     try{ var d=await jget("/x/automations"); var list=(d&&d.automations)||[]; var idx=list.findIndex(function(a){return a.session_id===sid;});
-      if(idx>=0){ AUTOS=list; setMode("automations"); openWzCabinet(idx); return; } }catch(e){}
+      if(idx>=0){ AUTOS=list; setMode("automations"); openWzCabinet(idx); _found = true; } }catch(e){
+      toast("Кабинет не открылся ("+((e&&e.message)||"нет связи с мостом")+") — открываю в Мастере","err"); }
+    if(_found) return;
   }
-  // иначе — Мастер (интервью/blueprint/spec/test/launch)
-  if(S.mode==="composer"||S.mode==="my"||S.mode==="core") setMode("wizard");
+  // иначе — Мастер (интервью/blueprint/spec/test/launch).
+  // ВСЕГДА уходим из чужого режима. Раньше здесь стоял белый список ("composer"/"my"/"core"), и в нём не было
+  // "automations": выбор недостроенной сессии ИЗ «Автоматизаций» не переключал экран вообще — со стороны
+  // «сессию выбрал, план не открылся, как попасть в Мастер — непонятно» (Гульжан, 19.07).
+  setMode("wizard");
   S.view = STAGE2VIEW[st] || "interview";
   render();
 }

@@ -70,4 +70,78 @@ else
   warn "После доступа: git clone <repo> \"$TB_DIR\" && повторите этот скрипт."
 fi
 
-say "Готово. Перезапустите Extella (Cmd+Q → открыть), чтобы применить тулбар и карточки."
+# ── 4. ACTIVITY CENTER: виджет «что делает Extella» ────────────────────────
+# Панель приезжает вместе с тулбаром, а ДАННЫЕ для неё дают мост :8799 и наблюдатель, вшитый
+# в среду листенера. Этот шаг ставил только install-all.sh (первичная установка) — коллеги,
+# обновлявшиеся апдейтером, получали панель без источника: виджет молча показывал «фоновых
+# задач нет» при работающем листенере (Гульжан, 19.07). Ставим здесь и ГОВОРИМ результат.
+say "Activity Center: виджет «что делает Extella»"
+if [ "$(uname)" != "Darwin" ]; then
+  warn "только macOS — пропускаю"
+else
+  # Тянем НЕ по имени ветки, а по хешу коммита. raw.githubusercontent кэширует ветку на минуты:
+  # 19.07 шаг скачал версию ДО только что сделанного пуша и поставил её поверх более свежей —
+  # то есть откатил рабочий наблюдатель. Ссылка на коммит неизменяема и кэша не имеет.
+  AC_REPO="AnvarBakiyev/extella-marketplace-pack"
+  AC_SHA="$(curl -fsSL "https://api.github.com/repos/$AC_REPO/commits/main" 2>/dev/null \
+            | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true)"
+  if [ -n "${AC_SHA:-}" ]; then
+    ok "версия наблюдателя: ${AC_SHA:0:7}"
+  else
+    AC_SHA="main"
+    warn "не удалось узнать точную версию (нет доступа к api.github.com) — беру ветку main;"
+    warn "если только что был пуш, GitHub может отдать копию из кэша."
+  fi
+  AC_RAW="https://raw.githubusercontent.com/$AC_REPO/$AC_SHA/device"
+  AC_TMP="$(mktemp -d)"
+  mkdir -p "$AC_TMP/activity-center/bridge" "$AC_TMP/activity-center/instrumentation" "$AC_TMP/boot"
+  ac_ok=1
+  # Список = ровно то, что раскладывает install.py (см. sources в нём). Пропустить хоть один —
+  # установщик упадёт на copy2; boot-скрипт необязателен, его отсутствие не ошибка.
+  for f in activity-center/install.py activity-center/bridge/server.py \
+           activity-center/bridge/activity_model.py activity-center/bridge/service_manager.py \
+           activity-center/bridge/task_state.py \
+           activity-center/instrumentation/extella_activity_hook.py boot/restart_local_servers.py; do
+    curl -fsSL "$AC_RAW/$f" -o "$AC_TMP/$f" || { [ "$f" = "boot/restart_local_servers.py" ] || ac_ok=0; }
+  done
+  # Список выше должен покрывать всё, что install.py реально копирует. Если Codex добавит модуль,
+  # а этот скрипт о нём не узнает — установщик упадёт на copy2. Спрашиваем сам установщик.
+  if [ "$ac_ok" = "1" ]; then
+    AC_MISS="$("$PY" - "$AC_TMP/activity-center" <<'PYEOF' 2>/dev/null || true
+import os, re, sys
+root = sys.argv[1]
+src = open(os.path.join(root, "install.py"), encoding="utf-8").read()
+m = re.search(r"sources\s*=\s*\((.*?)\)", src, re.S)
+want = re.findall(r'root\s*/\s*"([^"]+)"\s*/\s*"([^"]+)"', m.group(1) if m else "")
+print(" ".join(a + "/" + b for a, b in want if not os.path.exists(os.path.join(root, a, b))))
+PYEOF
+)"
+    [ -n "${AC_MISS:-}" ] && { ac_ok=0; warn "установщику нужны файлы, которых нет в списке: $AC_MISS"; }
+  fi
+  if [ "$ac_ok" != "1" ]; then
+    warn "не скачались файлы наблюдателя — виджет останется пустым. Проверьте сеть и повторите."
+  else
+    AC_OUT="$("$PY" "$AC_TMP/activity-center/install.py" 2>&1)"
+    # «(N listener hooks)» — сколько сред листенера реально прошито. Ноль = виджет НЕ ЗАРАБОТАЕТ,
+    # и молчать об этом нельзя: снаружи это неотличимо от «задач просто нет».
+    AC_HOOKS="$(printf '%s' "$AC_OUT" | sed -n 's/.*(\([0-9]*\) listener hooks).*/\1/p')"
+    if [ -z "$AC_HOOKS" ]; then
+      warn "установщик наблюдателя отработал непонятно: ${AC_OUT:-нет вывода}"
+    elif [ "$AC_HOOKS" = "0" ]; then
+      warn "мост :8799 поставлен, но наблюдатель НЕ привязан к листенеру (0 сред)."
+      warn "Причина: среда листенера ещё не создана. Запустите Extella и дайте ей отработать"
+      warn "любую задачу, затем повторите этот скрипт — виджет молчит именно из-за этого."
+    else
+      ok "наблюдатель привязан к листенеру (сред: $AC_HOOKS)"
+    fi
+    sleep 2
+    if curl -fsS --max-time 5 http://127.0.0.1:8799/api/health >/dev/null 2>&1; then
+      ok "мост Activity Center отвечает (:8799)"
+    else
+      warn "мост :8799 не отвечает — виджет будет пуст. Лог: ~/.extella/activity-center/bridge.error.log"
+    fi
+  fi
+  rm -rf "$AC_TMP"
+fi
+
+say "Готово. Перезапустите Extella (Cmd+Q → открыть) — без этого наблюдатель не подхватится."

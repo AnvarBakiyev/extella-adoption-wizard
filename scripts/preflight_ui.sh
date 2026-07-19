@@ -30,6 +30,17 @@ else
   fail=1
 fi
 
+# Наблюдатель Activity Center: канон пишет Codex, а раздаём его МЫ — из пака, через
+# extella-update.sh. Отставание пака не видно ниоткуда: виджет на устаревшем мосту не
+# ругается, он просто говорит «фоновых задач нет» — так и потеряли время у коллеги.
+echo "→ наблюдатель Activity Center (канон ↔ дистрибутив)"
+if _ac=$(python3 "$(dirname "$0")/check_ac_drift.py"); then
+  echo "   ✓ версии совпадают"
+else
+  echo "   ✗ РАСХОЖДЕНИЕ: $_ac — клиент получит не тот наблюдатель"
+  fail=1
+fi
+
 echo "→ python-модули моста"
 for f in ui/*.py; do
   python3 -c "import ast,sys; ast.parse(open('$f',encoding='utf-8').read())" \
