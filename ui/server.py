@@ -1789,6 +1789,285 @@ def _mcp_wrap_flow(server, only=None):
             "why": "" if wrapped else "ни один инструмент не прошёл живую проверку"}
 
 
+# ─────────── ОБЁРТКА НАД УСТАНОВЛЕННЫМ ПРИЛОЖЕНИЕМ ───────────
+# Последний из пяти типов способностей. Приложение ставится (app_install) и запускается
+# (app_start), но нигде не сказано, ЧТО ОНО УМЕЕТ ДЛЯ ПРОЦЕССА — поэтому Композитор его не берёт.
+#
+# Отличие от программ и MCP: у приложения нет ни `--help`, ни схемы инструментов. Проверено на
+# живом SearXNG: openapi.json/swagger.json отсутствуют. Значит спеку вызова предлагает модель по
+# документации приложения — а решает ЖИВОЙ ПРОГОН, и гейт здесь строже, чем у программ: мало кода
+# возврата, ответ обязан быть непустым и осмысленным.
+#
+# И главная особенность: ПОРТ У ПРИЛОЖЕНИЯ МЕНЯЕТСЯ ОТ ЗАПУСКА К ЗАПУСКУ (лаунчер берёт свободный).
+# Зашить адрес в обёртку нельзя — она читает подтверждённый адрес из реестра при КАЖДОМ вызове.
+_APP_WRAP_TEMPLATE = (
+    '# expert: %(NAME)s\n'
+    '# description: %(DESC)s\n'
+    '\n'
+    'def %(NAME)s(%(SIG)s) -> str:\n'
+    '    import json, os, urllib.request, urllib.parse\n'
+    '    SUB = {%(SUBS)s}\n'
+    '    DEF = %(DEFAULTS)s\n'
+    '    KEYS = %(KEYMAP)s\n'
+    '    FIXED = %(FIXED)s\n'
+    '    reg = os.path.expanduser("~/extella-plugins/_registry/%(REGFILE)s.json")\n'
+    '    if not os.path.exists(reg):\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "приложение %(APP)s не установлено на этом устройстве — '
+    'поставьте его в разделе «Программы»"}, ensure_ascii=False)\n'
+    '    try:\n'
+    '        base = ((json.load(open(reg, encoding="utf-8")).get("ui") or {}).get("url") or "").rstrip("/")\n'
+    '    except Exception as e:\n'
+    '        return json.dumps({"status": "error", "message": "запись приложения не читается: " + str(e)[:110]},\n'
+    '                          ensure_ascii=False)\n'
+    '    if not base:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "приложение %(APP)s не запущено — запустите его и повторите"},\n'
+    '                          ensure_ascii=False)\n'
+    '    args = dict(FIXED)   # технические константы приложения — человек их не заполняет\n'
+    '    for k, v in SUB.items():\n'
+    '        if v is None or (isinstance(v, str) and (not v or v.startswith("{{"))):\n'
+    '            v = DEF.get(k, "")\n'
+    '        if v != "":\n'
+    '            args[KEYS.get(k, k)] = v\n'
+    '    miss = [k for k in %(REQUIRED)s if k not in args]\n'
+    '    if miss:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "не заполнено обязательное поле: " + ", ".join(miss)},\n'
+    '                          ensure_ascii=False)\n'
+    '    url = base + "%(PATH)s"\n'
+    '    data = None\n'
+    '    if "%(METHOD)s" == "GET":\n'
+    '        if args:\n'
+    '            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(args)\n'
+    '    else:\n'
+    '        data = json.dumps(args, ensure_ascii=False).encode("utf-8")\n'
+    '    rq = urllib.request.Request(url, data=data, method="%(METHOD)s",\n'
+    '                                headers={"Accept": "application/json",\n'
+    '                                         "Content-Type": "application/json",\n'
+    '                                         "User-Agent": "Extella/1.0"})\n'
+    '    try:\n'
+    '        raw = urllib.request.urlopen(rq, timeout=120).read().decode("utf-8", "replace")\n'
+    '    except Exception as e:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "приложение %(APP)s не ответило: " + str(e)[:130] +\n'
+    '                                      " (проверьте, что оно запущено)"}, ensure_ascii=False)\n'
+    '    if not raw.strip():\n'
+    '        return json.dumps({"status": "error", "message": "приложение вернуло пустой ответ"},\n'
+    '                          ensure_ascii=False)\n'
+    '    LIMIT = 20000\n'
+    '    try:\n'
+    '        parsed = json.loads(raw)\n'
+    '    except Exception:\n'
+    '        parsed = None\n'
+    '    if parsed is None:\n'
+    '        return json.dumps({"status": "success", "output": raw[:LIMIT], "app": "%(APP)s",\n'
+    '                           "truncated": len(raw) > LIMIT}, ensure_ascii=False)\n'
+    '    # JSON режем ПО СТРУКТУРЕ, а не по символам: обрезанный по символу ответ — это сломанные\n'
+    '    # данные, которые выглядят целыми, и дальше по процессу их никто не перепроверит.\n'
+    '    dropped = 0\n'
+    '    if isinstance(parsed, dict):\n'
+    '        for k in ("results", "items", "data", "hits", "entries"):\n'
+    '            if isinstance(parsed.get(k), list):\n'
+    '                while len(json.dumps(parsed, ensure_ascii=False)) > LIMIT and parsed[k]:\n'
+    '                    parsed[k].pop()\n'
+    '                    dropped += 1\n'
+    '                break\n'
+    '    s = json.dumps(parsed, ensure_ascii=False)\n'
+    '    if len(s) > LIMIT:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "ответ приложения слишком велик (" + str(len(s)) +\n'
+    '                                      " символов) и не поддаётся сокращению без порчи данных"},\n'
+    '                          ensure_ascii=False)\n'
+    '    return json.dumps({"status": "success", "output": s, "app": "%(APP)s",\n'
+    '                       "dropped_items": dropped}, ensure_ascii=False)\n'
+)
+
+
+def _app_registry_file(app_id):
+    """Имя файла реестра — ПЛОСКОЕ, посимвольное зеркало тулбарного _safeIdOf. Идентификатор
+    приложения содержит владельца через слэш (cocktailpeanut/searxng.pinokio), и вложенный путь
+    здесь был отдельным дефектом (найден 19.07, починен контуром тулбара)."""
+    return re.sub(r"[^a-zA-Z0-9]", "_", str(app_id))
+
+
+def _app_info(app_id):
+    """Что мы знаем о приложении: где лежит, по какому адресу отвечает, чем себя описывает.
+    Никаких догадок: если не установлено или не запущено — так и говорим."""
+    reg = Path.home() / "extella-plugins" / "_registry" / (_app_registry_file(app_id) + ".json")
+    if not reg.exists():
+        return {"ok": False, "why": "приложение не установлено на этом устройстве"}
+    try:
+        man = json.loads(reg.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "why": "запись приложения не читается: " + str(e)[:120]}
+    url = ((man.get("ui") or {}).get("url") or "").rstrip("/")
+    root = (man.get("app") or {}).get("root") or ""
+    if not url:
+        return {"ok": False, "why": "приложение установлено, но не запущено — запустите его и повторите",
+                "root": root}
+    # Документация рецепта — вход для проектирования спеки (у приложений нет ни --help, ни схемы).
+    doc = ""
+    for fn in ("README.md", "README.rst", "readme.md"):
+        f = Path(root) / fn
+        if root and f.exists():
+            try:
+                doc = f.read_text(encoding="utf-8", errors="ignore")[:2500]
+                break
+            except Exception:
+                pass
+    return {"ok": True, "url": url, "root": root, "repo": (man.get("app") or {}).get("repo") or "",
+            "doc": doc, "why": ""}
+
+
+def _app_wrap_spec(app_id, info, purpose, agent_id=None):
+    """Модель проектирует HTTP-вызов приложения. Это САМОЕ слабое звено из трёх типов: схемы нет,
+    опереться можно только на документацию. Поэтому здесь всё отсекает живой прогон, а не доверие."""
+    ag = agent_id or qwen_agent()
+    if not ag:
+        return {"spec": None, "why": "нет агента для проектирования вызова"}
+    prompt = ("Ты проектируешь обращение к локальному приложению по HTTP для бизнес-автоматизации. "
+              "Верни ТОЛЬКО JSON:\n"
+              '{"action":"<короткое_имя_действия_латиницей>",'
+              '"description":"<что делает, по-русски, одной фразой для неспециалиста>",'
+              '"method":"GET|POST","path":"/<путь>",'
+              '"fixed":{"<техническое_поле>":"<постоянное значение>"},'
+              '"params":[{"name":"<имя_латиницей>","default":"<значение для ПРОБНОГО запуска>",'
+              '"required":true|false,"desc":"<что это>"}],'
+              '"kw":"<слова для поиска, по-русски и по-английски>"}\n\n'
+              "ПРАВИЛА:\n"
+              "- путь начинается со слэша, БЕЗ адреса и порта — их подставим сами;\n"
+              "- РАЗДЕЛЯЙ ДВА ВИДА ПОЛЕЙ. В fixed — технические, значение которых ОДНО И ТО ЖЕ при каждом "
+              "вызове (например format=json): их подставим сами, человек их не увидит. В params — только "
+              "то, что МЕНЯЕТСЯ от задачи к задаче и что человек осмысленно заполняет (например поисковый "
+              "запрос). Технический флаг в params — ошибка: пользователь не должен вводить format=json;\n"
+              "- параметров не больше пяти; у обязательных обязан быть рабочий default, иначе проверка не пройдёт;\n"
+              "- нужен ответ, пригодный для машины — если у приложения есть такой формат, ставь его в fixed;\n"
+              "- выбирай ЧТЕНИЕ, а не изменение: никаких удалений, настроек и записи.\n\n"
+              "Приложение: " + str(app_id)[:60] + "\nИсточник: " + str(info.get("repo") or "")[:80] +
+              "\nЧто от него нужно: " + (str(purpose)[:200] or "типовое применение этого приложения") +
+              "\nДокументация:\n" + (info.get("doc") or "(нет)")[:1800])
+    try:
+        res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 60,
+                                     "store": False, "temperature": 0}, timeout=70)
+    except Exception as e:
+        return {"spec": None, "why": "модель не ответила: " + _scrub(str(e)[:120])}
+    text = ""
+    for it in (res or {}).get("output", []):
+        if isinstance(it, dict) and it.get("type") == "message":
+            for c in it.get("content", []):
+                if isinstance(c, dict) and c.get("type") == "output_text":
+                    text += c.get("text", "")
+    text = text or (res or {}).get("output_text", "")
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return {"spec": None, "why": _llm_error_human(res) or "модель не спроектировала вызов"}
+    try:
+        raw = json.loads(m.group(0))
+    except Exception:
+        return {"spec": None, "why": "спека от модели не разобралась"}
+
+    method = str(raw.get("method") or "GET").upper()
+    if method not in ("GET", "POST"):
+        return {"spec": None, "why": "поддерживаются только GET и POST, модель предложила " + method[:12]}
+    path = str(raw.get("path") or "/")
+    if not path.startswith("/") or "://" in path:
+        return {"spec": None, "why": "путь должен быть относительным и начинаться со слэша: " + path[:40]}
+    act = re.sub(r"[^a-z0-9_]", "", str(raw.get("action") or "call").lower())[:24] or "call"
+    params, seen = [], set()
+    for p in (raw.get("params") or [])[:5]:
+        if not isinstance(p, dict):
+            continue
+        nm = re.sub(r"[^a-z0-9_]", "", str(p.get("name") or "").lower())[:24]
+        if not nm or nm in seen:
+            continue
+        seen.add(nm)
+        params.append({"name": nm, "default": str(p.get("default") or "")[:160],
+                       "required": bool(p.get("required")), "desc": str(p.get("desc") or "")[:80]})
+    missing = [p["name"] for p in params if p["required"] and not p["default"]]
+    if missing:
+        return {"spec": None, "why": "нечем проверить: нет значений обязательных полей " + ", ".join(missing)}
+    fixed = {re.sub(r"[^A-Za-z0-9_]", "", str(k))[:24]: str(v)[:120]
+             for k, v in (raw.get("fixed") or {}).items()
+             if isinstance(raw.get("fixed"), dict) and str(k).strip()}
+    # Поле не может быть одновременно постоянным и заполняемым — иначе непонятно, что победит.
+    params = [p for p in params if p["name"] not in fixed]
+    return {"spec": {"action": act, "description": str(raw.get("description") or "")[:200],
+                     "method": method, "path": path, "params": params, "fixed": fixed,
+                     "kw": str(raw.get("kw") or "")[:300]}, "why": ""}
+
+
+def _app_wrap_render(app_id, spec):
+    """Код обёртки собираем МЫ по шаблону — как у программ и MCP."""
+    slug = re.sub(r"[^a-z0-9_]", "_", str(app_id).split("/")[-1].lower())[:24].strip("_") or "app"
+    name = "cap_" + slug + "_" + spec["action"]
+    keymap, sig_parts, subs_parts = {}, [], []
+    for p in spec["params"]:
+        py = p["name"]
+        keymap[py] = py
+        sig_parts.append('%s: str = ""' % py)
+        subs_parts.append('"%s": %s' % (py, py))
+    # Как у MCP: демо-значения обязательных полей в рабочие дефолты НЕ уходят — иначе шаг с пустым
+    # полем молча посчитает подставные данные и вернёт успех.
+    runtime_def = {p["name"]: p["default"] for p in spec["params"] if not p["required"]}
+    desc = (spec.get("description") or ("обращение к приложению " + str(app_id))).replace("\n", " ")
+    desc += " Зови ЭТОТ эксперт — он сам обратится к приложению на этом устройстве."
+    code = _APP_WRAP_TEMPLATE % {
+        "NAME": name, "DESC": desc[:400], "SIG": ", ".join(sig_parts),
+        "SUBS": ", ".join(subs_parts), "DEFAULTS": json.dumps(runtime_def, ensure_ascii=False),
+        "KEYMAP": json.dumps(keymap, ensure_ascii=False),
+        "REQUIRED": json.dumps([p["name"] for p in spec["params"] if p["required"]], ensure_ascii=False),
+        "FIXED": json.dumps(spec.get("fixed") or {}, ensure_ascii=False),
+        "REGFILE": _app_registry_file(app_id), "APP": str(app_id).replace('"', ""),
+        "PATH": spec["path"], "METHOD": spec["method"]}
+    return name, code, runtime_def
+
+
+def _app_wrap_flow(app_id, purpose=""):
+    """Полный путь «приложение → рабочий блок». В каталог пускает только живой прогон, и ответ
+    обязан быть НЕПУСТЫМ: у приложения слишком легко получить вежливую страницу-заглушку вместо
+    данных, а такой блок в процессе хуже, чем его отсутствие."""
+    info = _app_info(app_id)
+    if not info.get("ok"):
+        return {"ok": False, "stage": "app", "why": info.get("why")}
+    sp = _app_wrap_spec(app_id, info, purpose)
+    if not sp.get("spec"):
+        return {"ok": False, "stage": "spec", "why": sp.get("why")}
+    spec = sp["spec"]
+    name, code, runtime_def = _app_wrap_render(app_id, spec)
+    probe_args = {p["name"]: p["default"] for p in spec["params"] if p["default"]}
+    sv = api("/api/expert/save", {"name": name, "code": code,
+                                  "description": spec["description"][:200], "kwargs": runtime_def,
+                                  "cspl": "fython", "global": True})
+    if not (isinstance(sv, dict) and (sv.get("status") == "success" or sv.get("id"))):
+        return {"ok": False, "stage": "save", "expert": name, "why": _scrub(str(sv)[:150])}
+    probe = run_expert(name, probe_args, wait=240, glob=True)
+    if isinstance(probe, str):
+        try:
+            probe = json.loads(probe)
+        except Exception:
+            try:
+                import ast as _a
+                probe = _a.literal_eval(probe)
+            except Exception:
+                probe = {"status": "error", "message": str(probe)[:200]}
+    out = str((probe or {}).get("output", "")).strip() if isinstance(probe, dict) else ""
+    if not (isinstance(probe, dict) and probe.get("status") == "success" and len(out) > 40):
+        return {"ok": False, "stage": "probe", "expert": name, "spec": spec,
+                "why": str((probe or {}).get("message") or
+                           ("приложение ответило пусто или слишком коротко: " + out[:80]))[:200]}
+    added = _composer_catalog_add({
+        "id": name, "kind": "app",
+        "what": spec["description"] or ("обращение к " + str(app_id)),
+        "params": {p["name"]: (p["desc"] or "") + (" (обязательно)" if p["required"] else "")
+                   for p in spec["params"]},
+        "defaults": runtime_def,
+        "kw": " ".join([str(app_id), spec["action"], spec["kw"], spec["description"]])[:400],
+        "source": "installed"})
+    return {"ok": True, "app": app_id, "expert": name, "spec": spec, "catalog": added,
+            "sample": out[:300]}
+
+
 def _llm_error_human(res):
     """Ошибка модели → человеческий ответ. Business-пользователь НИКОГДА не должен видеть сырой
     JSON платформы с ссылками на langchain — так у Гульжан на тесте вылезло «401 Incorrect API key».
@@ -6749,6 +7028,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "success" if r.get("ok") else "error", "server": srv,
                         "wrapped": r.get("wrapped") or [], "skipped": r.get("skipped") or [],
                         "message": r.get("why", "")})
+
+        elif self.path == "/x/app_wrap":
+            # Приложение → блок Композитора. Пятый и последний тип способностей: программы, модели,
+            # MCP уже замкнуты, скиллы намеренно живут правилом в мозге агента.
+            aid = str(body.get("app_id", "")).strip()[:80]
+            if not aid:
+                self._send({"status": "error", "message": "нужен app_id"}, 400)
+                return
+            r = _app_wrap_flow(aid, str(body.get("purpose", ""))[:200])
+            if r.get("ok"):
+                _registry_refresh_async()   # состав возможностей изменился — реестр вслед
+            self._send({"status": "success" if r.get("ok") else "error", "app": aid,
+                        "expert": r.get("expert", ""), "stage": r.get("stage", ""),
+                        "sample": r.get("sample", ""), "message": r.get("why", "")})
 
         elif self.path == "/x/mcp_tools":
             # Что сервер вообще умеет — до всякой обёртки. Отвечает честно: недоступен, пуст
