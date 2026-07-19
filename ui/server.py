@@ -1480,6 +1480,295 @@ def _wrap_render(tool, spec):
     return name, code
 
 
+# ─────────── ОБЁРТКА НАД ИНСТРУМЕНТОМ MCP ───────────
+# Тот же разрыв, что был у программ, только у MCP: сервер подключается, эксперт mcp_call на
+# платформе есть — а Композитор им пользоваться НЕ МОЖЕТ. Каталог блоков это белый список: чего
+# в нём нет, того процесс не возьмёт. Значит инструмент MCP нужно объявить блоком.
+#
+# Отличие от программ принципиальное и в лучшую сторону: MCP-сервер САМ отдаёт схему аргументов
+# (после правки mcp_call 19.07 — до неё схема выбрасывалась). Поэтому структуру вызова модель
+# больше НЕ ПРОЕКТИРУЕТ: имена полей, типы и обязательность берём из схемы дословно. Модели
+# оставлено только человеческое — описание по-русски, значения для пробного прогона и слова для
+# поиска. Угадывать имена аргументов больше нечем.
+_MCP_WRAP_TEMPLATE = (
+    '# expert: %(NAME)s\n'
+    '# description: %(DESC)s\n'
+    '\n'
+    'def %(NAME)s(%(SIG)s) -> str:\n'
+    '    import json, urllib.request\n'
+    '    from pathlib import Path\n'
+    '    SUB = {%(SUBS)s}\n'
+    '    DEF = %(DEFAULTS)s\n'
+    '    KEYS = %(KEYMAP)s\n'
+    '    TYPES = %(TYPES)s\n'
+    '    args = {}\n'
+    '    for k, v in SUB.items():\n'
+    '        if v is None or (isinstance(v, str) and (not v or v.startswith("{{"))):\n'
+    '            v = DEF.get(k, "")\n'
+    '        if v == "":\n'
+    '            continue\n'
+    '        k2 = KEYS.get(k, k)\n'
+    '        t = TYPES.get(k, "string")\n'
+    '        if t in ("integer", "number"):\n'
+    '            try:\n'
+    '                v = int(v) if t == "integer" else float(v)\n'
+    '            except Exception:\n'
+    '                return json.dumps({"status": "error",\n'
+    '                                   "message": "поле " + k2 + " должно быть числом, получено: " + str(v)[:40]},\n'
+    '                                  ensure_ascii=False)\n'
+    '        elif t == "boolean":\n'
+    '            v = str(v).strip().lower() in ("1", "true", "да", "yes", "on")\n'
+    '        elif t in ("array", "object") and isinstance(v, str):\n'
+    '            try:\n'
+    '                v = json.loads(v)\n'
+    '            except Exception:\n'
+    '                return json.dumps({"status": "error",\n'
+    '                                   "message": "поле " + k2 + " должно быть JSON, получено: " + str(v)[:60]},\n'
+    '                                  ensure_ascii=False)\n'
+    '        args[k2] = v\n'
+    '    miss = [k for k in %(REQUIRED)s if k not in args]\n'
+    '    if miss:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "не заполнено обязательное поле: " + ", ".join(miss)},\n'
+    '                          ensure_ascii=False)\n'
+    '    cfg = Path.home() / "extella_wizard" / "app" / "config.json"\n'
+    '    try:\n'
+    '        tok = json.loads(cfg.read_text(encoding="utf-8")).get("auth_token", "") if cfg.exists() else ""\n'
+    '    except Exception:\n'
+    '        tok = ""\n'
+    '    if not tok:\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": "нет токена Extella (~/extella_wizard/app/config.json)"},\n'
+    '                          ensure_ascii=False)\n'
+    '    body = {"expert_name": "mcp_call", "global": True,\n'
+    '            "params": {"server": "%(SERVER)s", "tool": "%(TOOL)s",\n'
+    '                       "args_json": json.dumps(args, ensure_ascii=False)}}\n'
+    '    rq = urllib.request.Request("https://api.extella.ai/api/expert/run",\n'
+    '                                data=json.dumps(body, ensure_ascii=False).encode("utf-8"),\n'
+    '                                headers={"X-Auth-Token": tok, "Content-Type": "application/json",\n'
+    '                                         "X-Profile-Id": "default",\n'
+    '                                         "X-Agent-Id": "agent_extella_default"}, method="POST")\n'
+    '    try:\n'
+    '        raw = json.loads(urllib.request.urlopen(rq, timeout=240).read().decode("utf-8"))\n'
+    '    except Exception as e:\n'
+    '        return json.dumps({"status": "error", "message": "вызов MCP не прошёл: " + str(e)[:140]},\n'
+    '                          ensure_ascii=False)\n'
+    '    res = raw.get("result")\n'
+    '    if isinstance(res, str):\n'
+    '        try:\n'
+    '            res = json.loads(res)\n'
+    '        except Exception:\n'
+    '            import ast\n'
+    '            try:\n'
+    '                res = ast.literal_eval(res)\n'
+    '            except Exception:\n'
+    '                res = {"status": "error", "message": str(res)[:200]}\n'
+    '    if not isinstance(res, dict) or res.get("status") != "success":\n'
+    '        return json.dumps({"status": "error",\n'
+    '                           "message": str((res or {}).get("message") or "MCP вернул ошибку")[:250]},\n'
+    '                          ensure_ascii=False)\n'
+    '    if res.get("is_error"):\n'
+    '        return json.dumps({"status": "error", "message": str(res.get("result"))[:250]},\n'
+    '                          ensure_ascii=False)\n'
+    '    return json.dumps({"status": "success", "output": str(res.get("result", ""))[:20000],\n'
+    '                       "server": "%(SERVER)s", "tool": "%(TOOL)s"}, ensure_ascii=False)\n'
+)
+
+
+def _mcp_tools(server):
+    """Инструменты сервера СО СХЕМОЙ аргументов. Молчать нельзя: пустой список и недоступный
+    сервер — разные вещи, и разбирать их придётся человеку."""
+    res = run_expert("mcp_call", {"server": str(server), "tool": "__list__"}, wait=240, glob=True)
+    if isinstance(res, str):
+        try:
+            res = json.loads(res)
+        except Exception:
+            try:
+                import ast as _a
+                res = _a.literal_eval(res)
+            except Exception:
+                res = {"status": "error", "message": str(res)[:200]}
+    if not (isinstance(res, dict) and res.get("status") == "success"):
+        return {"tools": [], "why": str((res or {}).get("message") or "сервер не ответил")[:200]}
+    tools = [t for t in (res.get("tools") or []) if isinstance(t, dict) and t.get("name")]
+    if not tools:
+        return {"tools": [], "why": "сервер подключён, но не объявил ни одного инструмента"}
+    no_schema = [t["name"] for t in tools if not (t.get("schema") or {}).get("properties")]
+    return {"tools": tools, "why": "",
+            # Инструмент без схемы обернуть НЕЛЬЗЯ честно — угадывать поля мы отказались.
+            "no_schema": no_schema}
+
+
+def _mcp_wrap_spec(server, tool, agent_id=None):
+    """Модель описывает инструмент ПО-ЧЕЛОВЕЧЕСКИ и подбирает значения для пробного прогона.
+    Структуру вызова она не трогает — та берётся из схемы сервера."""
+    props = (tool.get("schema") or {}).get("properties") or {}
+    req = (tool.get("schema") or {}).get("required") or []
+    ag = agent_id or qwen_agent()
+    if not ag:
+        return {"spec": None, "why": "нет агента для описания инструмента"}
+    fields = "\n".join("- %s (%s%s): %s" % (k, v.get("type") or "string",
+                                            ", обязательное" if k in req else "",
+                                            str(v.get("desc") or "")[:90])
+                       for k, v in props.items())
+    prompt = ("Опиши инструмент внешнего сервиса для каталога бизнес-автоматизаций. Верни ТОЛЬКО JSON:\n"
+              '{"action":"<короткое_имя_действия_латиницей>",'
+              '"description":"<что делает, по-русски, одной фразой для неспециалиста>",'
+              '"defaults":{"<имя_поля>":"<значение для ПРОБНОГО запуска>"},'
+              '"kw":"<слова для поиска, по-русски и по-английски>"}\n\n'
+              "ПРАВИЛА:\n"
+              "- имена полей в defaults бери ТОЛЬКО из списка ниже, новых не выдумывай;\n"
+              "- у КАЖДОГО обязательного поля должно быть значение, иначе проверка не пройдёт;\n"
+              "- значения безобидные и заведомо рабочие (пример для веб-запроса: https://example.com);\n"
+              "- описание деловое, без технического жаргона.\n\n"
+              "Сервис: " + str(server)[:40] + "\nИнструмент: " + str(tool.get("name"))[:60] +
+              "\nЧто о нём известно: " + str(tool.get("desc") or "")[:200] +
+              "\nПоля:\n" + (fields or "(без полей)"))
+    try:
+        res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 60,
+                                     "store": False, "temperature": 0}, timeout=70)
+    except Exception as e:
+        return {"spec": None, "why": "модель не ответила: " + _scrub(str(e)[:120])}
+    text = ""
+    for it in (res or {}).get("output", []):
+        if isinstance(it, dict) and it.get("type") == "message":
+            for c in it.get("content", []):
+                if isinstance(c, dict) and c.get("type") == "output_text":
+                    text += c.get("text", "")
+    text = text or (res or {}).get("output_text", "")
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return {"spec": None, "why": _llm_error_human(res) or "модель не описала инструмент"}
+    try:
+        raw = json.loads(m.group(0))
+    except Exception:
+        return {"spec": None, "why": "описание от модели не разобралось"}
+
+    act = re.sub(r"[^a-z0-9_]", "", str(raw.get("action") or tool.get("name") or "call").lower())[:24] or "call"
+    # Значения — только для полей, которые СУЩЕСТВУЮТ в схеме. Выдуманные молча не берём.
+    defaults = {k: str(v)[:200] for k, v in (raw.get("defaults") or {}).items()
+                if isinstance(raw.get("defaults"), dict) and k in props}
+    missing = [k for k in req if not defaults.get(k)]
+    if missing:
+        return {"spec": None, "why": "нечем проверить: модель не дала значения обязательных полей " + ", ".join(missing)}
+    return {"spec": {"action": act, "description": str(raw.get("description") or "")[:200],
+                     "defaults": defaults, "kw": str(raw.get("kw") or "")[:300],
+                     "properties": props, "required": [r for r in req if isinstance(r, str)]}, "why": ""}
+
+
+def _mcp_wrap_render(server, tool_name, spec):
+    """Код обёртки собираем МЫ по шаблону — тот же принцип, что у программ."""
+    srv = re.sub(r"[^a-z0-9_]", "", str(server).lower())[:20]
+    tl = re.sub(r"[^a-z0-9_]", "", str(tool_name).lower())[:28]
+    name = "cap_" + srv + "_" + (tl or spec["action"])
+    # Имя поля схемы может не быть годным именем python-параметра (дефисы, регистр) — держим карту.
+    keymap, sig_parts, subs_parts, types = {}, [], [], {}
+    for k, meta in spec["properties"].items():
+        py = re.sub(r"[^a-z0-9_]", "_", str(k).lower())[:32] or "arg"
+        while py in keymap:
+            py += "_"
+        keymap[py] = k
+        # Тип поля из схемы. Параметры эксперта всегда приходят строками, а MCP-сервер типы
+        # проверяет: у fetch поле max_length целочисленное, и строка "0" отлетала с
+        # «'0' is not of type 'integer'». Приводим по схеме — это ровно то, ради чего мы её и
+        # научили приходить, а не догадка.
+        types[py] = str((meta or {}).get("type") or "string")
+        sig_parts.append('%s: str = ""' % py)
+        subs_parts.append('"%s": %s' % (py, py))
+    rev = {v: k for k, v in keymap.items()}
+    desc = (spec.get("description") or ("вызов " + str(tool_name))).replace("\n", " ")
+    desc += " Зови ЭТОТ эксперт — он сам обратится к сервису %s." % server
+    # ЗНАЧЕНИЯ ДЛЯ ПРОВЕРКИ ≠ ЗНАЧЕНИЯ ДЛЯ РАБОТЫ. Модель придумывает безобидные примеры, чтобы
+    # прогнать живую пробу («https://example.com», «Asia/Almaty»). Зашить их как рабочие дефолты
+    # ОБЯЗАТЕЛЬНЫХ полей нельзя: тогда шаг с незаполненным полем молча посчитает демо-данные и
+    # вернёт успех — правдоподобный, но ложный ответ. Поймано на проверке 19.07.
+    # Поэтому в код обёртки уходят дефолты ТОЛЬКО необязательных полей; проба получает всё явно.
+    req_keys = set(spec["required"])
+    runtime_def = {rev[k]: v for k, v in spec["defaults"].items() if k in rev and k not in req_keys}
+    code = _MCP_WRAP_TEMPLATE % {
+        "NAME": name, "DESC": desc[:400], "SIG": ", ".join(sig_parts) or "",
+        "SUBS": ", ".join(subs_parts),
+        "DEFAULTS": json.dumps(runtime_def, ensure_ascii=False),
+        "KEYMAP": json.dumps(keymap, ensure_ascii=False),
+        "TYPES": json.dumps(types, ensure_ascii=False),
+        # Проверяем обязательность ПО ИМЕНИ ПОЛЯ СЕРВЕРА — args собираются уже под его именами.
+        "REQUIRED": json.dumps([k for k in spec["required"]], ensure_ascii=False),
+        "SERVER": server, "TOOL": tool_name}
+    return name, code, keymap, runtime_def
+
+
+def _mcp_wrap_one(server, tool):
+    """Один инструмент → рабочий блок. В каталог попадает ТОЛЬКО то, что реально отработало."""
+    if not (tool.get("schema") or {}).get("properties"):
+        return {"ok": False, "tool": tool.get("name"), "stage": "schema",
+                "why": "инструмент не объявил схему аргументов — угадывать поля не будем"}
+    sp = _mcp_wrap_spec(server, tool)
+    if not sp.get("spec"):
+        return {"ok": False, "tool": tool.get("name"), "stage": "spec", "why": sp.get("why")}
+    spec = sp["spec"]
+    name, code, keymap, runtime_def = _mcp_wrap_render(server, tool["name"], spec)
+    rev = {v: k for k, v in keymap.items()}
+    probe_args = {rev[k]: v for k, v in spec["defaults"].items() if k in rev}   # всё, включая обязательные
+    sv = api("/api/expert/save", {"name": name, "code": code,
+                                  "description": spec["description"][:200],
+                                  "kwargs": runtime_def,   # обязательные пустыми — иначе демо-значения уедут в прод
+                                  "cspl": "fython", "global": True})
+    if not (isinstance(sv, dict) and (sv.get("status") == "success" or sv.get("id"))):
+        return {"ok": False, "tool": tool["name"], "stage": "save", "expert": name,
+                "why": _scrub(str(sv)[:150])}
+    probe = run_expert(name, probe_args, wait=300, glob=True)
+    if isinstance(probe, str):
+        try:
+            probe = json.loads(probe)
+        except Exception:
+            try:
+                import ast as _a
+                probe = _a.literal_eval(probe)
+            except Exception:
+                probe = {"status": "error", "message": str(probe)[:200]}
+    if not (isinstance(probe, dict) and probe.get("status") == "success"
+            and str(probe.get("output", "")).strip()):
+        return {"ok": False, "tool": tool["name"], "stage": "probe", "expert": name,
+                "why": str((probe or {}).get("message") or "инструмент ничего не вернул")[:200]}
+    # В каталоге обязательные поля помечены словом — Композитор должен взять их ИЗ ЗАДАЧИ клиента,
+    # а не из наших примеров, иначе процесс посчитает демо-данные и никто этого не заметит.
+    req_keys = set(spec["required"])
+    added = _composer_catalog_add({
+        "id": name, "kind": "mcp",
+        "what": spec["description"] or ("вызов " + tool["name"]),
+        "params": {rev[k]: ((v.get("desc") or v.get("type") or "") +
+                            (" (обязательно)" if k in req_keys else ""))
+                   for k, v in spec["properties"].items() if k in rev},
+        "defaults": runtime_def,
+        "kw": " ".join([str(server), tool["name"], spec["kw"], spec["description"]])[:400],
+        "source": "installed"})
+    return {"ok": True, "tool": tool["name"], "expert": name, "catalog": added,
+            "sample": str(probe.get("output", ""))[:200]}
+
+
+def _mcp_wrap_flow(server, only=None):
+    """Полный путь «сервер MCP → рабочие блоки». Оборачиваем не всё подряд: у filesystem
+    четырнадцать инструментов, и блок «прочитать файл как base64» только засорит каталог.
+    Правило: берём то, что просили (only) либо всё со схемой; в каталог пускает ЖИВОЙ прогон.
+    Отчёт по каждому инструменту отдельно — что вошло, что нет и почему."""
+    t = _mcp_tools(server)
+    if not t["tools"]:
+        return {"ok": False, "server": server, "why": t["why"], "wrapped": [], "skipped": []}
+    tools = t["tools"]
+    if only:
+        want = {str(x).strip() for x in only}
+        tools = [x for x in tools if x.get("name") in want]
+        if not tools:
+            return {"ok": False, "server": server, "wrapped": [], "skipped": [],
+                    "why": "у сервера нет таких инструментов: " + ", ".join(sorted(want))}
+    wrapped, skipped = [], []
+    for tool in tools[:12]:   # предохранитель: сервер с сотней инструментов не выжрет каталог
+        r = _mcp_wrap_one(server, tool)
+        (wrapped if r.get("ok") else skipped).append(r)
+    return {"ok": bool(wrapped), "server": server, "wrapped": wrapped, "skipped": skipped,
+            "why": "" if wrapped else "ни один инструмент не прошёл живую проверку"}
+
+
 def _llm_error_human(res):
     """Ошибка модели → человеческий ответ. Business-пользователь НИКОГДА не должен видеть сырой
     JSON платформы с ссылками на langchain — так у Гульжан на тесте вылезло «401 Incorrect API key».
@@ -6402,12 +6691,56 @@ class Handler(BaseHTTPRequestHandler):
                     if str(kind).lower() == "cli":
                         _tool = re.sub(r"[^A-Za-z0-9_.-]", "", str(ref).split("/")[-1])[:40]
                         _wrap = _cli_wrap_flow(_tool, str(body.get("desc", "")) or str(body.get("title", "")))
+                    elif str(kind).lower() == "mcp":
+                        # Тот же разрыв, что был у программ: сервер подключён, mcp_call умеет его
+                        # звать — а Композитор не может, потому что в каталоге блоков ничего нет.
+                        _sid = ""
+                        try:
+                            _sid = str((((res.get("installed") or {}).get("detail")) or {}).get("server_id") or "")
+                        except Exception:
+                            _sid = ""
+                        if _sid:
+                            _wrap = _mcp_wrap_flow(_sid)
+                        else:
+                            _wrap = {"ok": False, "why": "сервер подключён, но не вернул своего идентификатора — "
+                                                         "блоки не собраны, инструменты доступны только агенту"}
                 self._send({"status": res.get("status", "success"), "install_status": res.get("install_status"),
                             "registered_in_my": res.get("registered_in_my"), "installed": res.get("installed"),
                             "wrapper": _wrap,   # что стало с обёрткой: собрана / не прошла проверку / не делалась
                             "message": _scrub(res.get("message", ""))})
             else:
                 self._send({"status": "error", "message": _scrub(str(res)[:200])})
+
+        elif self.path == "/x/mcp_wrap":
+            # Обернуть инструменты MCP-сервера в блоки Композитора. Нужен отдельно от cap_install,
+            # потому что ВСТРОЕННЫЕ серверы (fetch/time/git/filesystem) ничего не устанавливают —
+            # они доступны сразу, и без этого пути их нечем внести в каталог.
+            srv = re.sub(r"[^A-Za-z0-9_.-]", "", str(body.get("server", "")).strip())[:40]
+            if not srv:
+                self._send({"status": "error", "message": "нужен server"}, 400)
+                return
+            only = body.get("tools") or None
+            if only is not None and not isinstance(only, list):
+                self._send({"status": "error", "message": "tools — список имён инструментов"}, 400)
+                return
+            r = _mcp_wrap_flow(srv, only)
+            if r.get("ok"):
+                _registry_refresh_async()   # состав возможностей изменился — реестр вслед
+            self._send({"status": "success" if r.get("ok") else "error", "server": srv,
+                        "wrapped": r.get("wrapped") or [], "skipped": r.get("skipped") or [],
+                        "message": r.get("why", "")})
+
+        elif self.path == "/x/mcp_tools":
+            # Что сервер вообще умеет — до всякой обёртки. Отвечает честно: недоступен, пуст
+            # или инструменты без схемы (такие обернуть нельзя, угадывать поля мы отказались).
+            srv = re.sub(r"[^A-Za-z0-9_.-]", "", str(body.get("server", "")).strip())[:40]
+            if not srv:
+                self._send({"status": "error", "message": "нужен server"}, 400)
+                return
+            t = _mcp_tools(srv)
+            self._send({"status": "success" if t["tools"] else "error",
+                        "server": srv, "tools": t["tools"],
+                        "no_schema": t.get("no_schema") or [], "message": t.get("why", "")})
 
         elif self.path == "/x/cspl_create":
             # CSPL Studio: генеративный builder — «создай язык словами». БЕЗОПАСНОСТЬ ПО ПОСТРОЕНИЮ:
