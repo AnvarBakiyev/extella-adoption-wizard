@@ -585,6 +585,86 @@ const el = (id)=>document.getElementById(id);
 
 /* ============ Ф2: выбор/создание агента (инвариант «видно, для кого строим») ============ */
 let _agents = {agents:[], current:""};
+// ПЕРВЫЙ ОБЯЗАТЕЛЬНЫЙ ШАГ: без рабочего агента визард бесполезен — любой вопрос
+// Помощнику упрётся в модель. Так Гульжан на тесте получила «401 Incorrect API key»
+// вместо ответа. Поэтому агента выбираем НА ВХОДЕ и тут же ПРОВЕРЯЕМ, что он отвечает:
+// просто «выбран» — не гарантия, ключа может не быть, и ошибка всплывёт на первом вопросе.
+var _agentGateShown=false;
+async function agentGate(force){
+  if(_agentGateShown && !force) return;
+  var st; try{ st=await jget('/x/agents'); }catch(e){ st=null; }
+  var cur=(st&&st.current)||'';
+  var list=(st&&st.agents)||[];
+  if(cur){
+    // агент есть — тихо убеждаемся, что он живой; шумим только если сломан
+    var chk; try{ chk=await jget('/x/agent_check'); }catch(e){ chk=null; }
+    if(chk && chk.ok) return;
+    _agentGateShown=true;
+    _agentGateRender(list, cur, (chk&&chk.why)||'агент не отвечает');
+    return;
+  }
+  _agentGateShown=true;
+  _agentGateRender(list, '', '');
+}
+function _agentGateRender(list, broken, why){
+  var rows=(list||[]).map(function(a){
+    return '<button class="btn ghost" style="width:100%;text-align:left;margin-bottom:6px;padding:10px 12px" '+
+      'onclick="agentGatePick(\''+esc(a.id)+'\')">'+esc(a.name||a.id)+
+      (a.id===broken?' <span style="color:#c0392b;font-size:11.5px">— не отвечает</span>':'')+'</button>';
+  }).join('');
+  resetModInput();
+  el("modTitle").textContent = broken ? "Агент не отвечает" : "Шаг 1: выберите агента";
+  el("modHint").innerHTML = broken
+    ? esc(why)
+    : "Агент — это «мозг» ваших автоматизаций: он ведёт интервью, проектирует процессы и копит знания о вашей компании. Без него Помощник не сможет ответить.";
+  el("modInput").outerHTML = '<input id="modInput" type="hidden">'
+    + (rows ? '<div style="margin:10px 0 4px;font-size:12px;color:var(--silver)">Ваши агенты:</div>'+rows : '')
+    + '<div style="display:flex;gap:8px;margin-top:12px">'
+    + '<button class="btn gold" style="flex:1" onclick="agentGateCreate()">＋ Создать агента (копия Qwen)</button>'
+    + '<button class="btn ghost" style="flex:0 0 40%" onclick="agentGateLink()">🔗 Привязать по id</button></div>'
+    + '<div id="agentGateMsg" style="font-size:12.5px;color:var(--silver);margin-top:10px"></div>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Позже";
+  _modCb=null;
+}
+async function _agentGateVerify(id, msgEl){
+  if(msgEl) msgEl.innerHTML='<span class="spin"></span> проверяю, отвечает ли агент…';
+  var chk; try{ chk=await jget('/x/agent_check'+(id?('?agent_id='+encodeURIComponent(id)):'')); }catch(e){ chk=null; }
+  if(chk && chk.ok){
+    if(msgEl) msgEl.innerHTML='<span style="color:#2f9e56">✓ агент отвечает — всё готово</span>';
+    await refreshAgentBadge();
+    setTimeout(function(){ modCancel(); }, 900);
+    return true;
+  }
+  if(msgEl) msgEl.innerHTML='<span style="color:#c0392b">'+esc((chk&&chk.why)||'агент не отвечает')+'</span>';
+  return false;
+}
+async function agentGatePick(id){
+  var m=el('agentGateMsg');
+  var r=await jpost('/x/agent_select',{agent_id:id});
+  if(!r||r.status!=='success'){ if(m) m.textContent=(r&&r.message)||'не удалось выбрать'; return; }
+  await _agentGateVerify(id, m);
+}
+async function agentGateCreate(){
+  var m=el('agentGateMsg');
+  var nm=prompt('Имя агента (например: «Мой ассистент»)');
+  if(!nm) return;
+  if(m) m.innerHTML='<span class="spin"></span> создаю агента…';
+  var r=await jpost('/x/agent_create',{name:nm});
+  if(!r||r.status!=='success'){
+    if(m) m.innerHTML='<span style="color:#c0392b">Не удалось создать: '+esc((r&&r.message)||'')+'</span>';
+    return;
+  }
+  await _agentGateVerify('', m);
+}
+async function agentGateLink(){
+  var m=el('agentGateMsg');
+  var id=prompt('id агента (agent_…)');
+  if(!id) return;
+  var r=await jpost('/x/agent_link',{agent_id:id.trim()});
+  if(!r||r.status!=='success'){ if(m) m.textContent=(r&&r.message)||'не удалось привязать'; return; }
+  await _agentGateVerify(id.trim(), m);
+}
 async function refreshAgentBadge(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){ _agents={agents:[],current:""}; }
   const b=el("agentBadge"); if(!b) return;
@@ -5711,6 +5791,10 @@ function setStatus(id, html){ el(id).innerHTML = html; }
   // Помощник (интервью-чат) — только когда работаем над сессией в Мастере;
   // на экране «Создать» он не к месту (там свой вход) — не открываем.
   if(deep && !el("chat").classList.contains("open")) toggleChat();
+  // Шаг 1 — агент. Ставим ПОСЛЕДНИМ в загрузке: экран уже отрисован, и окно выбора
+  // ложится поверх готового интерфейса, а не задерживает его показ. Если агент выбран
+  // и отвечает — окно не появится вовсе.
+  try{ await agentGate(); }catch(e){}
 })();
 </script>
 </body>
