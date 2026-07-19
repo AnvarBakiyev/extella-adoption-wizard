@@ -1845,8 +1845,13 @@ function newSession(){
 async function deleteSession(){
   var sid = (el("sessSelect")||{}).value || S.sessionId;
   if(!sid){ toast("Сначала выберите сессию в списке","err"); return; }
-  var opt = el("sessSelect") && el("sessSelect").selectedOptions && el("sessSelect").selectedOptions[0];
-  var nm = (opt && opt.textContent) ? opt.textContent.split(" · ")[0] : "эту сессию";
+  // Имя берём по ЗНАЧЕНИЮ, а не по выделению: сессия, открытая по прямой ссылке, в списке может
+  // отсутствовать — тогда selectedOptions[0] это «— выбрать сессию —», и диалог удаления предложил бы
+  // убрать заглушку. В окне подтверждения удаления такой текст недопустим.
+  var opt = Array.prototype.find.call((el("sessSelect")||{options:[]}).options,
+                                      function(o){ return o.value === sid; });
+  var nm = (opt && opt.textContent) ? opt.textContent.split(" · ")[0]
+         : ((S.session && (S.session.process_name || S.session.client_name)) || "эту сессию");
   var st = (S.sessionId===sid && S.session) ? S.session.stage : null;
   var live = (st==="built" || st==="launched");
   ask("Убрать «"+nm+"»?",
@@ -1893,6 +1898,10 @@ async function loadSession(sid){
   // ВСЕГДА уходим из чужого режима. Раньше здесь стоял белый список ("composer"/"my"/"core"), и в нём не было
   // "automations": выбор недостроенной сессии ИЗ «Автоматизаций» не переключал экран вообще — со стороны
   // «сессию выбрал, план не открылся, как попасть в Мастер — непонятно» (Гульжан, 19.07).
+  // Кабинет — оверлей поверх всего: сам по себе он не закрывается. Без этой строки человек выбирал
+  // сессию, режим честно менялся на Мастер, а на экране оставался кабинет ДРУГОГО процесса — ровно
+  // то же ощущение «ничего не произошло», только хуже: показанное относится к чужой автоматизации.
+  if(typeof closeWzCabinet === "function") closeWzCabinet();
   setMode("wizard");
   S.view = STAGE2VIEW[st] || "interview";
   render();
