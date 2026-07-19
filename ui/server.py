@@ -2218,6 +2218,166 @@ def _installed_inventory():
             "blocks": len(blocks), "stale": stale}
 
 
+def _binary_alive(path):
+    p = os.path.expanduser(str(path or "").strip())
+    return bool(p) and os.path.exists(p)
+
+
+def _block_health(block):
+    """Жива ли способность ПОД блоком. Смысл: блок может остаться в каталоге, а программа/сервер
+    под ним — исчезнуть (у ghostscript brew снесли, а cap_ghostscript_compress_pdf_batch остался).
+    Такой блок в процессе упадёт, и человек этого не ждёт.
+
+    Проверяем по тому, на что эксперт ОПИРАЕТСЯ В КОДЕ, а не по имени — большинство блоков старше
+    поля origin, и догадка по имени врёт. Возвращаем None, если блок не устройство-зависимый
+    (наши поставочные wz_/kp_/svc_ — их наличие гарантирует установщик, здесь их не трогаем)."""
+    bid = block.get("id") or ""
+    o = block.get("origin") or {}
+    devbound = bool(o.get("kind")) or block.get("source") == "installed" or bid.startswith("cap_")
+    if not devbound:
+        return None
+
+    # Быстрый путь: у блока есть origin{kind,ref} — зависимость известна, код тянуть не нужно.
+    # Новые блоки все с origin, так что проверка дешевеет со временем. Дорогой путь (чтение кода)
+    # остаётся только для блоков старше поля origin.
+    ok = o.get("kind")
+    ref = o.get("ref")
+    if ok == "cli" and ref:
+        cands = ["/opt/homebrew/bin/" + ref, "/usr/local/bin/" + ref, "/usr/bin/" + ref]
+        ptr = Path.home() / ".extella_cli" / ref
+        if ptr.exists():
+            try:
+                cands.insert(0, ptr.read_text(encoding="utf-8", errors="ignore").strip().split("\n")[0])
+            except Exception:
+                pass
+        alive = any(_binary_alive(c) for c in cands)
+        return {"id": bid, "kind": "cli", "ref": ref, "alive": alive,
+                "why": "" if alive else "программа «%s» больше не установлена на устройстве" % ref}
+    if ok == "app" and ref:
+        regf = re.sub(r"[^A-Za-z0-9]", "_", str(ref))
+        reg = Path.home() / "extella-plugins" / "_registry" / (regf + ".json")
+        return {"id": bid, "kind": "app", "ref": ref, "alive": reg.exists(),
+                "why": "" if reg.exists() else "приложение удалено с устройства"}
+    if ok == "mcp" and ref:
+        if ref in _MCP_BUILTIN:
+            return {"id": bid, "kind": "mcp", "ref": ref, "alive": True, "why": ""}
+        try:
+            allow = json.loads((Path.home() / ".extella_mcp" / "allowlist.json").read_text(encoding="utf-8"))
+        except Exception:
+            allow = {}
+        alive = ref in (allow or {})
+        return {"id": bid, "kind": "mcp", "ref": ref, "alive": alive,
+                "why": "" if alive else "MCP-сервер «%s» больше не подключён" % ref}
+
+    # Медленный путь: origin нет — определяем зависимость по коду обёртки.
+    try:
+        code = (api("/api/expert/get", {"name": bid, "global": True}) or {}).get("expert_code") or ""
+    except Exception:
+        return None
+    if not code:
+        # эксперта нет вовсе — блок ссылается в пустоту
+        return {"id": bid, "kind": o.get("kind") or "?", "alive": False,
+                "why": "эксперт-обёртка удалён — блок ссылается в пустоту"}
+
+    # ── CLI: обёртка читает указатель ~/.extella_cli/<tool>; проверяем цель на диске ──
+    m = re.search(r"\.extella_cli/([A-Za-z0-9_.-]+)", code)
+    if m:
+        tool = m.group(1)
+        ptr = Path.home() / ".extella_cli" / tool
+        target = ""
+        if ptr.exists():
+            try:
+                target = ptr.read_text(encoding="utf-8", errors="ignore").strip().split("\n")[0]
+            except Exception:
+                target = ""
+        # запасной путь резолвится по тем же каталогам, что и сама обёртка (PATH листенера урезан,
+        # поэтому проверяем абсолютные пути, а не полагаемся на which).
+        cands = [target, "/opt/homebrew/bin/" + tool, "/usr/local/bin/" + tool, "/usr/bin/" + tool]
+        alive = any(_binary_alive(c) for c in cands)
+        if not alive:
+            return {"id": bid, "kind": "cli", "ref": tool, "alive": False,
+                    "why": "программа «%s» больше не установлена на устройстве" % tool}
+        return {"id": bid, "kind": "cli", "ref": tool, "alive": True, "why": ""}
+
+    # ── приложение: обёртка читает _registry/<file>.json → ui.url ──
+    m = re.search(r"_registry/([A-Za-z0-9_]+)\.json", code)
+    if m:
+        reg = Path.home() / "extella-plugins" / "_registry" / (m.group(1) + ".json")
+        if not reg.exists():
+            return {"id": bid, "kind": "app", "ref": m.group(1), "alive": False,
+                    "why": "приложение удалено с устройства"}
+        # установлено, но не запущено — это НЕ смерть блока, а рабочее состояние (запусти и пойдёт)
+        return {"id": bid, "kind": "app", "ref": m.group(1), "alive": True, "why": ""}
+
+    # ── MCP: встроенные всегда живы; подключённый — по аллоулисту ──
+    m = re.search(r'"server":\s*"([A-Za-z0-9_.-]+)"', code)
+    if m:
+        srv = m.group(1)
+        if srv in _MCP_BUILTIN:
+            return {"id": bid, "kind": "mcp", "ref": srv, "alive": True, "why": ""}
+        try:
+            allow = json.loads((Path.home() / ".extella_mcp" / "allowlist.json").read_text(encoding="utf-8"))
+        except Exception:
+            allow = {}
+        if srv not in (allow or {}):
+            return {"id": bid, "kind": "mcp", "ref": srv, "alive": False,
+                    "why": "MCP-сервер «%s» больше не подключён" % srv}
+        return {"id": bid, "kind": "mcp", "ref": srv, "alive": True, "why": ""}
+
+    # локальная модель и прочее без явной внешней зависимости — считаем живым (проверять нечем,
+    # выдумывать не будем).
+    return {"id": bid, "kind": o.get("kind") or "other", "alive": True, "why": ""}
+
+
+def _catalog_broken():
+    """Битые блоки каталога — те, под которыми пропала способность. Только чтение, ничего не
+    удаляем: решение убирать принимает человек."""
+    try:
+        g = api("/api/kv/get", {"key": "composer:catalog", "global": True})
+        blocks = (json.loads(g.get("value")) if isinstance(g, dict) and g.get("value") else {}).get("blocks") or []
+    except Exception:
+        blocks = []
+    broken = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        h = _block_health(b)
+        if h and not h["alive"]:
+            h["what"] = str(b.get("what") or "")[:100]
+            broken.append(h)
+    return {"broken": broken, "checked": len(blocks)}
+
+
+def _block_remove(bid):
+    """Убрать блок из каталога и его эксперта-обёртку. Только для устройство-зависимых обёрток
+    (cap_*/origin/installed) — поставочные эксперты так не трогаем."""
+    try:
+        g = api("/api/kv/get", {"key": "composer:catalog", "global": True})
+        cur = json.loads(g.get("value")) if isinstance(g, dict) and g.get("value") else {}
+    except Exception:
+        cur = {}
+    blocks = cur.get("blocks") if isinstance(cur, dict) else None
+    if not isinstance(blocks, list):
+        return {"ok": False, "why": "каталог не прочитан"}
+    tgt = next((b for b in blocks if isinstance(b, dict) and b.get("id") == bid), None)
+    if not tgt:
+        return {"ok": False, "why": "такого блока нет в каталоге"}
+    o = tgt.get("origin") or {}
+    if not (o.get("kind") or tgt.get("source") == "installed" or str(bid).startswith("cap_")):
+        return {"ok": False, "why": "это поставочный блок, не устройство-зависимый — убирать не будем"}
+    cur["blocks"] = [b for b in blocks if not (isinstance(b, dict) and b.get("id") == bid)]
+    r = api("/api/kv/set", {"key": "composer:catalog", "value": json.dumps(cur, ensure_ascii=False),
+                            "description": "composer catalog", "global": True})
+    if isinstance(r, dict) and r.get("status") == "error":
+        return {"ok": False, "why": _scrub(str(r)[:120])}
+    # ЭКСПЕРТА НЕ УДАЛЯЕМ. Убрать блок = убрать ссылку из каталога, этого достаточно: Композитор
+    # больше не предложит падающий блок. Сам эксперт-обёртка может быть ПОСТАВОЧНОЙ способностью
+    # (cap_ghostscript_* лежит файлом в паке) — удаление снесло бы её, ровно как я по ошибке снёс
+    # pandoc 20.07. Осиротевший эксперт без блока безвреден, а при возврате программы блок
+    # пересобирается заново.
+    return {"ok": True, "blocks": len(cur["blocks"])}
+
+
 def _llm_error_human(res):
     """Ошибка модели → человеческий ответ. Business-пользователь НИКОГДА не должен видеть сырой
     JSON платформы с ссылками на langchain — так у Гульжан на тесте вылезло «401 Incorrect API key».
@@ -7178,6 +7338,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "success" if r.get("ok") else "error", "server": srv,
                         "wrapped": r.get("wrapped") or [], "skipped": r.get("skipped") or [],
                         "message": r.get("why", "")})
+
+        elif self.path == "/x/blocks_health":
+            # Битые блоки: остались в каталоге, а способность под ними исчезла. Показываем, не
+            # удаляя — как ghostscript, у которого сняли brew, а блок сжатия PDF остался жить.
+            h = _catalog_broken()
+            self._send({"status": "success", "broken": h["broken"], "checked": h["checked"]})
+
+        elif self.path == "/x/block_remove":
+            bid = str(body.get("id", "")).strip()
+            if not bid:
+                self._send({"status": "error", "message": "нужен id блока"}, 400)
+                return
+            r = _block_remove(bid)
+            if r.get("ok"):
+                _registry_refresh_async()
+            self._send({"status": "success" if r.get("ok") else "error",
+                        "id": bid, "blocks": r.get("blocks"), "message": r.get("why", "")})
 
         elif self.path == "/x/installed":
             # «Что у меня установлено и что из этого уже работает в автоматизациях».

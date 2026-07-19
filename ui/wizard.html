@@ -1973,7 +1973,10 @@ async function renderInstalled(){
       +((d&&d.message)?': '+esc(d.message):'')+'</div>';
     return;
   }
-  var un=(d.unused||[]).filter(function(i){return i.kind!=='cli'||true;});
+  // Битые блоки: способность под ними исчезла (программу удалили, сервер отключили). В процессе
+  // такой блок упадёт — показываем отдельно и даём убрать. Тянем параллельно с описью.
+  renderBrokenBlocks();
+  var un=(d.unused||[]);
   if(!un.length){
     host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Всё установленное уже участвует в сборке — блоков в каталоге '+(d.blocks||0)+'.</div>';
     return;
@@ -2002,6 +2005,45 @@ async function renderInstalled(){
         +(d.stale.length>4?' и др.':'')+') — переустановите, если нужны.</div>'
       : '')
     +'</div>';
+}
+// Битые блоки — отдельный контейнер над панелью установленного.
+async function renderBrokenBlocks(){
+  var host=el('compInstalled'); if(!host) return;
+  var box=el('compBroken');
+  if(!box){ box=document.createElement('div'); box.id='compBroken'; box.style.marginBottom='14px';
+            host.parentNode.insertBefore(box, host); }
+  // Проверка читает состав блоков и опрашивает устройство — это несколько секунд. Молчать нельзя:
+  // пустое место неотличимо от «битых нет», а проверка ещё идёт.
+  box.innerHTML='<div style="font-size:12px;color:var(--silver,#889)">Проверяю, все ли блоки ещё рабочие…</div>';
+  var d; try{ d=await jpost('/x/blocks_health',{}); }catch(e){ d=null; }
+  var br=(d&&d.broken)||[];
+  if(!br.length){ box.innerHTML=''; return; }
+  box.innerHTML='<div style="border:1px solid #e0b48a;border-radius:14px;padding:16px 18px;background:rgba(224,168,94,.08)">'
+    +'<div style="font:700 14px var(--sans);margin-bottom:4px">Блоки, у которых пропала способность</div>'
+    +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
+    +'Эти блоки остались в сборке, но программа или сервис под ними исчезли с устройства — в процессе они упадут. '
+    +'Верните способность (переустановите) и пересоберите блок, либо уберите его.</div>'
+    +br.map(function(b,i){
+      return '<div id="brk_'+i+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed #e0b48a">'
+        +'<span style="font-size:16px">⚠</span>'
+        +'<b style="font-size:13.5px">'+esc(b.id)+'</b>'
+        +'<span style="font-size:12px;color:#a9701a">'+esc(b.why||'')+'</span>'
+        +'<button class="btn ghost sm" style="margin-left:auto" onclick="removeBlock('+i+',\''+esc(b.id)+'\')">Убрать</button>'
+        +'</div>';
+    }).join('')+'</div>';
+}
+async function removeBlock(i, bid){
+  if(!confirm('Убрать блок «'+bid+'» из сборки? Его можно будет собрать заново, когда способность вернётся.')) return;
+  var row=el('brk_'+i); var btn=row&&row.querySelector('button');
+  if(btn){ btn.disabled=true; btn.textContent='Убираю…'; }
+  var r; try{ r=await jpost('/x/block_remove',{id:bid}); }catch(e){ r={status:'error',message:String(e&&e.message||e)}; }
+  if(r&&r.status==='success'){
+    if(row) row.remove(); toast('✓ Блок убран','ok');
+    renderBrokenBlocks();
+  } else {
+    if(btn){ btn.disabled=false; btn.textContent='Убрать'; }
+    toast('Не удалось убрать: '+((r&&r.message)||'мост не ответил'),'err');
+  }
 }
 async function makeBlock(n, kind, ref, title){
   var row=el('inst_'+n); if(!row) return;
