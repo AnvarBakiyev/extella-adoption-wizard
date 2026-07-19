@@ -1627,15 +1627,27 @@ def _expert_exists(name):
 
 _WRITE_VERBS = ("write", "create", "delete", "remove", "move", "rename", "put", "post", "patch",
                 "update", "set", "insert", "append", "upload", "modify", "edit", "drop", "truncate",
-                "send", "push", "commit", "mkdir", "rmdir", "chmod", "kill", "exec", "run_command")
+                "send", "push", "commit", "mkdir", "rmdir", "chmod", "kill", "exec", "run", "command",
+                # 20.07: «apply_spreadsheet_updates» (запись в Google Sheets) проскочил — «updates»
+                # это не «update», а «apply»/«copy» вообще не были в списке. Добавлены + стемминг.
+                "apply", "copy", "duplicate", "sync", "replace", "clear", "add", "import", "share",
+                "publish", "revoke", "grant", "assign", "cancel", "close", "merge", "batch", "save",
+                "enable", "disable", "start", "stop", "restart", "trigger", "schedule")
 
 
 def _mcp_tool_writes(tool_name):
-    """Меняет ли инструмент данные — по глаголу в имени. Огрубление, но осознанное: ложно отсеять
-    безобидное чтение с «get»-синонимом дешевле, чем пустить в автопилот запись, которую живой
-    гейт как раз ПООЩРЯЕТ (у записи «успех» на любых входах). Что отсеяли — видно человеку."""
-    n = re.sub(r"[^a-z0-9]+", "_", str(tool_name or "").lower())
-    return any(v in n.split("_") or n.startswith(v) for v in _WRITE_VERBS)
+    """Меняет ли инструмент данные — по глаголу в имени. Огрубление осознанное: ложно отсеять
+    безобидное чтение дешевле, чем пустить в автопилот запись, которую живой гейт ПООЩРЯЕТ (у
+    записи «успех» на любых входах). Сверяем стем каждого слова (снимаем хвостовые -s/-es), иначе
+    «updates» ≠ «update» и запись проскакивает — так и утекло 20.07."""
+    toks = re.sub(r"[^a-z0-9]+", "_", str(tool_name or "").lower()).split("_")
+    stems = set(toks)
+    for t in toks:
+        if t.endswith("es"):
+            stems.add(t[:-2])
+        elif t.endswith("s"):
+            stems.add(t[:-1])
+    return any(v in stems for v in _WRITE_VERBS)
 
 
 def _mcp_tools(server):
@@ -2216,6 +2228,20 @@ def _installed_inventory():
 
     return {"items": items, "unused": [i for i in items if not i["used"]],
             "blocks": len(blocks), "stale": stale}
+
+
+def _make_one_block(kind, ref, purpose=""):
+    """Один вход во все три цепочки обёртки — программа/сервис/приложение → блок."""
+    if kind == "app":
+        r = _app_wrap_flow(ref, purpose)
+        return {"ok": r.get("ok"), "made": [r["expert"]] if r.get("ok") else [], "why": r.get("why", "")}
+    if kind == "mcp":
+        r = _mcp_wrap_flow(ref)
+        return {"ok": r.get("ok"), "made": [w["expert"] for w in (r.get("wrapped") or [])],
+                "why": r.get("why", "") or "; ".join("%s — %s" % (s.get("tool"), s.get("why"))
+                                                     for s in (r.get("skipped") or [])[:3])}
+    r = _cli_wrap_flow(ref, purpose)
+    return {"ok": r.get("ok"), "made": [r["expert"]] if r.get("ok") else [], "why": r.get("why", "")}
 
 
 def _binary_alive(path):
@@ -7371,23 +7397,11 @@ class Handler(BaseHTTPRequestHandler):
             if kind not in ("app", "mcp", "cli") or not ref:
                 self._send({"status": "error", "message": "нужны kind (app|mcp|cli) и ref"}, 400)
                 return
-            if kind == "app":
-                r = _app_wrap_flow(ref, purpose)
-                made = [r["expert"]] if r.get("ok") else []
-                why = r.get("why", "")
-            elif kind == "mcp":
-                r = _mcp_wrap_flow(ref)
-                made = [w["expert"] for w in (r.get("wrapped") or [])]
-                why = r.get("why", "") or "; ".join(
-                    "%s — %s" % (s.get("tool"), s.get("why")) for s in (r.get("skipped") or [])[:3])
-            else:
-                r = _cli_wrap_flow(ref, purpose)
-                made = [r["expert"]] if r.get("ok") else []
-                why = r.get("why", "")
+            r = _make_one_block(kind, ref, purpose)
             if r.get("ok"):
                 _registry_refresh_async()
             self._send({"status": "success" if r.get("ok") else "error", "kind": kind, "ref": ref,
-                        "made": made, "message": why})
+                        "made": r["made"], "message": r["why"]})
 
         elif self.path == "/x/app_wrap":
             # Приложение → блок Композитора. Пятый и последний тип способностей: программы, модели,
