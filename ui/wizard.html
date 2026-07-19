@@ -253,24 +253,25 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   <!-- Решение Анвара 17.07: «Рабочий стол» = главная Plugins ПРИЛОЖЕНИЯ (карточки в реестре),
        а это окно — ТОЛЬКО Визард. Композитор/Студия/Команда открываются отдельными карточками
        Plugins через deep-link ?app=composer|cspl|team (обработка в _deepApp ниже). -->
+  <!-- Визард и Композитор — РАЗНЫЕ продукты, и вход у каждого свой (решение Анвара 18.07).
+       Раньше кнопка «Собрать» здесь буквально открывала Студию Композитора и запускала его
+       сборку: один функционал с двумя входами, а человек не понимал, где он находится.
+       Визард делает СВОЁ: интервью → проект → стройка процесса, который работает сам.
+       Быстрая сборка разовой задачи из блоков — это Композитор, туда и отправляем. -->
   <div class="kicker">Визард внедрения</div>
-  <h1>Соберите свою автоматизацию</h1>
+  <h1>Соберите процесс, который работает сам</h1>
   <div style="max-width:660px">
-    <div style="font-size:14px;color:var(--silver,#889);line-height:1.55;margin:10px 0 14px">Опишите задачу одной фразой — Extella соберёт её из блоков прямо сейчас. Постоянный процесс (расписание, получатели) лучше собрать через интервью с Мастером.</div>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="fwComposeInput" placeholder="напр.: найти забытые подписки в банковских выписках"
-        style="flex:1;padding:12px 14px;border:1px solid var(--cream-dark,#d8d2c8);border-radius:10px;background:#fff;color:var(--ink,#0a0a0a);font-size:14px"
-        onkeydown="if(event.key==='Enter')firstWinCompose()">
-      <button class="btn gold" style="padding:0 20px;font-size:14px" onclick="firstWinCompose()">Собрать</button>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
-      <span class="chip-ex" onclick="firstWinCompose(this.textContent)">найти забытые подписки в выписках</span>
-      <span class="chip-ex" onclick="firstWinCompose(this.textContent)">превратить папку PDF в базу знаний</span>
+    <div style="font-size:14px;color:var(--silver,#889);line-height:1.55;margin:10px 0 16px">Мастер расспросит о задаче, спроектирует процесс и построит его: источник данных, расписание, получатели, готовый отчёт. Это занимает около часа — и дальше процесс работает без вас.</div>
+    <button class="btn gold" style="padding:12px 22px;font-size:15px" onclick="setMode('wizard');newSession()">Пройти интервью с Мастером →</button>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin:16px 0 4px">
       <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">дебиторка 28 филиалов каждый понедельник директору</span>
       <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">отвечать клиентам в Telegram 24/7</span>
+      <span class="chip-ex" onclick="buildProcessFromTask(this.textContent)">ежедневная сводка по заявкам из Google Sheets</span>
     </div>
-    <button class="btn ghost" style="padding:10px 18px;font-size:14px" onclick="setMode('wizard');newSession()">Пройти полное интервью с Мастером →</button>
-    <div style="margin-top:12px"><a href="#" onclick="goalLoop();return false" style="color:var(--silver,#889);font-size:12.5px;text-decoration:none">🔁 Контур (эксперимент): поставьте цель — система сама доведёт её пошагово →</a></div>
+    <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--cream-dark,#e7e2d8);font-size:13px;color:var(--silver,#889)">
+      Нужна разовая задача, а не постоянный процесс? Это <a href="#" onclick="openCompStudio();return false" style="color:var(--gold,#a97e35);font-weight:600;text-decoration:none">🧩 Композитор</a> — соберёт из готовых блоков за минуту.
+    </div>
+    <div style="margin-top:10px"><a href="#" onclick="goalLoop();return false" style="color:var(--silver,#889);font-size:12.5px;text-decoration:none">🔁 Контур (эксперимент): поставьте цель — система сама доведёт её пошагово →</a></div>
   </div>
 </div>
 
@@ -2060,8 +2061,10 @@ async function firstWin(btn, example){
     showBrief(r.digest, {kicker:"Extella · Первая победа (демо)", title:meta.title,
       subtitle:"Собрано и посчитано Extella на синтетических данных за секунды — без настройки и подключений.",
       chips:["🧠 Qwen", meta.chip, "⚡ 1 клик"]});
-    // косметика: после демо мягко направляем к «соберите своё» — подсвечиваем поле сборки
-    var fi=el("fwComposeInput"); if(fi){ try{ fi.focus(); fi.style.boxShadow="0 0 0 3px rgba(201,163,92,.35)"; setTimeout(function(){ fi.style.boxShadow=""; },2600); }catch(e){} }
+    // Поля сборки на столе визарда больше нет (визард ≠ композитор), поэтому подсветка
+    // указывала бы в пустоту. После демо направляем туда, где действительно собирают своё.
+    var fi=el("composerInput");
+    if(fi){ try{ fi.focus(); fi.style.boxShadow="0 0 0 3px rgba(201,163,92,.35)"; setTimeout(function(){ fi.style.boxShadow=""; },2600); }catch(e){} }
   } else { toast("Демо временно недоступно — попробуйте ещё раз","err"); }
 }
 // ПЕРВЫЙ экран человека, который только что купил Extella. Сухое «пока пусто, идите
@@ -2093,14 +2096,15 @@ function _emptyShowcase(){
 function emptyCompose(taskArg){
   var t = (typeof taskArg==='string' && taskArg.trim()) || ((el('emptyComposeInput')||{}).value||'').trim();
   if(!t){ var i=el('emptyComposeInput'); if(i) i.focus(); return; }
-  var fi=el('fwComposeInput'); if(fi) fi.value=t;
-  firstWinCompose(t);
+  firstWinCompose(t);   // сама откроет Студию Композитора и подставит задачу
 }
 // Гибрид ч.2: личная сборка из онбординга — Композитор собирает под задачу (одноразовые), процессные
 // честно уводит в Мастера; на ошибке — фолбэк (Мастер / готовый пример), без тупика.
 function firstWinCompose(taskArg){
-  var t = (typeof taskArg==="string" && taskArg.trim()) || (el("fwComposeInput") && el("fwComposeInput").value.trim()) || "";
-  if(!t){ var i=el("fwComposeInput"); if(i) i.focus(); return; }
+  // Единственный вход: задача приходит аргументом (из пустой витрины или после демо).
+  // Поле на столе визарда убрано — визард не дублирует Композитор.
+  var t = (typeof taskArg === "string" && taskArg.trim()) || "";
+  if(!t){ openCompStudio(); return; }   // без задачи просто открываем Студию, а не молчим
   openCompStudio();
   var ci=el("composerInput"); if(ci){ ci.value=t; }
   composeNow();
