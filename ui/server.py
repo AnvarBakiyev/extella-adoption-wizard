@@ -1342,6 +1342,38 @@ _WRAP_TEMPLATE = (
 )
 
 
+def _cleanup_failed_wrap(name):
+    """Обёртку сохраняем на платформу ДО живого прогона — иначе её нельзя запустить. Если прогон
+    не прошёл, эксперт-полуфабрикат остаётся висеть и потом путается с настоящими способностями.
+    (Из-за такого «висяка» я 20.07 чуть не спутал мусор пробы с рабочими pandoc-способностями.)
+    Прибираем за собой сразу — но ТОЛЬКО если этого имени нет ни в одном каталоге, чтобы случайно
+    не снести уже используемый блок с тем же именем."""
+    try:
+        for key in ("composer:catalog",):
+            g = api("/api/kv/get", {"key": key, "global": True})
+            cur = json.loads(g.get("value")) if isinstance(g, dict) and g.get("value") else {}
+            for b in (cur.get("blocks") or []):
+                if isinstance(b, dict) and b.get("id") == name:
+                    return   # имя уже используется как блок — не трогаем
+        api("/api/expert/delete", {"name": name, "global": True})
+    except Exception:
+        pass   # не удалось прибрать — это не повод ронять и без того неуспешный поток
+
+
+def _tool_probe_reason(tool, raw):
+    """Сырую ошибку программы — в человеческий ответ. Business-пользователь не должен видеть
+    Haskell-трейс pandoc или «withBinaryFile: does not exist»: у Гульжан ровно такой сырой текст
+    из другого места вызвал панику. Отдельно ловим САМЫЙ ЧАСТЫЙ случай: программе нужен реальный
+    входной файл, а живая проба его не даёт — это не поломка, а «нечем проверить автоматически»."""
+    low = str(raw).lower()
+    if any(s in low for s in ("no such file", "does not exist", "not found", "cannot open",
+                              "нет такого файла", "input", "withbinaryfile")):
+        return ("«%s» работает с вашим файлом, поэтому автоматически проверить её на пустом месте "
+                "нельзя. Такую программу удобнее подключать прямо в сборке процесса, указав реальный "
+                "файл. Сделать блоком из этого экрана пока не получится." % str(tool))
+    return _scrub(str(raw)[:200])
+
+
 def _cli_wrap_flow(tool, purpose=""):
     """Полный путь «программа → рабочий блок»: спека вызова → генерация обёртки по шаблону →
     сохранение эксперта → ЖИВАЯ ПРОВЕРКА → каталог Композитора.
@@ -1368,14 +1400,19 @@ def _cli_wrap_flow(tool, purpose=""):
             except Exception:
                 probe = {"status": "error", "message": str(probe)[:200]}
     if not (isinstance(probe, dict) and probe.get("status") == "success" and str(probe.get("output", "")).strip()):
+        raw_why = str((probe or {}).get("message") or "программа ничего не вернула")
+        _cleanup_failed_wrap(name)   # проба не прошла — эксперт-полуфабрикат не оставляем на платформе
         return {"ok": False, "stage": "probe", "expert": name, "spec": spec,
-                "why": str((probe or {}).get("message") or "программа ничего не вернула")[:200]}
+                "why": _tool_probe_reason(tool, raw_why)}
     added = _composer_catalog_add({
         "id": name, "kind": "tool",
         "what": spec["description"] or ("вызов программы " + str(tool)),
         "params": {p["name"]: p["desc"] or p["default"] for p in spec["params"]},
         "defaults": {p["name"]: p["default"] for p in spec["params"]},
         "kw": " ".join([str(tool), spec["action"], spec["description"]])[:400],
+        # Из ЧЕГО сделан блок. Без этого нельзя честно ответить «что установлено, но ещё не
+        # используется» — приходилось бы угадывать по имени эксперта.
+        "origin": {"kind": "cli", "ref": str(tool)},
         "source": "installed"})
     return {"ok": True, "expert": name, "spec": spec, "catalog": added,
             "sample": str(probe.get("output", ""))[:300]}
@@ -1588,6 +1625,19 @@ def _expert_exists(name):
         return False
 
 
+_WRITE_VERBS = ("write", "create", "delete", "remove", "move", "rename", "put", "post", "patch",
+                "update", "set", "insert", "append", "upload", "modify", "edit", "drop", "truncate",
+                "send", "push", "commit", "mkdir", "rmdir", "chmod", "kill", "exec", "run_command")
+
+
+def _mcp_tool_writes(tool_name):
+    """Меняет ли инструмент данные — по глаголу в имени. Огрубление, но осознанное: ложно отсеять
+    безобидное чтение с «get»-синонимом дешевле, чем пустить в автопилот запись, которую живой
+    гейт как раз ПООЩРЯЕТ (у записи «успех» на любых входах). Что отсеяли — видно человеку."""
+    n = re.sub(r"[^a-z0-9]+", "_", str(tool_name or "").lower())
+    return any(v in n.split("_") or n.startswith(v) for v in _WRITE_VERBS)
+
+
 def _mcp_tools(server):
     """Инструменты сервера СО СХЕМОЙ аргументов. Молчать нельзя: пустой список и недоступный
     сервер — разные вещи, и разбирать их придётся человеку."""
@@ -1722,6 +1772,14 @@ def _mcp_wrap_one(server, tool):
     if not (tool.get("schema") or {}).get("properties"):
         return {"ok": False, "tool": tool.get("name"), "stage": "schema",
                 "why": "инструмент не объявил схему аргументов — угадывать поля не будем"}
+    # ТОЛЬКО ЧТЕНИЕ. У программ и приложений это ограничение стоит, у MCP я его упустил — и живой
+    # гейт по построению отобрал самое опасное: из 14 инструментов filesystem пробу прошли ровно
+    # write_file и create_directory (у них «успех» на любых демо-данных, а чтение отпадает без
+    # реального пути). Пишущий блок в каталоге страшнее его отсутствия: процесс на подставных
+    # значениях создаст/перезапишет файл. Отсекаем по имени инструмента — до сохранения и пробы.
+    if _mcp_tool_writes(tool.get("name")):
+        return {"ok": False, "tool": tool.get("name"), "stage": "write",
+                "why": "инструмент изменяет данные (запись/удаление) — в блок делаем только чтение"}
     sp = _mcp_wrap_spec(server, tool)
     if not sp.get("spec"):
         return {"ok": False, "tool": tool.get("name"), "stage": "spec", "why": sp.get("why")}
@@ -1748,6 +1806,7 @@ def _mcp_wrap_one(server, tool):
                 probe = {"status": "error", "message": str(probe)[:200]}
     if not (isinstance(probe, dict) and probe.get("status") == "success"
             and str(probe.get("output", "")).strip()):
+        _cleanup_failed_wrap(name)
         return {"ok": False, "tool": tool["name"], "stage": "probe", "expert": name,
                 "why": str((probe or {}).get("message") or "инструмент ничего не вернул")[:200]}
     # В каталоге обязательные поля помечены словом — Композитор должен взять их ИЗ ЗАДАЧИ клиента,
@@ -1761,6 +1820,7 @@ def _mcp_wrap_one(server, tool):
                    for k, v in spec["properties"].items() if k in rev},
         "defaults": runtime_def,
         "kw": " ".join([str(server), tool["name"], spec["kw"], spec["description"]])[:400],
+        "origin": {"kind": "mcp", "ref": str(server)},
         "source": "installed"})
     return {"ok": True, "tool": tool["name"], "expert": name, "catalog": added,
             "sample": str(probe.get("output", ""))[:200]}
@@ -2053,6 +2113,7 @@ def _app_wrap_flow(app_id, purpose=""):
                 probe = {"status": "error", "message": str(probe)[:200]}
     out = str((probe or {}).get("output", "")).strip() if isinstance(probe, dict) else ""
     if not (isinstance(probe, dict) and probe.get("status") == "success" and len(out) > 40):
+        _cleanup_failed_wrap(name)
         return {"ok": False, "stage": "probe", "expert": name, "spec": spec,
                 "why": str((probe or {}).get("message") or
                            ("приложение ответило пусто или слишком коротко: " + out[:80]))[:200]}
@@ -2063,9 +2124,98 @@ def _app_wrap_flow(app_id, purpose=""):
                    for p in spec["params"]},
         "defaults": runtime_def,
         "kw": " ".join([str(app_id), spec["action"], spec["kw"], spec["description"]])[:400],
+        "origin": {"kind": "app", "ref": str(app_id)},
         "source": "installed"})
     return {"ok": True, "app": app_id, "expert": name, "spec": spec, "catalog": added,
             "sample": out[:300]}
+
+
+_MCP_BUILTIN = {"fetch": "Загрузка веб-страницы в читаемый текст",
+                "time": "Время и часовые пояса",
+                "git": "Работа с git-репозиторием",
+                "filesystem": "Чтение файлов в папке Загрузки"}
+
+
+def _installed_inventory():
+    """Что РЕАЛЬНО установлено на этом устройстве и что из этого уже стало блоком Композитора.
+
+    Смысл: набор у каждого клиента свой, и человек не должен сам догадываться, почему
+    поставленное приложение «не участвует» в автоматизациях. Разрыв показываем мы — и даём
+    закрыть его в один клик. Отвечаем строго по факту с диска, догадок здесь быть не должно."""
+    try:
+        g = api("/api/kv/get", {"key": "composer:catalog", "global": True})
+        blocks = (json.loads(g.get("value")) if isinstance(g, dict) and g.get("value") else {}).get("blocks") or []
+    except Exception:
+        blocks = []
+    used = set()
+    for b in blocks:
+        if isinstance(b, dict):
+            o = b.get("origin") or {}
+            if o.get("kind") and o.get("ref"):
+                used.add((o["kind"], str(o["ref"])))
+    # Блоки, собранные ДО появления пометки origin, узнаём по имени эксперта — иначе предложим
+    # сделать то, что уже сделано.
+    legacy = " ".join(str(b.get("id") or "") for b in blocks if isinstance(b, dict))
+
+    def _seen(kind, ref, slug):
+        return (kind, str(ref)) in used or \
+               ("cap_" + re.sub(r"[^a-z0-9_]", "_", str(slug).lower())[:24]) in legacy
+
+    items, stale = [], []
+
+    # ── приложения: реестр плагинов ──
+    regdir = Path.home() / "extella-plugins" / "_registry"
+    if regdir.is_dir():
+        for f in sorted(regdir.glob("*.json")):
+            try:
+                man = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not (man.get("app") or {}).get("root"):
+                continue                      # служебная карточка, а не установленное приложение
+            aid = str(man.get("id") or f.stem)
+            ui = man.get("ui") or {}
+            items.append({"kind": "app", "ref": aid,
+                          "title": str(man.get("name") or aid).split("/")[-1],
+                          "note": "запущено" if ui.get("url")
+                                  else "не запущено — запустите, чтобы сделать блок",
+                          "ready": bool(ui.get("url")),
+                          "used": _seen("app", aid, aid.split("/")[-1])})
+
+    # ── MCP: встроенные (доступны всегда) + подключённые ──
+    servers = dict(_MCP_BUILTIN)
+    try:
+        allow = json.loads((Path.home() / ".extella_mcp" / "allowlist.json").read_text(encoding="utf-8"))
+        for k in (allow or {}):
+            servers.setdefault(str(k), "подключённый MCP-сервер")
+    except Exception:
+        pass
+    for sid, what in servers.items():
+        items.append({"kind": "mcp", "ref": sid, "title": sid, "note": what, "ready": True,
+                      "used": _seen("mcp", sid, sid)})
+
+    # ── консольные программы: указатели, которые оставляют резолверы ──
+    clidir = Path.home() / ".extella_cli"
+    if clidir.is_dir():
+        for f in sorted(clidir.iterdir()):
+            if f.is_dir() or f.name.startswith(".") or f.suffix == ".log":
+                continue
+            # Указатель резолвера — это ПУТЬ К БИНАРНИКУ. В той же папке заводятся посторонние
+            # файлы (логи докачки моделей), и без проверки они уезжали в список как «программы»,
+            # а человеку предлагалось сделать блок из журнала.
+            try:
+                target = f.read_text(encoding="utf-8", errors="ignore").strip().split("\n")[0]
+            except Exception:
+                continue
+            if not target or not os.path.exists(os.path.expanduser(target)):
+                stale.append(f.name)   # указатель есть, программы нет — считаем, но не предлагаем
+                continue
+            items.append({"kind": "cli", "ref": f.name, "title": f.name,
+                          "note": "программа на устройстве", "ready": True,
+                          "used": _seen("cli", f.name, f.name)})
+
+    return {"items": items, "unused": [i for i in items if not i["used"]],
+            "blocks": len(blocks), "stale": stale}
 
 
 def _llm_error_human(res):
@@ -7028,6 +7178,39 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "success" if r.get("ok") else "error", "server": srv,
                         "wrapped": r.get("wrapped") or [], "skipped": r.get("skipped") or [],
                         "message": r.get("why", "")})
+
+        elif self.path == "/x/installed":
+            # «Что у меня установлено и что из этого уже работает в автоматизациях».
+            inv = _installed_inventory()
+            self._send({"status": "success", "items": inv["items"], "unused": inv["unused"],
+                        "blocks": inv["blocks"], "stale": inv.get("stale") or []})
+
+        elif self.path == "/x/make_block":
+            # Один вход для всех типов: человеку незачем знать, что программа, MCP и приложение
+            # оборачиваются по-разному. Внутри — три уже проверенные цепочки.
+            kind = str(body.get("kind", "")).strip().lower()
+            ref = str(body.get("ref", "")).strip()[:80]
+            purpose = str(body.get("purpose", ""))[:200]
+            if kind not in ("app", "mcp", "cli") or not ref:
+                self._send({"status": "error", "message": "нужны kind (app|mcp|cli) и ref"}, 400)
+                return
+            if kind == "app":
+                r = _app_wrap_flow(ref, purpose)
+                made = [r["expert"]] if r.get("ok") else []
+                why = r.get("why", "")
+            elif kind == "mcp":
+                r = _mcp_wrap_flow(ref)
+                made = [w["expert"] for w in (r.get("wrapped") or [])]
+                why = r.get("why", "") or "; ".join(
+                    "%s — %s" % (s.get("tool"), s.get("why")) for s in (r.get("skipped") or [])[:3])
+            else:
+                r = _cli_wrap_flow(ref, purpose)
+                made = [r["expert"]] if r.get("ok") else []
+                why = r.get("why", "")
+            if r.get("ok"):
+                _registry_refresh_async()
+            self._send({"status": "success" if r.get("ok") else "error", "kind": kind, "ref": ref,
+                        "made": made, "message": why})
 
         elif self.path == "/x/app_wrap":
             # Приложение → блок Композитора. Пятый и последний тип способностей: программы, модели,

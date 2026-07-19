@@ -348,6 +348,9 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
       </div>
     </div>
     <div id="composerOut" style="margin-top:14px"></div>
+    <!-- Разрыв «поставил, но не участвует» показываем САМИ: человек не обязан догадываться,
+         почему установленное приложение не попадает в сборку. Кнопка закрывает разрыв. -->
+    <div id="compInstalled" style="margin-top:22px"></div>
   </div>
 </div>
 
@@ -1954,6 +1957,73 @@ function openCompStudio(){
   var st=el('comp_studio'); if(!st) return;
   st.style.display='block'; document.body.style.overflow='hidden';
   var ci=el('composerInput'); if(ci) ci.focus();
+  renderInstalled();
+}
+// ── «Установлено, но не участвует» ────────────────────────────────────────────
+// Набор способностей у каждого клиента СВОЙ — из того, что он себе поставил. Но до сих пор
+// поставленное не становилось кубиком сборки само, и понять это было неоткуда: Композитор
+// просто не предлагал таких вариантов. Показываем разрыв прямо здесь и даём закрыть в клик.
+var _INST_LABEL={app:'приложение', mcp:'сервис', cli:'программа'};
+async function renderInstalled(){
+  var host=el('compInstalled'); if(!host) return;
+  host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Смотрю, что установлено на устройстве…</div>';
+  var d; try{ d=await jpost('/x/installed',{}); }catch(e){ d=null; }
+  if(!d||d.status!=='success'){
+    host.innerHTML='<div style="font-size:12.5px;color:var(--bad,#a33)">Не удалось прочитать список установленного'
+      +((d&&d.message)?': '+esc(d.message):'')+'</div>';
+    return;
+  }
+  var un=(d.unused||[]).filter(function(i){return i.kind!=='cli'||true;});
+  if(!un.length){
+    host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Всё установленное уже участвует в сборке — блоков в каталоге '+(d.blocks||0)+'.</div>';
+    return;
+  }
+  host.innerHTML='<div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:16px 18px;background:var(--paper,#fff)">'
+    +'<div style="font:700 14px var(--sans);margin-bottom:4px">Установлено, но не участвует в сборке</div>'
+    +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
+    +'Это ваш набор — он есть на устройстве, но Композитор им пока не пользуется. '
+    +'Нажмите «Сделать блоком»: мы разберёмся, что оно умеет, проверим живым запуском и добавим в сборку. '
+    +'Если проверка не пройдёт — скажем, почему, и блок не появится.</div>'
+    +un.map(function(i,n){
+      return '<div id="inst_'+n+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed var(--cream-dark,#d8d2c8)">'
+        +'<span style="font-size:11px;color:var(--silver,#889);min-width:74px">'+esc(_INST_LABEL[i.kind]||i.kind)+'</span>'
+        +'<b style="font-size:13.5px">'+esc(i.title)+'</b>'
+        +'<span style="font-size:12px;color:var(--silver,#889)">'+esc(i.note||'')+'</span>'
+        +(i.ready
+          ? '<button class="btn ghost sm" style="margin-left:auto" onclick="makeBlock('+n+',\''+esc(i.kind)+'\',\''+esc(i.ref)+'\',\''+esc(i.title)+'\')">Сделать блоком</button>'
+          : '<span style="margin-left:auto;font-size:12px;color:var(--silver,#889)">сначала запустите</span>')
+        +'</div>';
+    }).join('')
+    // Указатель есть, а программы на диске нет — витрина считает её установленной. Молчать об
+    // этом нельзя, но и предлагать «сделать блок» из пропавшей программы бессмысленно.
+    +((d.stale&&d.stale.length)
+      ? '<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--cream-dark,#d8d2c8);font-size:12px;color:var(--silver,#889)">'
+        +'Ещё '+d.stale.length+' помечены установленными, но на диске их нет ('+esc(d.stale.slice(0,4).join(', '))
+        +(d.stale.length>4?' и др.':'')+') — переустановите, если нужны.</div>'
+      : '')
+    +'</div>';
+}
+async function makeBlock(n, kind, ref, title){
+  var row=el('inst_'+n); if(!row) return;
+  var btn=row.querySelector('button'); if(btn){ btn.disabled=true; btn.textContent='Разбираюсь…'; }
+  var note=document.createElement('div');
+  note.style.cssText='font-size:12px;color:var(--silver,#889);padding:2px 0 8px 84px';
+  note.textContent='Проектирую вызов и проверяю живым запуском — это до минуты.';
+  row.parentNode.insertBefore(note, row.nextSibling);
+  var r; try{ r=await jpost('/x/make_block',{kind:kind, ref:ref, purpose:title}, 600000); }
+  catch(e){ r={status:'error', message:String(e&&e.message||e)}; }
+  if(r&&r.status==='success'){
+    note.style.color='var(--ink,#0a0a0a)';
+    note.textContent='✓ Готово: '+((r.made||[]).join(', ')||'блок добавлен')+'. Теперь его можно использовать в сборке.';
+    if(btn) btn.remove();
+    toast('✓ «'+title+'» стало блоком','ok');
+    setTimeout(renderInstalled, 1200);
+  } else {
+    note.style.color='var(--bad,#a33)';
+    // Причину показываем ЦЕЛИКОМ: «не получилось» без объяснения — тот самый немой отказ.
+    note.textContent='Не получилось: '+((r&&r.message)||'мост не ответил');
+    if(btn){ btn.disabled=false; btn.textContent='Попробовать снова'; }
+  }
 }
 function closeCompStudio(){
   var st=el('comp_studio'); if(!st||st.style.display==='none') return;
