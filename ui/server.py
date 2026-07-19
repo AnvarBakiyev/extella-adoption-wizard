@@ -2397,6 +2397,61 @@ def _catalog_broken():
     return {"broken": broken, "checked": len(blocks)}
 
 
+def _device_status():
+    """ЕДИНАЯ картина устройства (по слову Анвара 20.07): свести «что установлено» (опись — читает
+    реестр приложений тулбара + аллоулист MCP + указатели программ) и «что работает и не упадёт»
+    (здоровье блоков). Раньше это были три разрозненных списка — установленное, битое, мёртвые
+    указатели; человеку приходилось складывать их в голове.
+
+    У каждой способности ОДНО состояние:
+      working     — установлена, есть рабочий кубик;
+      installable — установлена и готова, кубика ещё нет (сделать/подключить);
+      not_running — приложение стоит, но не запущено;
+      broken      — кубик есть, а способность под ним исчезла (нужно внимание);
+      missing     — числится установленной, но на диске/в подключении её нет (переустановить).
+    """
+    inv = _installed_inventory()
+    broken = _catalog_broken()["broken"]
+    broken_by_ref = {(b.get("kind"), str(b.get("ref"))): b for b in broken}
+
+    rows = []
+    seen = set()
+    for it in inv["items"]:
+        key = (it["kind"], it["ref"])
+        seen.add(key)
+        if it["used"]:
+            # кубик есть — рабочий или сломанный
+            if key in broken_by_ref:
+                rows.append({**it, "state": "broken", "detail": broken_by_ref[key]["why"],
+                             "block": broken_by_ref[key]["id"]})
+            else:
+                rows.append({**it, "state": "working", "detail": "работает в автоматизациях"})
+        elif not it["ready"]:
+            rows.append({**it, "state": "not_running", "detail": it.get("note") or "не запущено"})
+        else:
+            rows.append({**it, "state": "installable", "detail": "можно подключить к автоматизациям"})
+
+    # битые кубики, чья способность НЕ числится установленной (случай ghostscript: brew сняли,
+    # в описи её уже нет, а кубик в каталоге остался) — их не покрыла опись, добавляем отдельно.
+    for (kind, ref), b in broken_by_ref.items():
+        if (kind, ref) in seen:
+            continue
+        rows.append({"kind": kind, "ref": ref, "title": ref, "used": True, "ready": False,
+                     "state": "broken", "detail": b["why"], "block": b["id"]})
+
+    # мёртвые указатели программ (есть ссылка, нет бинаря) без кубика — тихий шум, но честно считаем
+    for name in inv.get("stale") or []:
+        if ("cli", name) in seen:
+            continue
+        rows.append({"kind": "cli", "ref": name, "title": name, "used": False, "ready": False,
+                     "state": "missing", "detail": "числится установленной, но на диске её нет"})
+
+    summary = {}
+    for r in rows:
+        summary[r["state"]] = summary.get(r["state"], 0) + 1
+    return {"rows": rows, "summary": summary, "blocks": inv["blocks"]}
+
+
 def _block_remove(bid):
     """Убрать блок из каталога и его эксперта-обёртку. Только для устройство-зависимых обёрток
     (cap_*/origin/installed) — поставочные эксперты так не трогаем."""
@@ -7387,6 +7442,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "success" if r.get("ok") else "error", "server": srv,
                         "wrapped": r.get("wrapped") or [], "skipped": r.get("skipped") or [],
                         "message": r.get("why", "")})
+
+        elif self.path == "/x/device_status":
+            # Единая картина: что установлено × что работает и не упадёт. Одно состояние на
+            # способность. Для раздела «Программы» тулбара и Студии — один источник правды.
+            d = _device_status()
+            self._send({"status": "success", "rows": d["rows"], "summary": d["summary"],
+                        "blocks": d["blocks"]})
 
         elif self.path == "/x/blocks_health":
             # Битые блоки: остались в каталоге, а способность под ними исчезла. Показываем, не

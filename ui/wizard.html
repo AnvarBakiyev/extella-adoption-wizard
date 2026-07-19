@@ -1964,101 +1964,108 @@ function openCompStudio(){
 // поставленное не становилось кубиком сборки само, и понять это было неоткуда: Композитор
 // просто не предлагал таких вариантов. Показываем разрыв прямо здесь и даём закрыть в клик.
 var _INST_LABEL={app:'приложение', mcp:'сервис', cli:'программа'};
+// ЕДИНАЯ картина устройства — один источник (/x/device_status) вместо трёх разрозненных
+// (установлено / битое / мёртвые указатели). У каждой способности одно состояние.
 async function renderInstalled(){
   var host=el('compInstalled'); if(!host) return;
-  host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Смотрю, что установлено на устройстве…</div>';
-  var d; try{ d=await jpost('/x/installed',{}); }catch(e){ d=null; }
+  // Уберём отдельный контейнер битых из прошлой версии — теперь всё в одной панели.
+  var oldBroken=el('compBroken'); if(oldBroken) oldBroken.remove();
+  host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Смотрю, что установлено и что уже работает…</div>';
+  var d; try{ d=await jpost('/x/device_status',{}); }catch(e){ d=null; }
   if(!d||d.status!=='success'){
-    host.innerHTML='<div style="font-size:12.5px;color:var(--bad,#a33)">Не удалось прочитать список установленного'
+    host.innerHTML='<div style="font-size:12.5px;color:var(--bad,#a33)">Не удалось прочитать состояние устройства'
       +((d&&d.message)?': '+esc(d.message):'')+'</div>';
     return;
   }
-  // Битые блоки: способность под ними исчезла (программу удалили, сервер отключили). В процессе
-  // такой блок упадёт — показываем отдельно и даём убрать. Тянем параллельно с описью.
-  renderBrokenBlocks();
-  var un=(d.unused||[]);
-  if(!un.length){
-    host.innerHTML='<div style="font-size:12.5px;color:var(--silver,#889)">Всё установленное уже участвует в сборке — блоков в каталоге '+(d.blocks||0)+'.</div>';
-    return;
-  }
-  host.innerHTML='<div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:16px 18px;background:var(--paper,#fff)">'
-    +'<div style="font:700 14px var(--sans);margin-bottom:4px">Установлено, но не участвует в сборке</div>'
-    +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
-    +'Это ваш набор — он есть на устройстве, но Композитор им пока не пользуется. '
-    +'Нажмите «Сделать блоком»: мы разберёмся, что оно умеет, проверим живым запуском и добавим в сборку. '
-    +'Если проверка не пройдёт — скажем, почему, и блок не появится.</div>'
-    +un.map(function(i,n){
-      return '<div id="inst_'+n+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed var(--cream-dark,#d8d2c8)">'
-        +'<span style="font-size:11px;color:var(--silver,#889);min-width:74px">'+esc(_INST_LABEL[i.kind]||i.kind)+'</span>'
-        +'<b style="font-size:13.5px">'+esc(i.title)+'</b>'
-        +'<span style="font-size:12px;color:var(--silver,#889)">'+esc(i.note||'')+'</span>'
-        +(i.ready
-          ? '<button class="btn ghost sm" style="margin-left:auto" onclick="makeBlock('+n+',\''+esc(i.kind)+'\',\''+esc(i.ref)+'\',\''+esc(i.title)+'\')">Сделать блоком</button>'
-          : '<span style="margin-left:auto;font-size:12px;color:var(--silver,#889)">сначала запустите</span>')
-        +'</div>';
-    }).join('')
-    // Указатель есть, а программы на диске нет — витрина считает её установленной. Молчать об
-    // этом нельзя, но и предлагать «сделать блок» из пропавшей программы бессмысленно.
-    +((d.stale&&d.stale.length)
-      ? '<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--cream-dark,#d8d2c8);font-size:12px;color:var(--silver,#889)">'
-        +'Ещё '+d.stale.length+' помечены установленными, но на диске их нет ('+esc(d.stale.slice(0,4).join(', '))
-        +(d.stale.length>4?' и др.':'')+') — переустановите, если нужны.</div>'
-      : '')
+  var rows=d.rows||[], sm=d.summary||{};
+  window._DEVROWS=rows;                    // для обработчиков кнопок
+  var by=function(st){ return rows.filter(function(r){return r.state===st;}); };
+  var work=by('working'), inst=by('installable'), notrun=by('not_running'),
+      broken=by('broken'), missing=by('missing');
+
+  var H='';
+  // сводка одной строкой — что вообще на устройстве
+  H+='<div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:16px;font-size:12.5px">'
+    +'<span><b style="color:var(--ok,#4b7f52)">'+work.length+'</b> работают</span>'
+    +'<span><b>'+inst.length+'</b> можно подключить</span>'
+    +(broken.length?'<span><b style="color:#a9701a">'+broken.length+'</b> требуют внимания</span>':'')
+    +(missing.length?'<span style="color:var(--silver,#889)">'+missing.length+' пропали</span>':'')
     +'</div>';
-}
-// Битые блоки — отдельный контейнер над панелью установленного.
-async function renderBrokenBlocks(){
-  var host=el('compInstalled'); if(!host) return;
-  var box=el('compBroken');
-  if(!box){ box=document.createElement('div'); box.id='compBroken'; box.style.marginBottom='14px';
-            host.parentNode.insertBefore(box, host); }
-  // Проверка читает состав блоков и опрашивает устройство — это несколько секунд. Молчать нельзя:
-  // пустое место неотличимо от «битых нет», а проверка ещё идёт.
-  box.innerHTML='<div style="font-size:12px;color:var(--silver,#889)">Проверяю, все ли блоки ещё рабочие…</div>';
-  var d; try{ d=await jpost('/x/blocks_health',{}); }catch(e){ d=null; }
-  var br=(d&&d.broken)||[];
-  if(!br.length){ box.innerHTML=''; return; }
-  box.innerHTML='<div style="border:1px solid #e0b48a;border-radius:14px;padding:16px 18px;background:rgba(224,168,94,.08)">'
-    +'<div style="font:700 14px var(--sans);margin-bottom:4px">Блоки, у которых пропала способность</div>'
-    +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
-    +'Эти блоки остались в сборке, но программа или сервис под ними исчезли с устройства — в процессе они упадут. '
-    +'Верните способность (переустановите) и пересоберите блок, либо уберите его.</div>'
-    +br.map(function(b,i){
-      return '<div id="brk_'+i+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed #e0b48a">'
-        +'<span style="font-size:16px">⚠</span>'
-        +'<b style="font-size:13.5px">'+esc(b.id)+'</b>'
-        +'<span style="font-size:12px;color:#a9701a">'+esc(b.why||'')+'</span>'
-        +'<button class="btn ghost sm" style="margin-left:auto" onclick="removeBlock('+i+',\''+esc(b.id)+'\')">Убрать</button>'
-        +'</div>';
-    }).join('')+'</div>';
-}
-async function removeBlock(i, bid){
-  if(!confirm('Убрать блок «'+bid+'» из сборки? Его можно будет собрать заново, когда способность вернётся.')) return;
-  var row=el('brk_'+i); var btn=row&&row.querySelector('button');
-  if(btn){ btn.disabled=true; btn.textContent='Убираю…'; }
-  var r; try{ r=await jpost('/x/block_remove',{id:bid}); }catch(e){ r={status:'error',message:String(e&&e.message||e)}; }
-  if(r&&r.status==='success'){
-    if(row) row.remove(); toast('✓ Блок убран','ok');
-    renderBrokenBlocks();
-  } else {
-    if(btn){ btn.disabled=false; btn.textContent='Убрать'; }
-    toast('Не удалось убрать: '+((r&&r.message)||'мост не ответил'),'err');
+
+  // 1) требуют внимания — битые кубики (способность исчезла)
+  if(broken.length){
+    H+='<div style="border:1px solid #e0b48a;border-radius:14px;padding:16px 18px;background:rgba(224,168,94,.08);margin-bottom:14px">'
+      +'<div style="font:700 14px var(--sans);margin-bottom:4px">Требуют внимания</div>'
+      +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
+      +'Кубик остался в сборке, а программа или сервис под ним исчезли — в процессе он упадёт. '
+      +'Верните способность и пересоберите, либо уберите кубик.</div>'
+      +broken.map(function(r,i){
+        return '<div class="devrow" data-blk="'+esc(r.block||'')+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed #e0b48a">'
+          +'<span style="font-size:16px">⚠</span><b style="font-size:13.5px">'+esc(r.title)+'</b>'
+          +'<span style="font-size:12px;color:#a9701a">'+esc(r.detail||'')+'</span>'
+          +'<button class="btn ghost sm" style="margin-left:auto" onclick="removeBlock(this,\''+esc(r.block||'')+'\')">Убрать</button></div>';
+      }).join('')+'</div>';
   }
+
+  // 2) можно подключить + не запущенные
+  var actionable=inst.concat(notrun);
+  if(actionable.length){
+    H+='<div style="border:1px solid var(--cream-dark,#d8d2c8);border-radius:14px;padding:16px 18px;background:var(--paper,#fff)">'
+      +'<div style="font:700 14px var(--sans);margin-bottom:4px">Установлено, можно подключить к автоматизациям</div>'
+      +'<div style="font-size:12.5px;color:var(--silver,#889);margin-bottom:12px">'
+      +'Это ваш набор. Что вы ставите через Extella — подключается само; это осталось с прошлого. '
+      +'«Сделать блоком»: разберёмся, что умеет, проверим живым запуском, добавим. Не выйдет — скажем, почему.</div>'
+      +actionable.map(function(r){
+        var ri=rows.indexOf(r);
+        return '<div class="devrow" data-idx="'+ri+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px dashed var(--cream-dark,#d8d2c8)">'
+          +'<span style="font-size:11px;color:var(--silver,#889);min-width:74px">'+esc(_INST_LABEL[r.kind]||r.kind)+'</span>'
+          +'<b style="font-size:13.5px">'+esc(r.title)+'</b>'
+          +(r.state==='not_running'
+            ? '<span style="margin-left:auto;font-size:12px;color:var(--silver,#889)">сначала запустите</span>'
+            : '<button class="btn ghost sm" style="margin-left:auto" onclick="makeBlock(this,'+ri+')">Сделать блоком</button>')
+          +'</div>';
+      }).join('')+'</div>';
+  }
+
+  // 3) уже работают — тихой строкой (не требует действий)
+  if(work.length){
+    H+='<div style="margin-top:12px;font-size:12.5px;color:var(--silver,#889)">'
+      +'✓ Уже работают в автоматизациях: '+work.map(function(r){return esc(r.title);}).join(', ')+'.</div>';
+  }
+  // 4) пропали — тихой строкой
+  if(missing.length){
+    H+='<div style="margin-top:8px;font-size:12px;color:var(--silver,#889)">'
+      +missing.length+' числятся установленными, но на диске их нет ('
+      +missing.slice(0,4).map(function(r){return esc(r.title);}).join(', ')+(missing.length>4?' и др.':'')
+      +') — переустановите, если нужны.</div>';
+  }
+  if(!broken.length && !actionable.length){
+    H+='<div style="font-size:12.5px;color:var(--silver,#889)">Всё установленное уже работает — блоков в каталоге '+(d.blocks||0)+'.</div>';
+  }
+  host.innerHTML=H;
 }
-async function makeBlock(n, kind, ref, title){
-  var row=el('inst_'+n); if(!row) return;
-  var btn=row.querySelector('button'); if(btn){ btn.disabled=true; btn.textContent='Разбираюсь…'; }
+async function removeBlock(btn, bid){
+  if(!bid){ toast('У кубика не указан идентификатор','err'); return; }
+  if(!confirm('Убрать кубик из сборки? Его можно собрать заново, когда способность вернётся.')) return;
+  btn.disabled=true; btn.textContent='Убираю…';
+  var r; try{ r=await jpost('/x/block_remove',{id:bid}); }catch(e){ r={status:'error',message:String(e&&e.message||e)}; }
+  if(r&&r.status==='success'){ toast('✓ Кубик убран','ok'); renderInstalled(); }
+  else { btn.disabled=false; btn.textContent='Убрать'; toast('Не удалось убрать: '+((r&&r.message)||'мост не ответил'),'err'); }
+}
+async function makeBlock(btn, idx){
+  var it=(window._DEVROWS||[])[idx]; if(!it){ toast('Строка устарела — обновляю','err'); renderInstalled(); return; }
+  var row=btn.closest('.devrow'); if(btn){ btn.disabled=true; btn.textContent='Разбираюсь…'; }
   var note=document.createElement('div');
   note.style.cssText='font-size:12px;color:var(--silver,#889);padding:2px 0 8px 84px';
   note.textContent='Проектирую вызов и проверяю живым запуском — это до минуты.';
-  row.parentNode.insertBefore(note, row.nextSibling);
-  var r; try{ r=await jpost('/x/make_block',{kind:kind, ref:ref, purpose:title}, 600000); }
+  if(row) row.parentNode.insertBefore(note, row.nextSibling);
+  var r; try{ r=await jpost('/x/make_block',{kind:it.kind, ref:it.ref, purpose:it.title}, 600000); }
   catch(e){ r={status:'error', message:String(e&&e.message||e)}; }
   if(r&&r.status==='success'){
     note.style.color='var(--ink,#0a0a0a)';
-    note.textContent='✓ Готово: '+((r.made||[]).join(', ')||'блок добавлен')+'. Теперь его можно использовать в сборке.';
+    note.textContent='✓ Готово: '+((r.made||[]).join(', ')||'кубик добавлен')+'. Теперь его можно использовать в сборке.';
     if(btn) btn.remove();
-    toast('✓ «'+title+'» стало блоком','ok');
+    toast('✓ «'+it.title+'» стало кубиком','ok');
     setTimeout(renderInstalled, 1200);
   } else {
     note.style.color='var(--bad,#a33)';
