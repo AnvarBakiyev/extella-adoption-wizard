@@ -2123,12 +2123,29 @@ async function composeNow(){
   try{ r = await jpost("/x/compose",{task:task}); }
   finally{ _composing=false; if(cbtn) cbtn.disabled=false; }
   if(!r || r.status!=="success"){
-    // #гибрид-ч2: не тупик — предлагаем Мастера или готовый пример
-    _body().innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">⚠ '+esc(_cmpErr((r&&r.message)||"compose failed"))+'</div>'
-      + '<div style="margin-top:10px;font-size:13px;color:var(--nav)">Не удалось собрать автоматически — но это не тупик:</div>'
-      + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
-      + '<button class="btn gold sm" onclick="buildProcessFromTask(window._composerTask||\'\')">🧩 Собрать через Мастера →</button>'
-      + '<button class="btn ghost sm" onclick="closeCompStudio();firstWin(null)">▶ Посмотреть готовый пример</button></div>';
+    // Человек только что описал СВОЮ задачу и получил отказ. Ему нужно понять, чего
+    // не хватило, а не смотреть чужой демо-отчёт — поэтому вместо кнопки «пример»
+    // показываем список missing_human: он УЖЕ приходит с сервера, но раньше при отказе
+    // молчал, и владелец видел общее «не удалось собрать».
+    var _mh = ((r&&r.missing_human)||[]).filter(Boolean);
+    // «план без валидных шагов» — это фраза для нас, а не для владельца. Ведём человеческой
+    // строкой, технику оставляем мелко и ниже: она нужна нам при разборе, но не должна быть
+    // первым, что человек читает после отказа.
+    var _tech = _cmpErr((r&&r.message)||"compose failed");
+    _body().innerHTML = '<div class="cmp-step" style="border-color:var(--bad,#c33)">'
+      + '<b>⚠ Не удалось собрать из готовых блоков</b>'
+      + '<div style="font-size:11.5px;color:var(--silver);margin-top:4px">'+esc(_tech)+'</div></div>'
+      + (_mh.length
+          ? '<div style="margin-top:10px;font-size:13px;color:var(--nav)"><b>Чего не хватило:</b></div>'
+            + '<ul style="margin:6px 0 0;padding-left:20px;font-size:13px;color:var(--ink-soft);line-height:1.6">'
+            + _mh.slice(0,6).map(function(x){return '<li>'+esc(x)+'</li>';}).join('') + '</ul>'
+          : '')
+      + '<div style="margin-top:12px;font-size:13px;color:var(--nav)">'
+      + (_mh.length ? 'Допишите недостающее словами и попробуйте снова — или соберите через Мастера, он спросит всё сам.'
+                    : 'Быстрая сборка из готовых блоков не справилась. Мастер спросит подробности и спроектирует процесс.')
+      + '</div>'
+      + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="btn gold sm" onclick="buildProcessFromTask(window._composerTask||\'\')">🧩 Собрать через Мастера →</button></div>';
     return;
   }
   // верстак-чат: черновик flow можно доводить словами (полный чат по сборке)
