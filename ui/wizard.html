@@ -253,14 +253,6 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
   <!-- Решение Анвара 17.07: «Рабочий стол» = главная Plugins ПРИЛОЖЕНИЯ (карточки в реестре),
        а это окно — ТОЛЬКО Визард. Композитор/Студия/Команда открываются отдельными карточками
        Plugins через deep-link ?app=composer|cspl|team (обработка в _deepApp ниже). -->
-  <!-- Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без настройки) -->
-  <div id="firstWinHero" style="max-width:660px;background:linear-gradient(135deg,#c9a35c18,var(--paper,#fff));border:1px solid var(--gold,#c9a35c);border-radius:16px;padding:22px 24px;margin-bottom:26px">
-    <div class="kicker" style="color:var(--gold,#a97e35)">✨ Первая победа за 5 минут</div>
-    <div style="font-size:20px;font-weight:800;color:var(--ink,#0a0a0a);margin:4px 0 6px">Посмотрите Extella в деле — прямо сейчас</div>
-    <div style="font-size:13.5px;color:var(--silver,#889);line-height:1.5;margin-bottom:14px">Один клик — Extella соберёт и посчитает готовый отчёт на демо-данных за секунды. Без настройки и подключений. Это то, что процесс потом будет присылать вам сам каждый день.</div>
-    <button class="btn gold" id="firstWinBtn" style="padding:12px 22px;font-size:15px" onclick="firstWin(this)">▶ Живой пример: отчёт по рекламным бюджетам</button>
-    <div style="margin-top:9px;font-size:12.5px;color:var(--silver,#889)">или другой пример: <a href="#" onclick="firstWin(this,'subs');return false" style="color:var(--gold,#a97e35);font-weight:600;text-decoration:none">💳 забытые подписки в выписке</a></div>
-  </div>
   <div class="kicker">Визард внедрения</div>
   <h1>Соберите свою автоматизацию</h1>
   <div style="max-width:660px">
@@ -2053,25 +2045,8 @@ async function buildProcessFromTask(taskArg){
   if(!el("chat").classList.contains("open")) toggleChat();
   var ci=el("chatInput"); if(ci){ ci.value="Хочу автоматизировать процесс: "+task+". Расспроси меня и спроектируй."; ci.focus(); }
 }
-// Первая победа за 5 минут: живой демо-прогон на синтетике → реальный отчёт (гарантированно, без тупика)
-// «Первая победа» нужна ровно один раз. У человека с работающими автоматизациями большой
-// баннер «посмотрите Extella в деле» — шум и намёк, что система не заметила его работы.
-// Сворачиваем его в одну строку, но НЕ убираем: демо иногда зовут показать коллеге.
-function _fwHeroTune(){
-  var hero=el('firstWinHero'); if(!hero) return;
-  // AUTOS объявлена НЕ в window (var верхнего уровня в инлайн-скрипте) — window.AUTOS всегда
-  // undefined, и проверка молча считала любого клиента новичком. Читаем переменную напрямую.
-  var has=false;
-  try{ has=(AUTOS||[]).length>0; }catch(e){ has=false; }
-  if(!has){ hero.dataset.collapsed=''; return; }
-  if(hero.dataset.collapsed==='1') return;
-  hero.dataset.collapsed='1';
-  hero.style.padding='12px 16px';
-  hero.innerHTML='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px">'+
-    '<span style="color:var(--gold,#a97e35);font-weight:600">✨ Демо-пример</span>'+
-    '<span style="color:var(--silver,#889)">показать Extella в деле на демо-данных</span>'+
-    '<a href="#" onclick="firstWin(null);return false" style="color:var(--gold,#a97e35);font-weight:600;text-decoration:none;margin-left:auto">Показать →</a></div>';
-}
+// Демо-сценарий убран с рабочего стола (решение Анвара 18.07): показывать его тому,
+// кто уже работает, — шум. Сам живой пример остался в пустой витрине и в фолбэке композитора.
 async function firstWin(btn, example){
   example = example || "ads";
   var META = { ads:{title:"Ежедневный отчёт по рекламным бюджетам", chip:"📊 Реклама"},
@@ -2153,7 +2128,7 @@ async function composeNow(){
       + '<div style="margin-top:10px;font-size:13px;color:var(--nav)">Не удалось собрать автоматически — но это не тупик:</div>'
       + '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'
       + '<button class="btn gold sm" onclick="buildProcessFromTask(window._composerTask||\'\')">🧩 Собрать через Мастера →</button>'
-      + '<button class="btn ghost sm" onclick="closeCompStudio();firstWin(document.getElementById(\'firstWinBtn\'))">▶ Посмотреть готовый пример</button></div>';
+      + '<button class="btn ghost sm" onclick="closeCompStudio();firstWin(null)">▶ Посмотреть готовый пример</button></div>';
     return;
   }
   // верстак-чат: черновик flow можно доводить словами (полный чат по сборке)
@@ -4684,7 +4659,6 @@ async function renderAutomations(){
   box.innerHTML = `<div class="empty"><span class="spin"></span> загружаю автоматизации…</div>`;
   let d; try{ d = await jget("/x/automations"); }catch(e){ d=null; }
   AUTOS = (d && d.automations) || [];
-  _fwHeroTune();   // герой «Первая победа» — только новичкам
   if(!AUTOS.length){ box.innerHTML = _emptyShowcase(); return; }
   const fmt = n => (typeof n==="number") ? n.toLocaleString("ru-RU") : esc(n);
   const SRCNAME = k=>({src_gsheets:"Google Sheets",src_bitrix24:"Bitrix24",src_postgres:"PostgreSQL",src_mysql:"MySQL",src_amocrm:"amoCRM",src_1c_file:"1С (файл)",src_1c_winrm:"1С (сервер)"}[k]||k);
