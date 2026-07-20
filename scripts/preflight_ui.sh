@@ -72,6 +72,11 @@ python3 scripts/check_agentic_builder.py \
   && echo "   ✓ Qwen получает полное ТЗ и все входы, результат проверяется до упаковки" \
   || { echo "   ✗ агентный solve-run-repair контракт сломан"; fail=1; }
 
+echo "→ адаптивное интервью и проверка данных"
+python3 scripts/check_adaptive_data_check.py \
+  && echo "   ✓ аудит файла читает фактически показанные вопросы, а не старую анкету" \
+  || { echo "   ✗ адаптивные ответы снова потерялись перед аудитом файла"; fail=1; }
+
 echo "→ упаковка рабочего агента"
 python3 scripts/check_agentic_packaging.py \
   && echo "   ✓ эксперт, концепты и правила образуют один пакет" \

@@ -34,20 +34,35 @@ def wz_data_reality_check(
         return {"status": "error", "message": "session not found: " + session_id}
     session = json.loads(sp.read_text(encoding="utf-8"))
     answers = session.get("answers", {}) or {}
-
-    def a(key):
-        v = answers.get(key)
-        if isinstance(v, dict):
-            return str(v.get("answer", ""))
-        return str(v or "")
-
-    process_desc = (
-        "Боль: " + a("pain") +
-        "\nКак сейчас: " + a("process_today") +
-        "\nИсточник данных (со слов клиента): " + a("data_sources") +
-        "\nКритерий успеха / нужные метрики: " + a("success") +
-        "\nПериодичность: " + a("frequency")
-    )
+    # Адаптивное интервью намеренно НЕ обязано использовать старые id pain/process_today/success.
+    # Источник истины — задача + все фактически показанные и заполненные пары вопрос/ответ.
+    answer_rows = []
+    for qid, raw in answers.items():
+        if isinstance(raw, dict):
+            question, answer = str(raw.get("question", "")).strip(), str(raw.get("answer", "")).strip()
+        else:
+            question, answer = str(qid).replace("_", " "), str(raw or "").strip()
+        if answer:
+            answer_rows.append({"id": str(qid), "question": question or str(qid), "answer": answer})
+    task = str(session.get("questionnaire_task") or session.get("goal") or "").strip()
+    blueprint = {}
+    try:
+        bp_path = sp.with_name(session_id + "_blueprint.json")
+        if bp_path.exists():
+            bp_doc = json.loads(bp_path.read_text(encoding="utf-8"))
+            blueprint = bp_doc.get("blueprint", bp_doc) if isinstance(bp_doc, dict) else {}
+    except Exception:
+        blueprint = {}
+    process_context = {
+        "task_in_user_words": task,
+        "interview_answers": answer_rows,
+        "approved_blueprint": {
+            "goal": blueprint.get("goal"),
+            "data_source": blueprint.get("data_source"),
+            "sample_test_plan": blueprint.get("sample_test_plan"),
+        } if isinstance(blueprint, dict) else {},
+    }
+    process_desc = json.dumps(process_context, ensure_ascii=False)
 
     # ── инспекция реальных файлов ──
     fdir = Path.home() / "extella_wizard" / "sessions" / (session_id + "_files")
@@ -88,7 +103,7 @@ def wz_data_reality_check(
     if not files_info:
         result = {"verdict": "no_files",
                   "summary": "Файл-образец не приложен — проверить соответствие данных процессу нельзя. Приложите образец на шаге интервью.",
-                  "missing": [], "present": []}
+                  "missing": [], "present": [], "context_version": 2}
         session["data_check"] = result
         session["updated_at"] = datetime.now(timezone.utc).isoformat()
         sp.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -97,20 +112,40 @@ def wz_data_reality_check(
     if not api_key and not api_token:
         return {"status": "error", "message": "нужен api_key (OpenAI) или api_token (платформенная Qwen)"}
 
+    if not task and not answer_rows and not (isinstance(blueprint, dict) and blueprint.get("goal")):
+        result = {"verdict": "needs_context", "context_version": 2,
+                  "client_message": "Сначала опишите задачу или ответьте хотя бы на один вопрос интервью — тогда я проверю, подходят ли данные.",
+                  "missing": [], "present": [], "computable_metrics": [], "blocked_metrics": [],
+                  "files_checked": [fi["name"] for fi in files_info]}
+        session["data_check"] = result
+        session["updated_at"] = datetime.now(timezone.utc).isoformat()
+        sp.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"status": "success", "data_check": result}
+
     SYSTEM = (
         "Ты — аудитор данных внедрения. Тебе дают: (1) процесс, который клиент описал словами, "
         "и (2) ФАКТИЧЕСКИЕ колонки его загруженного файла. Задача — честно определить, "
         "СОДЕРЖИТ ЛИ файл поля, необходимые для описанного процесса и его метрик. "
-        "НЕ выдумывай поля, которых нет. Если процесс требует, например, срок оплаты/дату продления, "
-        "а в файле только транзакции — это разрыв. Верни СТРОГО JSON: "
+        "Интервью может быть адаптивным: названия/id вопросов произвольные, поэтому прочитай ВСЕ пары "
+        "вопрос/ответ и исходную задачу по смыслу. НЕ требуй старые пункты анкеты (боль, текущий процесс, "
+        "критерий успеха) только потому, что нет полей с такими id. НЕ называй описания/ответы интервью "
+        "полями файла. В missing разрешены ТОЛЬКО конкретные атрибуты исходных данных, без которых нельзя "
+        "получить явно запрошенный результат. Проверяй минимально достаточные данные, а не идеальную схему: "
+        "не запрашивай дополнительную детализацию, если заявленный результат уже считается из имеющихся колонок. "
+        "Для таблицы допустимо считать одну строку одной записью и делать count/group by по указанной колонке, "
+        "если контекст или пример строки этому не противоречат. Не требуй дату начала периода для показателя на "
+        "текущую дату, если уже есть дата окончания. Не превращай полезное уточнение или возможность сделать "
+        "метрику точнее в обязательное missing: такие оговорки можно кратко указать в client_message. "
+        "Если процесс действительно требует, например, срок оплаты/дату продления, а в файле только транзакции — "
+        "это разрыв. Верни СТРОГО JSON: "
         '{"verdict":"yes"|"partial"|"no", '
         '"present":[<колонки файла, релевантные процессу>], '
         '"missing":[{"need":"<что нужно процессу>","why":"<зачем>","in_file":false}], '
         '"computable_metrics":[<какие метрики РЕАЛЬНО можно посчитать из этого файла>], '
-        '"blocked_metrics":[<метрики из критерия успеха, которые посчитать НЕЛЬЗЯ, и почему>], '
+        '"blocked_metrics":["<метрика из явно заявленного результата — почему её нельзя посчитать>"], '
         '"client_message":"<1-3 предложения клиенту простым языком: тянет ли файл задачу и что делать при разрыве>"}'
     )
-    user = ("ПРОЦЕСС (со слов клиента):\n" + process_desc +
+    user = ("КОНТЕКСТ ЗАДАЧИ И ВСЕ ОТВЕТЫ ИНТЕРВЬЮ (JSON):\n" + process_desc +
             "\n\nФАКТИЧЕСКИЕ ФАЙЛЫ (колонки и пример строки):\n" +
             json.dumps(files_info, ensure_ascii=False)[:3500])
 
@@ -143,7 +178,42 @@ def wz_data_reality_check(
     except Exception as e:
         return {"status": "error", "message": str(e)[:200]}
 
+    def _text_item(value):
+        if isinstance(value, dict):
+            title = value.get("metric") or value.get("name") or value.get("field") or value.get("need") or value.get("title")
+            why = value.get("why") or value.get("reason") or value.get("evidence")
+            if title and why:
+                return str(title) + " — " + str(why)
+            if title:
+                return str(title)
+            return json.dumps(value, ensure_ascii=False)
+        return str(value or "")
+
+    for key in ("present", "computable_metrics", "blocked_metrics"):
+        raw = result.get(key) if isinstance(result.get(key), list) else []
+        result[key] = [txt for item in raw if (txt := _text_item(item).strip())]
+    clean_missing = []
+    # Защита от старого контракта анкеты: описание задачи уже передано модели как контекст,
+    # а не обязано существовать колонкой в исходном файле.
+    context_only_markers = (
+        "описание процесса", "описание бизнес", "бизнес-задач", "бизнес задача",
+        "боль клиента", "главная боль", "текущее состояние", "текущий процесс",
+        "критерий успеха", "критерии успеха",
+    )
+    for item in result.get("missing") if isinstance(result.get("missing"), list) else []:
+        if isinstance(item, dict):
+            need = str(item.get("need") or item.get("field") or item.get("name") or "").strip()
+            if need and not any(marker in need.lower() for marker in context_only_markers):
+                clean_missing.append({"need": need, "why": str(item.get("why") or item.get("reason") or "").strip(),
+                                      "in_file": False})
+        elif str(item or "").strip() and not any(marker in str(item).lower() for marker in context_only_markers):
+            clean_missing.append({"need": str(item).strip(), "why": "", "in_file": False})
+    result["missing"] = clean_missing
+    if result.get("verdict") not in ("yes", "partial", "no", "needs_context"):
+        result["verdict"] = "partial"
+    result["client_message"] = _text_item(result.get("client_message")).strip()
     result["files_checked"] = [fi["name"] for fi in files_info]
+    result["context_version"] = 2
     session["data_check"] = result
     session.setdefault("log", []).append({"ts": datetime.now(timezone.utc).isoformat(),
                                           "event": "data reality check: " + str(result.get("verdict"))})

@@ -550,6 +550,7 @@ async function genQuestions(){
   el('stQGen').innerHTML='<span class="spin"></span> подбираю вопросы под задачу…';
   var r=await jpost('/x/gen_questions',{session_id:S.sessionId, task:t});
   if(r&&r.status==='success'){
+    S._dcAuto=false;  // новый смысл задачи делает прежний аудит файла устаревшим
     await reloadSession();
     el('stQGen').textContent='✓ конспект перестроен: '+r.count+' вопросов под вашу задачу';
     render();
@@ -1208,7 +1209,7 @@ var _I18N_DICT = {
   "поддерживает частично": "partially supports",
   "Можно посчитать из файла:": "Can be computed from the file:",
   "Нельзя (нет данных):": "Not possible (no data):",
-  "Не хватает полей:": "Missing fields:",
+  "Не хватает в исходных данных:": "Missing from source data:",
   "↻ Перепроверить": "↻ Re-check",
   "сверяю файл с процессом…": "checking the file against the process…",
   "План ещё не собран. Завершите интервью и нажмите «Собрать план».": "The plan isn't assembled yet. Finish the interview and click «Assemble plan».",
@@ -1897,6 +1898,7 @@ async function loadSession(sid){
   if(!sid){ S.sessionId=null; render(); return; }
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
+  S._dcAuto = false;
   S.sessionId = sid;
   // Селектор в шапке — единственный указатель «где я сейчас». При заходе не из него (карточка рабочего
   // стола, deep-link, «Открыть в Мастере») он оставался на «— выбрать сессию —»: процесс открыт, а шапка
@@ -2728,7 +2730,7 @@ async function saveAnswers(){
   if(!Object.keys(payload).length){ setStatus("stInterview","конспект пуст — поговорите с Помощником или заполните пункт"); return; }
   setStatus("stInterview","<span class='spin'></span>сохраняю через платформу…");
   const r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(payload)}});
-  if(r.status==="success") S.drafts = {};
+  if(r.status==="success"){ S.drafts = {}; S._dcAuto = false; }
   await reloadSession();
   setStatus("stInterview", r.status==="success" ? `✓ сохранено (${r.answers_count} ответов)` : "ошибка: "+esc(r.message||""));
   render(); refreshSessions(S.sessionId);
@@ -2780,6 +2782,7 @@ async function uploadFiles(fileList){
     const b64 = await new Promise(res=>{ const rd=new FileReader(); rd.onload=()=>res(rd.result.split(",")[1]); rd.readAsDataURL(f); });
     const r = await jpost("/x/upload",{session_id:S.sessionId, filename:f.name, content_base64:b64});
     if(r.status!=="success"){ toast("Не удалось загрузить "+f.name+": "+(r.message||""), "err"); continue; }
+    S._dcAuto = false;
     toast("✓ "+f.name+" приложен", "ok");
     // помощник узнаёт о файле
     sendChatSilent(`[К сессии приложен файл-образец: ${r.path}. Посмотри при проектировании; если это выгрузка/шаблон — учти структуру.]`);
@@ -2799,8 +2802,21 @@ async function generateBlueprint(){
   S.blueprint = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
   await reloadSession(); render();
 }
+function _currentDataCheck(){
+  const dc=S.session&&S.session.data_check;
+  // v1 проверяла только фиксированные pain/process_today/success и поэтому ложно считала
+  // адаптивное интервью пустым. Старый результат не показываем — он автоматически пересчитается.
+  return dc && Number(dc.context_version||0)>=2 ? dc : null;
+}
+function _dcText(x){
+  if(x===null||x===undefined) return "";
+  if(typeof x!=="object") return String(x);
+  var title=x.metric||x.name||x.field||x.need||x.title||"";
+  var why=x.why||x.reason||x.evidence||"";
+  return title ? (String(title)+(why?" — "+String(why):"")) : JSON.stringify(x);
+}
 function dataCheckHTML(){
-  const dc = S.session && S.session.data_check;
+  const dc = _currentDataCheck();
   const files = (S.session && S.session.files) || [];
   if(!files.length) return "";
   if(!dc){
@@ -2812,21 +2828,23 @@ function dataCheckHTML(){
   const badge = v==="yes"?`<span class="badge ok">файл поддерживает процесс</span>`
     : v==="no"?`<span class="badge bad">файл не поддерживает процесс</span>`
     : v==="no_files"?`<span class="badge warn">нет файла</span>`
+    : v==="needs_context"?`<span class="badge warn">сначала опишите задачу</span>`
     : `<span class="badge warn">поддерживает частично</span>`;
   const miss = (dc.missing||[]).filter(m=>m && (m.in_file===false||m.need));
   return `<div class="card ${v==="yes"?"":"gap-card"}">
     <div class="kicker">Проверка данных ${badge}</div>
     <div style="font-size:13.5px;margin:6px 0">${esc(dc.client_message||dc.summary||"")}</div>
-    ${(dc.computable_metrics||[]).length?`<div style="font-size:13px"><b>Можно посчитать из файла:</b><ul class="plain">${dc.computable_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-    ${(dc.blocked_metrics||[]).length?`<div style="font-size:13px;color:var(--warn)"><b>Нельзя (нет данных):</b><ul class="plain">${dc.blocked_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-    ${miss.length?`<div style="font-size:13px;color:var(--warn)"><b>Не хватает полей:</b><ul class="plain">${miss.map(m=>`<li>${esc(m.need||m)}${m.why?" — "+esc(m.why):""}</li>`).join("")}</ul></div>`:""}
+    ${(dc.computable_metrics||[]).length?`<div style="font-size:13px"><b>Можно посчитать из файла:</b><ul class="plain">${dc.computable_metrics.map(x=>`<li>${esc(_dcText(x))}</li>`).join("")}</ul></div>`:""}
+    ${(dc.blocked_metrics||[]).length?`<div style="font-size:13px;color:var(--warn)"><b>Нельзя (нет данных):</b><ul class="plain">${dc.blocked_metrics.map(x=>`<li>${esc(_dcText(x))}</li>`).join("")}</ul></div>`:""}
+    ${miss.length?`<div style="font-size:13px;color:var(--warn)"><b>Не хватает в исходных данных:</b><ul class="plain">${miss.map(m=>`<li>${esc(m.need||m)}${m.why?" — "+esc(m.why):""}</li>`).join("")}</ul></div>`:""}
     <div style="margin-top:8px"><button class="btn ghost sm" onclick="runDataCheck()">↻ Перепроверить</button> <span class="statusline" id="stDC"></span></div>
     ${threadHTML("bp:datacheck")}</div>`;
 }
 async function runDataCheck(){
+  S._dcAuto=true;
   setStatus("stDC","<span class='spin'></span>сверяю файл с процессом…");
   const r = await jpost("/x/expert",{expert_name:"wz_data_reality_check",params:{session_id:S.sessionId}});
-  if(r.status!=="success"){ setStatus("stDC","ошибка: "+esc(r.message||"")); return; }
+  if(r.status!=="success"){ S._dcAuto=false; setStatus("stDC","ошибка: "+esc(r.message||"")); return; }
   setStatus("stDC","");
   await reloadSession(); render();
 }
@@ -2834,7 +2852,7 @@ function renderBlueprint(){
   el("toSpecBtn").disabled = !S.blueprint;
   const dcCard = dataCheckHTML();
   // авто-проверка при первом входе, если файл есть, а проверки ещё нет
-  if(S.session && (S.session.files||[]).length && !S.session.data_check && !S._dcAuto){
+  if(S.session && (S.session.files||[]).length && !_currentDataCheck() && !S._dcAuto){
     S._dcAuto = true; setTimeout(runDataCheck, 300);
   }
   if(!S.blueprint){ el("bpArea").innerHTML = dcCard + `<div class="empty">План ещё не собран. Завершите интервью и нажмите «Собрать план».</div>`; return; }
