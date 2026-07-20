@@ -49,7 +49,10 @@
 | `message_template` | str | /x/message_template | шаблон доставки, плейсхолдеры `{name}{count}{sum}{date}` |
 | `rules`/`fields` | list/dict | /x/rules | правила словами + поля владельца (композиции применяют на лету; Мастер-процессы — при пересборке) |
 | `rules_struct` | list | /x/rules (F2) | скомпилированные из `rules` машинные фильтры `[{field, op: >|>=|<|<=|==|contains, value}]` — Qwen интерпретирует ОДИН раз при записи, оркестратор применяет детерминированно на каждом прогоне |
+| `rules_synced` | bool | /x/rules | результат последней синхронизации правил с платформой: `true` — правила записаны, `false` — сохранены только в локальной сессии |
+| `report_spec` | dict | /x/report_spec_set | спецификация итогового отчёта (формат, структура и параметры представления); пустой объект = настройки ещё не заданы |
 | `target_requirements` | dict | /x/target_requirements (T2) | требования процесса к устройству `{apps:[...], local_only: bool, device: <slug>}` — preflight (`_target_preflight`) проверяет ДО прогона/расписания против паспортов `target:passport:*` |
+| `placement` | dict | /x/placement_set (A1) | подтверждённая карта исполнения `{map:{stage: device_ref}, confirmed: bool, set_at: ISO}`; наружу и в сессии сохраняются только безопасные `device_ref`, не полные target UUID |
 | `source` | dict/None | /x/source_bind | привязанный источник данных `{kind, …}` |
 | `inbound` | dict | /x/inbound | приём входящих `{mode, channel, target, …}`; исполнение — KV `inbound:<sid>` |
 | `runs` | list | /x/run_process | ручные прогоны `{at, status, findings?/total_*?, digest_source?}`; расписание пишет в `sched:<sid>.runs` |
