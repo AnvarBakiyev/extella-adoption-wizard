@@ -74,7 +74,7 @@ python3 scripts/check_agentic_builder.py \
 
 echo "→ универсальная матрица Source Model / repair / memory"
 python3 scripts/check_agentic_universal.py \
-  && echo "   ✓ 14 классов задач и отрицательные stop-сценарии доказаны синтетически" \
+  && echo "   ✓ 15 классов задач, legacy 4/4 и отрицательные stop-сценарии доказаны синтетически" \
   || { echo "   ✗ универсальный агентный механизм или repair budget сломан"; fail=1; }
 
 echo "→ безопасная граница экспериментального Контура"

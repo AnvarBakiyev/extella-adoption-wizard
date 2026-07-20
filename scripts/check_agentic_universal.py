@@ -174,6 +174,102 @@ def acceptance_cases(mod, root):
     return inp, empty, false_success
 
 
+def gulzhan_regression(mod, root):
+    """Исторический 4/4 — только регрессионные факты, никаких отраслевых правил в production."""
+    sid = "wz_gulzhan_regression"
+    paths = [root / "certificates_register.xlsx", root / "labels_register.xlsx", root / "erp_export.xlsx"]
+    for index, path in enumerate(paths):
+        path.write_text("synthetic anonymized fixture %d\n" % index, encoding="utf-8")
+    inputs = [profile(paths[0].name, [("Registry-A", ["identifier", "state"], ["0000001", "ok"])]),
+              profile(paths[1].name, [("Registry-B", ["identifier", "state"], ["0000002", "ok"])]),
+              profile(paths[2].name, [("Turnover", ["reference", "quantity"], ["0000001", 1])])]
+    pkg = package(inputs, "Сверить несколько реестров с выгрузкой учётной системы")
+    pkg.update({"rules": ["не выполнять внешние записи"], "fields": {}, "source_config": {}})
+    normalized = mod._normalize_source_model(
+        source_for(pkg, strategy="holistic_build", operation="reconcile all registries"), pkg)
+    assert normalized["ok"]
+    pkg["source_model"] = normalized["model"]
+    mod._refresh_package(pkg)
+    prepared = {"ok": True, "package": pkg, "source_model": normalized["model"],
+                "source_memory_ids": []}
+    (root / (sid + ".json")).write_text(json.dumps({
+        "session_id": sid, "client_name": "Synthetic regression",
+        "agentic_memory": {"version": 1, "entries": []}}, ensure_ascii=False), encoding="utf-8")
+
+    report_md = root / "gulzhan_report.md"
+    report_md.write_text("# Synthetic reconciliation\n\nAll three inputs processed. No matches were reported. "
+                         "This is deliberately the historical false-success fixture.\n", encoding="utf-8")
+    import openpyxl
+    report_xlsx = root / "gulzhan_report.xlsx"
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["entity", "source_count", "matched"])
+    ws.append(["type_a", 1063, 0]); ws.append(["type_b", 4889, 0]); wb.save(report_xlsx)
+    historical = {
+        "status": "success",
+        "summary": {"processed_files": 3, "erp_rows": 18500, "type_a_count": 1063,
+                    "type_b_count": 4889, "type_a_matches": 0, "type_b_matches": 0},
+        "evidence": {"files_used": [p.name for p in paths], "acceptance_checks": [
+            {"criterion": "все входы прочитаны", "passed": True, "evidence": "обработано 3 файла"}]},
+        "report_md": str(report_md), "report_xlsx": str(report_xlsx),
+    }
+    validation = mod.validate_result(historical, paths, pkg)
+    assert validation["ok"] and validation["summary"]["type_a_matches"] == 0
+
+    repaired = json.loads(json.dumps(historical))
+    repaired["summary"]["type_a_matches"] = 71
+    repaired["summary"]["type_b_matches"] = 203
+    repaired["evidence"]["acceptance_checks"].append({
+        "criterion": "сопоставление доказано", "passed": True,
+        "evidence": "нормализация ключей подтверждена наблюдаемыми парами"})
+
+    feedbacks, events, promotions = [], [], []
+
+    def create(name, task_package, feedback, llm):
+        feedbacks.append(json.loads(json.dumps(feedback, default=str)) if feedback else "")
+        if len(feedbacks) <= 3:
+            return {"ok": False, "why": "synthetic generation failure %d" % len(feedbacks)}
+        return {"ok": True, "code_sha256": "changed-%d" % len(feedbacks)}
+
+    verdicts = [{
+        "verdict": "fail", "confidence": 0.99,
+        "issues": ["нулевые совпадения против ожидаемой связи источников не доказаны"],
+        "owner_question": "", "memory": {"concepts": [], "rules": []},
+        "rejected_hypotheses": [
+            {"text": "идентификаторы совпадают как строки", "evidence": "0 совпадений из 1063 и 4889",
+             "rejection_reason": "возможны разные представления идентификаторов"},
+            {"text": "выбраны правильные разделы", "evidence": "профили содержат разные сущности",
+             "rejection_reason": "возможно неверно выбраны листы и бизнес-сущности"}],
+    }, {
+        "verdict": "pass", "confidence": 0.96, "issues": [], "owner_question": "",
+        "memory": {"concepts": [], "rules": []}, "rejected_hypotheses": [],
+    }]
+    runs = [historical, repaired]
+    mod._create_or_update = create
+    mod.run_expert = lambda *a, **k: runs.pop(0)
+    mod.judge_result = lambda *a, **k: verdicts.pop(0)
+    mod._promote_expert = lambda draft, stable, task_package: (
+        promotions.append((draft, stable)) or {"ok": True, "code_sha256": "stable"})
+    mod._delete_draft = lambda *a, **k: None
+    mod.time.sleep = lambda *_: None
+    result = mod.build_agentic_solution(
+        sid, "gulzhan_legacy_4_of_4", "regression", paths, root, root, {"agent_id": "agent_qwen"},
+        progress=lambda *args: events.append(args), max_creation_attempts=4,
+        max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=4,
+        prepared_context=prepared)
+
+    # Старая система остановилась на критической диагностике 4/4. Новая сохраняет отдельный repair
+    # budget: первый runnable draft на общем шаге 4 реально получает шаг 5 с переданным уроком.
+    assert result["ok"] and result["attempts"][3]["attempt"] == 4
+    assert result["attempts"][3]["result"]["summary"]["type_a_matches"] == 0
+    assert result["attempts"][3]["judge"]["verdict"] == "fail"
+    assert result["attempts"][4]["attempt"] == 5 and result["last_applied_lesson"]
+    assert "нулевые совпадения" in json.dumps(feedbacks[4], ensure_ascii=False)
+    titles = [str(event[1]) for event in events]
+    assert not any("Qwen исправляет" in title for title in titles)
+    assert any("урок передан следующему ремонту" in title for title in titles)
+    assert promotions
+
+
 def repair_and_memory(mod, root, inp, good, bad):
     sid = "wz_universal"
     (root / (sid + ".json")).write_text(json.dumps({
@@ -290,8 +386,9 @@ def main():
         root = Path(td)
         inp, good, bad = acceptance_cases(mod, root)
         profile_variants(mod, root)
+        gulzhan_regression(mod, root)
         repair_and_memory(mod, root, inp, good, bad)
-    print("универсальная матрица: 14 классов + repair budget + память + fail-closed stops ✓")
+    print("универсальная матрица: 15 классов (включая legacy 4/4) + repair budget + память + fail-closed stops ✓")
 
 
 if __name__ == "__main__":
