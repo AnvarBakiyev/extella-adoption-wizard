@@ -72,6 +72,16 @@ python3 scripts/check_agentic_builder.py \
   && echo "   ✓ Qwen получает полное ТЗ и все входы, результат проверяется до упаковки" \
   || { echo "   ✗ агентный solve-run-repair контракт сломан"; fail=1; }
 
+echo "→ универсальная матрица Source Model / repair / memory"
+python3 scripts/check_agentic_universal.py \
+  && echo "   ✓ 14 классов задач и отрицательные stop-сценарии доказаны синтетически" \
+  || { echo "   ✗ универсальный агентный механизм или repair budget сломан"; fail=1; }
+
+echo "→ безопасная граница экспериментального Контура"
+python3 scripts/check_goal_loop_safety.py \
+  && echo "   ✓ fail-closed; нет fake expert/install и записи недоказанной памяти" \
+  || { echo "   ✗ Контур снова маскирует локальный шаг или загрязняет мозг"; fail=1; }
+
 echo "→ адаптивное интервью и проверка данных"
 python3 scripts/check_adaptive_data_check.py \
   && echo "   ✓ аудит файла читает фактически показанные вопросы, а не старую анкету" \

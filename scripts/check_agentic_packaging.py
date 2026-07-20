@@ -33,8 +33,33 @@ def main():
     assert any(ep == "/api/concept/delete" and p.get("concept_id") == "old" for ep, p, _ in calls)
     assert not any(ep == "/api/concept/delete" and p.get("concept_id") == "foreign" for ep, p, _ in calls)
     assert any(ep == "/api/concept/add" and "Этапы: Excel" in p.get("text", "") for ep, p, _ in calls)
+    learned_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
+                        node.name == "_proc_learned_rules_push")
+    learned_calls = []
+
+    def learned_api(endpoint, payload, agent_id):
+        learned_calls.append((endpoint, payload, agent_id))
+        if endpoint == "/api/rules/list":
+            return {"status": "success", "results": [
+                {"id": "owner", "rule": "[процесс:wz_x] Никогда не отправлять наружу"},
+                {"id": "old", "rule": "[выучено:wz_x] Старое правило"},
+            ]}
+        return {"status": "success", "rule_id": "new"}
+
+    learned_ns = {"_api_agent": learned_api, "LEARNED_RULE_TAG": "[выучено:%s]"}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[learned_node], type_ignores=[])),
+                 str(SERVER), "exec"), learned_ns)
+    learned = learned_ns["_proc_learned_rules_push"]("wz_x", ["Проверять все строки"], "agent_x")
+    assert learned["ok"] and learned["total"] == 1
+    assert any(ep == "/api/rules/delete" and p.get("rule_id") == "old" for ep, p, _ in learned_calls)
+    assert not any(ep == "/api/rules/delete" and p.get("rule_id") == "owner" for ep, p, _ in learned_calls)
+    assert any(ep == "/api/rules/add" and "[выучено:wz_x] Проверять" in p.get("rule", "")
+               for ep, p, _ in learned_calls)
     assert "_proc_concepts_push(sid, _concepts, agent_id)" in source
     assert "_proc_rules_push(sid, s.get(\"rules\") or [], agent_id)" in source
+    assert "_proc_learned_rules_push(sid, _learned_rules, agent_id)" in source
+    assert 'x.get("status") == "verified"' in source
+    assert 'x.get("kind") == "concept"' in source and 'x.get("kind") == "rule"' in source
     assert '"package": {"experts":' in source
     assert '"output_dir": "/tmp/extella_" + sid + "_agent"' in source
     assert 'params=" + _agent_params_text' in source

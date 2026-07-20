@@ -70,6 +70,8 @@ def main():
         package = mod.make_task_package(sid, [xlsx, pdf], root)
         assert package["blueprint"]["goal"] == "Найти расхождения Excel и PDF"
         assert {x["name"] for x in package["inputs"]} == {"register.xlsx", "certificate.pdf"}
+        assert package["task_contract"]["interview"][0]["answer"] == "Сверить реестр с сертификатом"
+        assert all(x.get("profile") for x in package["task_contract"]["inputs"])
         assert package["package_sha256"]
         package["build_plan"] = {"legacy_instruction": "LEGACY_PLAN_MUST_NOT_REACH_QWEN"}
         package["assistant_context"] = {"messages": ["CHAT_TRANSCRIPT_MUST_NOT_REACH_QWEN"]}
@@ -126,13 +128,39 @@ def main():
         escaped = code.replace("return {}", "return list(Path.home().rglob('*.xlsx'))")
         assert any("Path.home(" in x for x in mod._validate_code("pc_run_process", escaped, package))
 
+        def ready_source(pkg, llm, max_tries=2):
+            sources = []
+            for p in pkg["inputs"]:
+                sections = []
+                for sh in p.get("workbook") or []:
+                    sections.append({"name": sh["title"], "role": "данные", "evidence": sh.get("columns") or ["sample"]})
+                if p.get("text_sample") is not None:
+                    sections.append({"name": "document", "role": "документ", "evidence": ["text profile"]})
+                sources.append({"name": p["name"], "role": "обязательный вход", "entities": ["записи"], "sections": sections,
+                                "evidence": ["фактический профиль"]})
+            raw = {"status": "ready", "strategy": "holistic_build", "reason": "несколько входов",
+                   "sources": sources, "operations": [{"name": "обработать пакет", "inputs": [x["name"] for x in sources],
+                                                        "evidence": ["Task Contract"]}],
+                   "acceptance_criteria": ["все файлы обработаны"], "selected_capabilities": [],
+                   "missing_capability": "", "question": ""}
+            return mod._normalize_source_model(raw, pkg)
+
+        checked_source = ready_source(package, {}, 2)
+        assert checked_source["ok"] and checked_source["model"]["strategy"] == "holistic_build"
+        ambiguous = json.loads(json.dumps(checked_source["model"]))
+        ambiguous.pop("sha256", None)
+        ambiguous["operations"][0]["normalizations"] = [{"field": "id", "method": "remove prefix",
+                                                          "evidence": "guess", "requires_owner": True}]
+        assert mod._normalize_source_model(ambiguous, package)["ok"] is False
+        mod.build_source_model = ready_source
+
         # Solve-run-repair: первый фактический прогон не доказал PDF, второй исправлен и принят.
         bad = json.loads(json.dumps(result))
         bad["evidence"]["files_used"] = ["register.xlsx"]
         runs = [bad, result]
         feedbacks, events, promotions, deletions = [], [], [], []
         mod._create_or_update = lambda name, pkg, feedback, llm: (
-            feedbacks.append(feedback) or {"ok": True, "code_sha256": "abc"})
+            feedbacks.append(feedback) or {"ok": True, "code_sha256": "code-%d" % len(feedbacks)})
         mod._promote_expert = lambda draft, stable, pkg: (
             promotions.append((draft, stable)) or {"ok": True, "code_sha256": "accepted"})
         mod._delete_draft = lambda draft, agent="": deletions.append((draft, agent))
@@ -142,7 +170,7 @@ def main():
         mod.time.sleep = lambda *_: None
         built = mod.build_agentic_solution(
             sid, "build_test", "pc", [xlsx, pdf], root, root, {"agent_id": "agent_test"},
-            progress=lambda *args: events.append(args), max_attempts=2)
+            progress=lambda *args: events.append(args), max_creation_attempts=2, max_total_attempts=4)
         assert built["ok"] is True
         assert len(built["attempts"]) == 2
         assert feedbacks[0] == "" and "certificate.pdf" in json.dumps(feedbacks[1])
@@ -150,23 +178,29 @@ def main():
         assert promotions and promotions[0][1] == "pc_run_process" and "__draft_" in promotions[0][0]
         assert deletions and deletions[0][0] == promotions[0][0]
         assert any(event[0] == "agentic_accept" and event[2] == "success" for event in events)
-        assert any("Создаю чернового эксперта" in event[1] for event in events)
-        assert any("Запускаю чернового эксперта" in event[1] for event in events)
-        assert any("Постоянный эксперт опубликован" in event[1] for event in events)
+        assert any("Создаю draft-эксперта" in event[1] for event in events)
+        assert any("run_expert" in event[1] for event in events)
+        assert any("Stable-эксперт опубликован" in event[1] for event in events)
+        assert built["verified_memory"] and all(x["status"] == "verified" for x in built["verified_memory"])
 
         # Красная стройка удаляет только уникальный draft и ни разу не публикует stable-эксперта.
-        runs[:] = [bad]
+        runs[:] = [bad, bad, bad]
         promotions.clear(); deletions.clear()
         failed = mod.build_agentic_solution(
             sid, "build_fail", "pc", [xlsx, pdf], root, root, {"agent_id": "agent_test"},
-            progress=lambda *args: None, max_attempts=1)
+            progress=lambda *args: None, max_creation_attempts=1, max_total_attempts=3)
         assert failed["ok"] is False and promotions == []
         assert deletions and "__draft_" in deletions[-1][0]
+        assert failed["expert_ran"] is True and failed["verified_memory"] == []
+        assert all(x.get("status") != "verified" or x.get("source") == "owner"
+                   for x in failed["working_memory"]["entries"])
 
     source = BUILD.read_text(encoding="utf-8")
-    assert "needs_agentic = len(sample_files) > 1 or not topology" in source
+    assert "prepared = prepare_task_context(" in source
+    assert 'source_model.get("strategy") == "holistic_build"' in source
+    assert 'llm["task_context"] = _builder_brief(task_package)' in source
     assert "build_agentic_solution(" in source
-    assert "max_attempts=4" in source
+    assert "max_creation_attempts=4" in source and "max_acceptance_repairs=2" in source
     assert source.index("build_agentic_solution(") < source.index("# KNOWLEDGE-СТАДИЯ")
     assert '"agentic_events": []' in source and 'event = {"at": now()' in source
     assert '"updated_at": stamp' in source

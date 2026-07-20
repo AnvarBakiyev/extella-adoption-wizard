@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
-from wz_agentic import build_agentic_solution
+from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
 
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
@@ -221,9 +221,9 @@ def _stage_sanity(title, purpose, out_path, llm):
     JSON/нет чисел», но пропускает СТРУКТУРНО ЦЕЛЫЙ МУСОР: шаг «поиск поставщиков» искал в вебе по
     суммам → вики про игру; форма цела, галочка зелёная, смысл — ноль (Гульжан, 20.07).
 
-    Возвращает {"ok": bool, "why": str}. ok=False → стадия собралась, но помечается «требует
-    доводки» (не зелёным). МЯГКИЙ гейт: не валит сборку, а честно называет сомнительный шаг —
-    лучше, чем показать «готово» и спрятать мусор в итоговой сводке."""
+    Возвращает {"ok": bool, "why": str}. ok=False → стадия не публикуется: причина возвращается
+    в тот же цикл генерации как фактический урок для ремонта. Если независимый Qwen-судья
+    недоступен или не подтвердил результат явно, гейт закрыт (fail-closed)."""
     try:
         raw = Path(out_path).read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -236,12 +236,9 @@ def _stage_sanity(title, purpose, out_path, llm):
 
     # 1) ДЕШЁВЫЙ детерминированный флаг: поиск/запрос по чистому числу = заведомо мусор.
     numq = 0
-    looks_search = False
     for r in recs[:80]:
         if not isinstance(r, dict):
             continue
-        if any(k in r for k in ("search_query", "snippet", "url")):
-            looks_search = True
         for k in ("search_query", "query", "q", "matched_category"):
             v = str(r.get(k, "")).strip()
             if v and re.fullmatch(r"[\d\s.,%+-]+", v):
@@ -251,14 +248,16 @@ def _stage_sanity(title, purpose, out_path, llm):
         return {"ok": False, "why": "шаг искал по числовым значениям (суммам), а не по осмысленным "
                                     "запросам — найденное не относится к задаче"}
 
-    # 2) LLM-СУДЬЯ (консервативный) — только для стадий, похожих на внешний поиск/выборку, чтобы не
-    #    удваивать время сборки на обычных стадиях парсинга/агрегации.
-    ag = (llm or {}).get("agent_id")
-    if not (looks_search and ag):
-        return {"ok": True, "why": ""}
+    # 2) Независимый Qwen-судья по каждой стадии. Production-путь fail-closed: структурно целый
+    #    JSON ещё не доказывает, что стадия выполнила бизнес-цель Task Contract.
+    ag = design_agent() or (llm or {}).get("agent_id")
+    if not ag:
+        return {"ok": False, "why": "нет независимого Qwen для смысловой приёмки стадии"}
     sample = json.dumps(data, ensure_ascii=False, default=str)[:1600]
+    context = json.dumps((llm or {}).get("task_context") or {}, ensure_ascii=False, default=str)[:9000]
     prompt = ("Ты приёмщик качества автоматизации. Шаг: «" + str(title)[:80] + "». Его задача: "
               + str(purpose)[:160] + ".\nОбразец вывода шага:\n" + sample +
+              "\nАвторитетный Task Contract + Source Model:\n" + context +
               "\n\nВывод ОСМЫСЛЕН для задачи шага, или это мусор (веб-результаты не по теме, поиск "
               "по числам, заглушки, данные из чужой области)? Ответь ТОЛЬКО JSON: "
               '{"sensible": true|false, "why": "<если нет — одной короткой фразой по-русски, что не так>"}. '
@@ -266,8 +265,8 @@ def _stage_sanity(title, purpose, out_path, llm):
     try:
         res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 50,
                                      "store": False, "temperature": 0}, timeout=60)
-    except Exception:
-        return {"ok": True, "why": ""}   # судья недоступен — не блокируем сборку из-за него
+    except Exception as exc:
+        return {"ok": False, "why": "смысловой судья недоступен: " + str(exc)[:100]}
     text = ""
     for it in (res or {}).get("output", []):
         if isinstance(it, dict) and it.get("type") == "message":
@@ -277,13 +276,15 @@ def _stage_sanity(title, purpose, out_path, llm):
     text = text or (res or {}).get("output_text", "")
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        return {"ok": True, "why": ""}
+        return {"ok": False, "why": "смысловой судья не вернул JSON"}
     try:
         v = json.loads(m.group(0))
     except Exception:
-        return {"ok": True, "why": ""}
+        return {"ok": False, "why": "смысловой судья вернул невалидный JSON"}
     if v.get("sensible") is False:
         return {"ok": False, "why": str(v.get("why") or "результат шага не относится к задаче")[:160]}
+    if v.get("sensible") is not True:
+        return {"ok": False, "why": str(v.get("why") or "смысловой судья не подтвердил результат")[:160]}
     return {"ok": True, "why": ""}
 
 
@@ -388,6 +389,10 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
     user = ("Имя эксперта (СТРОГО): " + expert_name + "\nCSPL: " + cspl +
             "\nНазначение: " + str(task.get("purpose", "")) +
             "\nСгенерируй код стадии строго по контракту (input_path, output_path).")
+    if isinstance((llm or {}).get("task_context"), dict):
+        user += ("\n\nЕДИНЫЙ АВТОРИТЕТНЫЙ КОНТЕКСТ (учти Task Contract, Source Model и память; "
+                 "не угадывай схему по позиции листа):\n" +
+                 json.dumps(llm["task_context"], ensure_ascii=False, default=str))
     out_path = "/tmp/stage_" + expert_name + ".json"
     last_err = None
     why = None   # #11: инициализация ДО цикла — иначе при провале всех попыток на этапе LLM/build (до приёмки, стр.243) финальный return читает несвязанную why → NameError
@@ -505,10 +510,14 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
                         why = ("стадия обязана ВЫЧИСЛИТЬ summary с числами (total_count/total_sum/by_<колонка>), "
                                "а не копировать записи; сейчас summary пуст или без чисел")
         if why is None:
-            # структурно принято → смысловая проверка (мягкая): не валит, но помечает сомнительное
+            # Структурно принято → независимая смысловая проверка. FAIL возвращается в ремонт этой
+            # же стадии; частичный эксперт не проходит в оркестратор как «требует доводки».
             _san = _stage_sanity(task.get("title") or expert_name, task.get("purpose") or "", out_path, llm)
             if not _san.get("ok"):
-                return True, out_path, "built+accepted", _san.get("why")
+                why = _san.get("why") or "смысловая приёмка не пройдена"
+                user += "\n\nСМЫСЛОВАЯ ПРИЁМКА УПАЛА: " + str(why) + ". Исправь первопричину по Task Contract."
+                time.sleep(1)
+                continue
             return True, out_path, "built+accepted", None
         user += "\n\nПРИЁМКА УПАЛА (вход " + str(accept_input) + "): " + why + ". Исправь под контракт."
     return False, None, "3 попытки: " + str(why or last_err or "не прошли приёмку")[:150], None
@@ -541,6 +550,30 @@ BUILD_ERRORS = {
                                   "Ни частичный эксперт, ни ложный результат не опубликованы. Если ниже "
                                   "есть вопрос владельцу — ответьте на него в интервью и повторите стройку; "
                                   "иначе это задача диагностики Строителя."),
+    "agentic_run_failed": ("Draft-эксперт не прошёл техническую проверку на образцах",
+                           "Результат не опубликован. История запуска и последний неприменённый урок "
+                           "сохранены для следующей ручной стройки; это задача диагностики Строителя."),
+    "agentic_build_failed": ("Qwen не удалось создать исполняемый draft-эксперт",
+                             "Stable-версия не изменена. Ошибки генерации и сохранения перечислены ниже "
+                             "и сохранены в журнале ремонта."),
+    "agentic_stalled": ("Ремонт остановлен: код не менялся после той же ошибки",
+                        "Неизменившийся код не засчитан как ремонт. Rejected-урок сохранён в сессии; "
+                        "stable-эксперт не изменён."),
+    "agentic_timeout": ("Сборка достигла общего лимита времени",
+                        "Draft и история попыток сохранены в журнале, stable-версия не изменена. "
+                        "Повторный ручной запуск продолжит с памятью этой сессии."),
+    "source_model_failed": ("Не удалось доказанно понять роли входных данных",
+                            "Source Model не прошла проверку фактических файлов и разделов. "
+                            "Результат не выдуман и draft не опубликован; это задача диагностики Строителя."),
+    "needs_owner_input": ("Для продолжения нужен один бизнес-ответ владельца",
+                          "Ответьте на точный вопрос ниже в интервью и запустите стройку снова. "
+                          "До ответа процесс завершён и ничего не публикует."),
+    "capability_missing": ("Для задачи не хватает доступной проверенной способности",
+                           "Кандидат можно рассмотреть отдельно, но Wizard ничего не устанавливал и "
+                           "не записывал его в постоянный мозг."),
+    "agent_publish_failed": ("Проверенный draft не удалось опубликовать как stable-эксперт",
+                             "Рабочая stable-версия не была перезаписана. Повторите позже; если сбой "
+                             "повторится, нужна диагностика API Extella."),
     "no_components_built": ("Ни один компонент не собрался",
                             "Чаще всего причина одна — нет файла-образца или он не читается. "
                             "Проверьте, что файл открывается и в нём есть заголовки колонок."),
@@ -1326,7 +1359,50 @@ def _run_build(session_id, build_id):
             prog["error_struct"] = _build_error("no_sample_file")
             prog["error"] = prog["error_struct"]["message"]
             save(); _unlock(); return
-        needs_agentic = len(sample_files) > 1 or not topology["supported"]
+        # Один контракт и одна Source Model обязательны для ОБОИХ Builder-путей. Линейный Builder
+        # остаётся на месте, но больше не кодогенит стадии из одного schema_hint в обход интервью/ТЗ.
+        stage("task_contract", "Собираю единый Task Contract", "running")
+        stage("source_model", "Qwen сопоставляет роли источников и операций", "running")
+        prepared = prepare_task_context(session_id, sample_files, SESS_DIR, llm)
+        task_package = prepared.get("package") or {}
+        source_model = prepared.get("source_model") or {}
+        prog["task_contract"] = task_package.get("task_contract") or {}
+        prog["source_model"] = source_model
+        prog["working_memory"] = task_package.get("working_memory") or {}
+        for _name, _value in (("task_contract.json", prog["task_contract"]),
+                              ("source_model.json", source_model),
+                              ("working_memory.json", prog["working_memory"]),
+                              ("task_package.json", task_package)):
+            (bdir / _name).write_text(json.dumps(_value, ensure_ascii=False, indent=2, default=str),
+                                      encoding="utf-8")
+        if not prepared.get("ok"):
+            detail = str(prepared.get("why") or source_model.get("reason") or "Source Model не построена")
+            stage("source_model", "Source Model не прошла проверку", "error", detail=detail)
+            prog["status"] = "error"; prog["build_mode"] = "agentic"
+            prog["error_struct"] = _build_error("source_model_failed", detail,
+                                                 failure_kind="builder_defect",
+                                                 draft_created=False, expert_ran=False)
+            prog["error"] = prog["error_struct"]["message"]
+            save(); _unlock(); return
+        stage("task_contract", "Task Contract готов", "success",
+              detail="контракт " + str((task_package.get("task_contract") or {}).get("sha256") or "")[:10])
+        stage("source_model", "Source Model подтверждена", "success",
+              detail="стратегия: " + str(source_model.get("strategy") or ""))
+        if source_model.get("status") in ("need_human", "acquire"):
+            error_code = "needs_owner_input" if source_model["status"] == "need_human" else "capability_missing"
+            detail = str(source_model.get("reason") or source_model.get("missing_capability") or "")
+            question = str(source_model.get("question") or "")
+            prog["status"] = "error"; prog["build_mode"] = "agentic"
+            prog["error_struct"] = _build_error(error_code, detail, owner_question=question,
+                                                 failure_kind=source_model["status"],
+                                                 draft_created=False, expert_ran=False)
+            prog["error"] = prog["error_struct"]["message"]
+            save(); _unlock(); return
+        # Линейный кодоген получает ту же авторитетную фактуру; agentic path получает готовый
+        # context и не делает второй, потенциально расходящийся вызов Source Model.
+        llm["task_context"] = _builder_brief(task_package)
+        needs_agentic = (len(sample_files) > 1 or not topology["supported"] or
+                         source_model.get("strategy") == "holistic_build")
         if needs_agentic:
             facts = []
             if len(sample_files) > 1:
@@ -1349,12 +1425,25 @@ def _run_build(session_id, build_id):
                     event["detail"] = str(detail)[:700]
                 prog.setdefault("agentic_events", []).append(event)
                 prog["agentic_events"] = prog["agentic_events"][-60:]
+                # Память и модель пишутся агентным циклом атомарно; подтягиваем snapshot в UI,
+                # чтобы пользователь видел, что именно следующая попытка уже получила.
+                for _key, _name in (("working_memory", "working_memory.json"),
+                                    ("task_contract", "task_contract.json"),
+                                    ("source_model", "source_model.json")):
+                    try:
+                        _path = bdir / _name
+                        if _path.exists():
+                            prog[_key] = json.loads(_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
                 stage(sid, title, status, **extra)
 
             solution = build_agentic_solution(
                 session_id=session_id, build_id=build_id, namespace=ns,
                 sample_files=sample_files, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
-                llm=llm, progress=_agentic_progress, max_attempts=4)
+                llm=llm, progress=_agentic_progress, max_creation_attempts=4,
+                max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=10,
+                max_elapsed_seconds=3600, prepared_context=prepared)
             if not solution.get("ok"):
                 detail = str(solution.get("detail") or "решение не прошло приёмку")
                 if solution.get("owner_question"):
@@ -1362,10 +1451,27 @@ def _run_build(session_id, build_id):
                 prog["status"] = "error"
                 prog["build_mode"] = "agentic"
                 prog["attempts"] = solution.get("attempts") or []
+                prog["task_contract"] = solution.get("task_contract") or {}
+                prog["source_model"] = solution.get("source_model") or {}
+                prog["working_memory"] = solution.get("working_memory") or {}
+                prog["repair_budgets"] = solution.get("budgets") or {}
+                prog["draft_created"] = bool(solution.get("draft_created"))
+                prog["expert_ran"] = bool(solution.get("expert_ran"))
+                prog["last_applied_lesson"] = solution.get("last_applied_lesson") or ""
+                prog["last_unapplied_lesson"] = solution.get("last_unapplied_lesson") or ""
+                error_code = solution.get("code") or "agentic_acceptance_failed"
+                if error_code not in BUILD_ERRORS:
+                    error_code = "agentic_acceptance_failed"
                 prog["error_struct"] = _build_error(
-                    "agentic_acceptance_failed", detail,
+                    error_code, detail,
                     owner_question=solution.get("owner_question") or "",
-                    attempts=len(solution.get("attempts") or []))
+                    attempts=len(solution.get("attempts") or []),
+                    failure_kind=solution.get("failure_kind") or "",
+                    draft_created=bool(solution.get("draft_created")),
+                    expert_ran=bool(solution.get("expert_ran")),
+                    files_processed=solution.get("files_processed") or [],
+                    last_applied_lesson=solution.get("last_applied_lesson") or "",
+                    last_unapplied_lesson=solution.get("last_unapplied_lesson") or "")
                 prog["error"] = prog["error_struct"]["message"]
                 save(); _unlock(); return
 
@@ -1380,8 +1486,12 @@ def _run_build(session_id, build_id):
             prog["build_mode"] = "agentic"
             prog["acceptance"] = solution.get("judge") or {}
             prog["source_files"] = solution.get("source_files") or []
+            prog["task_contract"] = solution.get("task_contract") or {}
+            prog["source_model"] = solution.get("source_model") or {}
+            prog["working_memory"] = solution.get("working_memory") or {}
+            prog["verified_memory"] = solution.get("verified_memory") or []
             manifest = {
-                "manifest_version": 2,
+                "manifest_version": 3,
                 "build_mode": "agentic",
                 "process": ns,
                 "orchestrator": expert,
@@ -1389,13 +1499,18 @@ def _run_build(session_id, build_id):
                 "session_id": session_id,
                 "built_at": now(),
                 "task_package_sha256": solution.get("package_sha256"),
+                "task_contract": solution.get("task_contract") or {},
+                "source_model": solution.get("source_model") or {},
+                "strategy": solution.get("strategy") or "holistic_build",
                 "input": {"kind": "file_bundle" if len(sample_files) > 1 else "file",
                           "files": solution.get("source_files") or []},
                 "output": {"summary_keys": sorted((solution.get("summary") or {}).keys()),
                            "reports": ["md", "xlsx"]},
                 "steps": [{"name": expert, "title": "Целостное решение Qwen", "mode": "agentic", "ok": True}],
-                "contracts": {"params": 1, "agentic": 1, "multi_input": int(len(sample_files) > 1)},
+                "contracts": {"params": 1, "agentic": 2, "task_contract": 1, "source_model": 1,
+                              "memory": 1, "multi_input": int(len(sample_files) > 1)},
                 "acceptance": solution.get("judge") or {},
+                "verified_memory": solution.get("verified_memory") or [],
             }
             prog["manifest"] = manifest
             stage("package", "Решение упаковано в исполняемого эксперта", "success", expert=expert,
@@ -1417,7 +1532,12 @@ def _run_build(session_id, build_id):
                 "manifest": manifest, "acceptance": solution.get("judge") or {},
                 "source_file": solution.get("source_file"),
                 "source_files": solution.get("source_files") or [],
-                "agentic_contract": 1, "params_contract": 1,
+                "task_contract": solution.get("task_contract") or {},
+                "source_model": solution.get("source_model") or {},
+                "strategy": solution.get("strategy") or "holistic_build",
+                "verified_memory": solution.get("verified_memory") or [],
+                "attempts": solution.get("attempts") or [],
+                "agentic_contract": 2, "params_contract": 1,
                 "report_contract": 0, "adapter_contract": 0, "placement_contract": 0,
             })
             if not s.get("panel_manifest"):
@@ -1669,6 +1789,10 @@ def _run_build(session_id, build_id):
         prog["manifest"] = _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file,
                                              prog.get("slice_summary"), kp_pack, build_id, session_id,
                                              skip_ids=_skip_ids)
+        prog["manifest"].update({"task_contract": task_package.get("task_contract") or {},
+                                 "source_model": source_model,
+                                 "strategy": source_model.get("strategy") or "compose",
+                                 "verified_memory": []})
         # Сомнительные по смыслу шаги — в итог сборки, чтобы «готово» не скрывало доводку.
         # Процесс собран (built), но честно сказано, какие шаги стоит проверить/поправить словами.
         if stage_doubts:
@@ -1690,6 +1814,10 @@ def _run_build(session_id, build_id):
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
                                                "manifest": prog.get("manifest"),   # AC-06: контракт собранного процесса
+                                               "task_contract": task_package.get("task_contract") or {},
+                                               "source_model": source_model,
+                                               "strategy": source_model.get("strategy") or "compose",
+                                               "verified_memory": [],
                                                "needs_review": stage_doubts,   # шаги, требующие смысловой доводки
                                                "source_file": sample_file})
             # §7bis ступень 3: автопанель — новая автоматизация выходит из Строителя с готовой формой

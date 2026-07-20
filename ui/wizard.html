@@ -3408,6 +3408,8 @@ async function pollBuild(){
         (es.detail?'<div style="font-size:13px;color:var(--ink-soft);margin-top:6px">'+esc(es.detail)+'</div>':'')+
         (es.remedy?'<div style="font-size:13.5px;margin-top:10px;padding:10px 12px;background:var(--cream);border-radius:8px">'+
                    '<b>Что делать:</b> '+esc(es.remedy)+'</div>':'')+
+        (es.owner_question?'<div style="font-size:13.5px;margin-top:10px;padding:10px 12px;background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px"><b>Один вопрос владельцу:</b> '+esc(es.owner_question)+'</div>':'')+
+        ((es.draft_created!==undefined||es.expert_ran!==undefined)?'<div style="font-size:12px;color:var(--silver);margin-top:8px">Draft создан: <b>'+(es.draft_created?'да':'нет')+'</b> · настоящий эксперт запускался: <b>'+(es.expert_ran?'да':'нет')+'</b>'+(es.last_unapplied_lesson?' · неприменённый урок: '+esc(es.last_unapplied_lesson):'')+'</div>':'')+
         (es.code?'<div style="font-size:11px;color:var(--silver);margin-top:8px">код: '+esc(es.code)+'</div>':'')+
         '</div>';
       el("buildBtn")&&(el("buildBtn").disabled=false); return; }
@@ -3446,8 +3448,19 @@ function buildEventHistoryHTML(p){
     <div style="margin-top:6px">${events.map(e=>{const t=String(e.at||"").slice(11,19);return `<div style="font-size:12.5px;padding:5px 0;border-top:1px dashed var(--cream-dark)"><span style="display:inline-block;width:20px">${icon(e.status)}</span><span style="color:var(--silver);margin-right:7px">${esc(t)}</span>${esc(e.title||"")}${e.detail?`<div style="color:var(--silver);padding:2px 0 0 20px">${esc(e.detail)}</div>`:""}</div>`;}).join("")}</div>
   </details>`;
 }
+function buildMemoryHTML(p){
+  const entries=((p.working_memory||{}).entries||[]);
+  if(!entries.length) return "";
+  const count=s=>entries.filter(x=>x&&x.status===s).length;
+  const recent=entries.slice(-8);
+  const icon={verified:'✓',candidate:'?',rejected:'✕'};
+  const col={verified:'var(--ok)',candidate:'#a9701a',rejected:'var(--bad)'};
+  return `<details open style="margin-top:12px"><summary style="cursor:pointer;font-size:13px;font-weight:700">Рабочая память: ${count('verified')} подтверждено · ${count('candidate')} проверяется · ${count('rejected')} отклонено</summary>
+    <div style="margin-top:6px">${recent.map(x=>`<div style="font-size:12px;padding:4px 0;border-top:1px dashed var(--cream-dark)"><span style="display:inline-block;width:18px;color:${col[x.status]||'var(--silver)'}">${icon[x.status]||'·'}</span><b>${x.kind==='rule'?'Правило':'Концепт'}</b> · ${esc(x.text||'')}<div style="padding-left:18px;color:var(--silver)">${esc(x.status||'')} · попытка ${esc(x.attempt||0)} · ${esc(x.source||'')}</div></div>`).join('')}</div>
+  </details>`;
+}
 function renderBuildProgress(p){
-  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildEventHistoryHTML(p)}</div>`;
+  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildMemoryHTML(p)}${buildEventHistoryHTML(p)}</div>`;
 }
 function renderBuildResult(lb){
   const aud = lb.audit||{}; const experts = lb.experts||[];
@@ -5730,10 +5743,10 @@ function goalLoop(){
   };
 }
 function renderGoalJournal(res){
-  var KM={reason:['💭','Продумал'],build:['🧩','Собрал и запустил эксперта'],build_fail:['🛠','Сборка не удалась'],reject_step:['🔴','Трас-гейт отклонил шаг'],acquire:['📦','Ищу готовую способность'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
+  var KM={reason:['💭','Продумал'],build:['🧪','Выполнил локальный экспериментальный шаг'],build_fail:['🛠','Локальный шаг не выполнен'],reject_step:['🔴','Трас-гейт отклонил шаг'],acquire:['📦','Ищу кандидата способности'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
   var rows=(res.journal||[]).map(function(j){
     var k=KM[j.kind]||['·',String(j.kind)];
-    var code=j.code?'<details style="margin-top:3px"><summary style="cursor:pointer;font-size:11px;color:var(--silver)">код эксперта</summary><pre style="white-space:pre-wrap;font-size:10.5px;background:var(--cream);padding:6px;border-radius:5px;max-height:130px;overflow:auto;margin-top:4px">'+esc(String(j.code))+'</pre></details>':'';
+    var code=j.code?'<details style="margin-top:3px"><summary style="cursor:pointer;font-size:11px;color:var(--silver)">код локального sandbox-шага (не эксперт Extella)</summary><pre style="white-space:pre-wrap;font-size:10.5px;background:var(--cream);padding:6px;border-radius:5px;max-height:130px;overflow:auto;margin-top:4px">'+esc(String(j.code))+'</pre></details>':'';
     var lc=(j.learned&&((j.learned.concepts||[]).length||(j.learned.rules||[]).length))?
       '<div style="font-size:11px;color:var(--petrol,#2a6b6b);margin-top:3px">🧠 выучено: '+
       esc([].concat((j.learned.concepts||[]).map(function(c){return c.k+'='+c.v}),(j.learned.rules||[])).join(' · ').slice(0,180))+'</div>':'';
@@ -5751,18 +5764,18 @@ function renderGoalJournal(res){
   }).join('');
   var mem=res.memory||{}, mc=mem.concepts||[], mr=mem.rules||[];
   var sv=res.saved_to_agent;
-  var savedLine=(sv&&(sv.concepts||sv.rules))?'<div style="margin-top:5px;padding-top:5px;border-top:1px dashed var(--cream-dark,#e5e0d5);color:var(--petrol,#2a6b6b);font-weight:600">💾 Сохранено в мозг агента «'+esc(sv.name||sv.id)+'»: '+(sv.concepts||0)+' концепт., '+(sv.rules||0)+' правил → пригодится в след. процессах</div>':'';
+  var savedLine=(sv&&(sv.concepts||sv.rules))?'<div style="margin-top:5px;padding-top:5px;border-top:1px dashed var(--cream-dark,#e5e0d5);color:var(--petrol,#2a6b6b);font-weight:600">💾 Цель доказанно достигнута — сохранено в мозг агента «'+esc(sv.name||sv.id)+'»: '+(sv.concepts||0)+' концепт., '+(sv.rules||0)+' правил</div>':'';
   var memPanel=(mc.length||mr.length)?'<div style="background:var(--cream);border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:12px">'+
     '<div style="font-weight:600;margin-bottom:4px">🧠 Память контура (накоплена по ходу)</div>'+
     (mc.length?'<div style="color:var(--ink-soft)"><b>Концепты:</b> '+esc(mc.map(function(c){return c.k+'='+c.v}).join(' · ').slice(0,300))+'</div>':'')+
     (mr.length?'<div style="color:var(--ink-soft);margin-top:2px"><b>Правила:</b> '+esc(mr.join(' · ').slice(0,300))+'</div>':'')+
     savedLine+'</div>':'';
-  var SM={done:['✅','Цель достигнута (после проверки доверием)'],need_human:['🙋','Контур честно остановился — нужен человек'],max_iters:['⏹','Дошёл до предела итераций']};
+  var SM={done:['✅','Цель достигнута (после проверки доверием)'],need_human:['🙋','Контур завершён: нужен человек'],max_iters:['⏹','Контур завершён: достигнут предел итераций']};
   var sm=SM[res.status]||['·',String(res.status)];
   var q=res.question?'<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:13px;color:#7a5b1a">🙋 '+esc(res.question)+'</div>':'';
   resetModInput();
   el("modTitle").textContent=sm[0]+' '+sm[1];
-  el("modHint").innerHTML="Журнал контура · итераций: "+esc(res.iters)+". Каждый шаг: план → выполнение → трас-гейт завершения.";
+  el("modHint").innerHTML="Журнал контура · итераций: "+esc(res.iters)+". Каждый шаг: план → выполнение → fail-closed трас-гейт. Локальные sandbox-шаги не являются production-экспертами Extella. need_human и предел итераций — завершённые состояния; автоматического продолжения нет.";
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+q+memPanel+rows;
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Готово";
