@@ -71,8 +71,28 @@ def main():
         assert package["blueprint"]["goal"] == "Найти расхождения Excel и PDF"
         assert {x["name"] for x in package["inputs"]} == {"register.xlsx", "certificate.pdf"}
         assert package["package_sha256"]
+        package["build_plan"] = {"legacy_instruction": "LEGACY_PLAN_MUST_NOT_REACH_QWEN"}
+        package["assistant_context"] = {"messages": ["CHAT_TRANSCRIPT_MUST_NOT_REACH_QWEN"]}
+        catalog = [
+            {"expert": "pdf_ocr", "purpose": "OCR and PDF document extraction"},
+            {"expert": "excel_reader", "purpose": "Read Excel xlsx spreadsheets"},
+            {"expert": "weather", "purpose": "Weather forecast"},
+            {"expert": "github", "purpose": "GitHub pull requests"},
+            {"expert": "reddit", "purpose": "Search Reddit"},
+            {"expert": "stocks", "purpose": "Stock market prices"},
+            {"expert": "cowsay", "purpose": "Print an ASCII cow"},
+        ]
+        selected = mod._select_capabilities(package, catalog)
+        assert {x["expert"] for x in selected} == {"pdf_ocr", "excel_reader"}, selected
+        package["available_plugins_and_experts"] = selected
         prompt = mod._build_prompt("pc_run_process", package, "", "agent_test")
         assert "Не запускай его сам" in prompt and "явными source_file и output_dir" in prompt
+        assert "LEGACY_PLAN_MUST_NOT_REACH_QWEN" not in prompt
+        assert "CHAT_TRANSCRIPT_MUST_NOT_REACH_QWEN" not in prompt
+        assert "authority_order" in prompt and "relevant_capabilities" in prompt
+        assert "weather" not in prompt and len(prompt) < 18000, len(prompt)
+        repair = mod._repair_context({"issue": "hardcoded A-101", "file": str(pdf)}, package)
+        assert "A-101" not in repair and "<sample_value>" in repair and "certificate.pdf" in repair
 
         out = root / "out"
         out.mkdir()
@@ -125,7 +145,7 @@ def main():
             progress=lambda *args: events.append(args), max_attempts=2)
         assert built["ok"] is True
         assert len(built["attempts"]) == 2
-        assert feedbacks[0] == "" and "certificate.pdf" in feedbacks[1]
+        assert feedbacks[0] == "" and "certificate.pdf" in json.dumps(feedbacks[1])
         assert built["source_file"] == str(files)
         assert promotions and promotions[0][1] == "pc_run_process" and "__draft_" in promotions[0][0]
         assert deletions and deletions[0][0] == promotions[0][0]

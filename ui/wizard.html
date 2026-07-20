@@ -730,7 +730,7 @@ async function openAgentManager(){
 }
 async function agentCreate(){
   modCancel();
-  ask("Имя нового агента","Создам keyless-Qwen агента (копию платформенной Qwen 3.7). В его мозг пойдут концепты и правила этого клиента.","",async (nm)=>{
+  ask("Имя нового агента","Создам копию доступного Qwen. Подойдёт любая рабочая версия, провайдер, пользовательский ключ и API-endpoint; перед выбором проверю фактический ответ.","",async (nm)=>{
     if(!nm) return; busy("Создаю агента (копия Qwen)…");
     const r=await jpost("/x/agent_create",{name:nm}); busyOff();
     if(r.status==="success"){ toast("✓ Агент создан и выбран","ok"); await refreshAgentBadge(); openAgentManager(); }

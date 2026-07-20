@@ -218,13 +218,142 @@ def _available_capabilities():
     return out
 
 
+def _select_capabilities(task_package, capabilities, limit=6):
+    """Передать Строителю только способности, которые похожи на текущую задачу.
+
+    Полный каталог (десятки несвязанных экспертов) раньше занимал четверть промпта и подталкивал
+    Qwen к случайному реюзу. Это не запрет возможностей: каталог остаётся источником кандидатов,
+    но в конкретный BUILD_BRIEF попадают только релевантные входам и смыслу задачи записи.
+    """
+    package = task_package or {}
+    context = json.dumps({
+        "request": package.get("original_request"),
+        "answers": package.get("interview_answers"),
+        "rules": package.get("rules"),
+        "fields": package.get("fields"),
+        "blueprint": package.get("blueprint"),
+        "spec": _clip(package.get("project_spec"), 5000),
+    }, ensure_ascii=False, default=str).casefold()
+    extensions = {str(p.get("extension") or "").lower() for p in (package.get("inputs") or [])}
+    aliases = {
+        ".pdf": ("pdf", "ocr", "tesseract", "document", "документ", "скан"),
+        ".xlsx": ("xlsx", "excel", "spreadsheet", "таблиц"),
+        ".xlsm": ("xlsm", "xlsx", "excel", "spreadsheet", "таблиц"),
+        ".csv": ("csv", "spreadsheet", "таблиц"),
+        ".docx": ("docx", "word", "document", "документ"),
+        ".json": ("json",),
+        ".xml": ("xml",),
+    }
+    stop = {"этот", "этого", "данные", "файл", "файла", "процесс", "задача", "нужно", "будет",
+            "with", "from", "that", "this", "data", "file", "process", "task", "expert", "plugin",
+            "request", "answers", "rules", "fields", "blueprint", "spec"}
+    words = {w for w in re.findall(r"[a-zа-яё0-9_\-]{4,}", context) if w not in stop}
+    ranked = []
+    for index, cap in enumerate(capabilities or []):
+        if not isinstance(cap, dict):
+            continue
+        hay = json.dumps(cap, ensure_ascii=False, default=str).casefold()
+        score = 0
+        for ext in extensions:
+            if any(alias in hay for alias in aliases.get(ext, (ext.lstrip("."),))):
+                score += 12
+        score += min(10, sum(1 for word in words if word in hay))
+        if score:
+            ranked.append((score, -index, cap))
+    ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
+    return [cap for _, _, cap in ranked[:max(1, int(limit))]]
+
+
 def _attach_capabilities(package):
     package = dict(package or {})
-    package["available_plugins_and_experts"] = _available_capabilities()
+    package["available_plugins_and_experts"] = _select_capabilities(package, _available_capabilities())
     raw = json.dumps({k: v for k, v in package.items() if k != "package_sha256"},
                      ensure_ascii=False, sort_keys=True, default=str)
     package["package_sha256"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return package
+
+
+def _builder_inputs(profiles):
+    """Фактура файлов без лишнего объёма: схема и репрезентативная выборка, не весь профайл."""
+    out = []
+    for raw in profiles or []:
+        item = dict(raw) if isinstance(raw, dict) else {"profile": _clip(raw, 1000)}
+        if isinstance(item.get("text_sample"), str):
+            item["text_sample"] = _clip(item["text_sample"], 6000)
+        sheets = []
+        for sheet in item.get("workbook") or []:
+            sh = dict(sheet)
+            sh["sample_rows"] = (sh.get("sample_rows") or [])[:12]
+            sheets.append(sh)
+        if sheets:
+            item["workbook"] = sheets
+        if isinstance(item.get("sample_rows"), list):
+            item["sample_rows"] = item["sample_rows"][:12]
+        out.append(item)
+    return out
+
+
+def _builder_brief(task_package):
+    """Авторитетный контекст для кодогенерации без старого compiler-plan и стенограммы чата."""
+    p = task_package or {}
+    brief = {
+        "brief_version": 2,
+        "language": p.get("language") or "ru",
+        "goal": {"process_name": p.get("client_name"), "original_request": p.get("original_request")},
+        "owner_contract": {
+            "interview_answers": p.get("interview_answers"),
+            "owner_comments": p.get("owner_comments"),
+            "decisions": p.get("decisions"),
+            "rules": p.get("rules"),
+            "fields": p.get("fields"),
+            "permissions": p.get("permissions"),
+            "source": p.get("source"),
+            "schedule": p.get("schedule"),
+            "recipients": p.get("recipients"),
+            "data_check": p.get("data_check"),
+        },
+        "approved_design": {
+            "blueprint": p.get("blueprint"),
+            "project_spec": _clip(p.get("project_spec"), 7000),
+        },
+        "input_profiles": _builder_inputs(p.get("inputs") or []),
+        "relevant_capabilities": _select_capabilities(
+            p, p.get("available_plugins_and_experts") or [], limit=6),
+        "runtime_contract": p.get("runtime_input_contract"),
+        "acceptance_contract": p.get("acceptance_contract"),
+        "authority_order": [
+            "owner_contract: прямые ответы, решения, правила и полномочия владельца",
+            "approved_design: согласованный blueprint и ТЗ",
+            "input_profiles: только структура/формат фактических данных, не источник бизнес-правил",
+        ],
+    }
+
+    def prune(value):
+        if isinstance(value, dict):
+            return {k: v for k, raw in value.items() if (v := prune(raw)) not in (None, "", [], {})}
+        if isinstance(value, list):
+            return [v for raw in value if (v := prune(raw)) not in (None, "", [], {})]
+        return value
+
+    clean = prune(brief)
+    raw = json.dumps(clean, ensure_ascii=False, sort_keys=True, default=str)
+    clean["brief_sha256"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return clean
+
+
+def _repair_context(feedback, task_package):
+    """Короткая диагностическая обратная связь без готовых ответов контрольного набора."""
+    if not feedback:
+        return ""
+    if not isinstance(feedback, str):
+        feedback = json.dumps(_compact(feedback), ensure_ascii=False, default=str)
+    text = str(feedback)
+    for literal in _sample_literals(task_package or {}):
+        if literal:
+            text = re.sub(re.escape(literal), "<sample_value>", text, flags=re.I)
+    # Абсолютный путь не помогает ремонту и может случайно стать частью сгенерированного решения.
+    text = re.sub(r"(?:/[^\s\"']+){2,}/([^/\s\"']+)", r"<path>/\1", text)
+    return _clip(text, 3200)
 
 
 def _agent_headers(agent_id):
@@ -254,18 +383,24 @@ def _agent_text(response):
 
 
 def _build_prompt(expert_name, task_package, feedback, agent_id):
-    package_json = json.dumps(task_package, ensure_ascii=False, indent=2, default=str)
+    brief_json = json.dumps(_builder_brief(task_package), ensure_ascii=False, indent=2, default=str)
     repair = ""
     if feedback:
-        repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Не спорь с проверкой: найди причину, обнови "
-                  "существующего эксперта и снова сохрани его. Фактура:\n" + _clip(feedback, 7000))
+        repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
+                  "под конкретные строки образца. Обнови и снова сохрани того же эксперта. "
+                  "Диагностика харнесса:\n" + _repair_context(feedback, task_package))
     return f"""Ты — Строитель Extella. Твоя задача — не описать решение, а СОЗДАТЬ ИЛИ ОБНОВИТЬ
 одного реально исполняемого эксперта `{expert_name}` действием платформы.
 
-Сначала рассмотри ТЗ и ВСЕ профили файлов как одну задачу. Сам выбери алгоритм, библиотеки и внутренние
-этапы. Не дроби решение на внешние эксперты до того, как оно доказано целиком.
-Если в available_plugins_and_experts есть проверенная способность, подходящая задаче, можешь вызвать её
-через Extella API из эксперта вместо повторной реализации. Финальная точка запуска всё равно одна.
+Сначала молча составь для себя цепочку «требование владельца → реализация → наблюдаемое доказательство».
+Решай ТЗ и ВСЕ профили файлов как одну бизнес-задачу. Сам выбери алгоритм, библиотеки и внутренние этапы.
+Не переноси в код догадки из образца и не восстанавливай старый план стадий: источник истины — BUILD_BRIEF
+в указанном там порядке авторитетности. Если требования действительно противоречат друг другу, верни
+status=error с точным противоречием вместо выдуманного правила.
+
+В relevant_capabilities уже отобраны только вероятно полезные проверенные способности. Реюз необязателен:
+используй способность через Extella API лишь когда она непосредственно улучшает решение. Финальная точка
+запуска и ответственности всё равно одна — `{expert_name}`.
 
 Обязательный контракт кода:
 - CSPL=fython, ровно одна top-level функция; любые helpers только внутри неё;
@@ -279,7 +414,7 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
 - клиентские правила брать из rules_json/fields_json, а не зашивать значениями образца;
 - ЗАПРЕЩЕНО помещать в код значения строк из образцов/контрольных кейсов (идентификаторы, суммы, даты,
   ожидаемые A/B/C). Образцы нужны только для проверки; алгоритм обязан работать на следующих файлах;
-- для PDF сначала извлеки текст; если это скан — используй OCR (pypdf/pdf2image/pytesseract с include);
+- для PDF сначала извлеки текст; OCR применяй только если профиль указывает на скан или текста нет;
 - если нужен смысловой шаг, разрешена платформенная Qwen через api_token; agent_id={agent_id};
 - на этапе создания ТОЛЬКО сохрани/обнови эксперта. Не запускай его сам и не делай пробных вызовов:
   Визард отдельно прогонит сохранённый код с явными source_file и output_dir;
@@ -289,13 +424,17 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
     "evidence":{{"files_used":["basename",...],"acceptance_checks":[
       {{"criterion":"...","passed":true,"evidence":"конкретный факт"}}]}},
     "report_md":"/absolute/generated/report.md","report_xlsx":"/absolute/generated/report.xlsx"}}
+- acceptance_checks доказывают, что алгоритм выполнил требование и честно отразил результат. Найденное
+  расхождение, исключение, пустая категория или отрицательный бизнес-вердикт — это passed=true, если они
+  корректно вычислены и показаны; passed=false означает только сбой/неполную обработку. Не зашивай в
+  критерии ожидаемые идентификаторы или количества конкретного образца;
 - status=success только если бизнес-цель выполнена на данных; при невозможности верни status=error и точную причину.
 
 Исходный код помещай ТОЛЬКО в действие создания/обновления эксперта, не печатай код в ответе.
 После действия ответь кратко, но источником истины будет сохранённый эксперт и его реальный прогон.
 
-TASK PACKAGE:
-{package_json}{repair}"""
+BUILD_BRIEF:
+{brief_json}{repair}"""
 
 
 def _sample_literals(task_package):
@@ -511,6 +650,25 @@ def _result_preview(result, validation):
     return _compact(preview)
 
 
+def _repair_feedback(result, validation, judge):
+    """Ровно то, что нужно следующей попытке: тип провала и агрегаты, без таблицы правильных ответов."""
+    result = result if isinstance(result, dict) else {}
+    validation = validation if isinstance(validation, dict) else {}
+    judge = judge if isinstance(judge, dict) else {}
+    return {
+        "phase": "acceptance",
+        "returned_status": result.get("status"),
+        "returned_summary": _compact(result.get("summary") or {}),
+        "files_confirmed": [Path(str(x)).name for x in (validation.get("files_used") or [])[:20]],
+        "artifacts_created": [str(x[0]) for x in (validation.get("artifacts") or [])[:10]
+                              if isinstance(x, (list, tuple)) and x],
+        "structural_issues": validation.get("issues") or [],
+        "business_verdict": judge.get("verdict"),
+        "business_issues": judge.get("issues") or [],
+        "owner_question": judge.get("owner_question") or "",
+    }
+
+
 def judge_result(task_package, result, validation):
     """Независимый смысловой гейт: статус эксперта сам по себе не доказывает бизнес-результат."""
     agent_id = design_agent() or qwen_agent()
@@ -520,7 +678,7 @@ def judge_result(task_package, result, validation):
               "Если в ТЗ не хватает критического бизнес-выбора, FAIL и сформулируй один точный вопрос владельцу. "
               "Верни ТОЛЬКО JSON: "
               '{"verdict":"pass|fail","confidence":0.0,"issues":["..."],"owner_question":""}.\n\n'
-              "TASK PACKAGE:\n" + json.dumps(_compact(task_package), ensure_ascii=False, default=str) +
+              "AUTHORITATIVE BUILD BRIEF:\n" + json.dumps(_builder_brief(task_package), ensure_ascii=False, default=str) +
               "\n\nSTRUCTURAL CHECK:\n" + json.dumps(_compact(validation), ensure_ascii=False, default=str) +
               "\n\nACTUAL RESULT:\n" + json.dumps(_result_preview(result, validation), ensure_ascii=False, default=str))
     response = _post_agent(agent_id, {"agent_id": agent_id, "input": prompt, "run_timeout": 180,
@@ -568,8 +726,9 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         if not built.get("ok"):
             rec = {"attempt": attempt, "phase": "build", "issues": [built.get("why") or "эксперт не создан"]}
             attempts.append(rec)
-            feedback = json.dumps(rec, ensure_ascii=False)
-            progress("agentic_reason", "Qwen не сохранила рабочее решение · исправляю", "warn", feedback)
+            feedback = rec
+            progress("agentic_reason", "Qwen не сохранила рабочее решение · исправляю", "warn",
+                     _repair_context(feedback, package))
             continue
         progress("agentic_reason", "Целостный эксперт создан", "success", draft_name)
         outdir = bdir / ("solution_attempt_%d" % attempt)
@@ -598,7 +757,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         if validation["ok"] and judge.get("verdict") == "pass" and judge.get("confidence", 0) >= 0.7:
             promoted = _promote_expert(draft_name, expert_name, package)
             if not promoted.get("ok"):
-                feedback = json.dumps({"publish_error": promoted.get("why")}, ensure_ascii=False)
+                feedback = {"phase": "publish", "issues": [promoted.get("why") or "ошибка публикации"]}
                 progress("agentic_accept", "Принятое решение не опубликовалось · повторяю", "warn",
                          promoted.get("why") or "ошибка публикации")
                 continue
@@ -615,8 +774,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                     "summary": validation.get("summary") or {}, "result": result,
                     "validation": validation, "judge": judge, "attempts": attempts,
                     "package_sha256": package.get("package_sha256"), "source_files": [Path(p).name for p in sample_files]}
-        feedback = json.dumps({"actual_run": _compact(result), "structural_issues": validation["issues"],
-                               "business_judge": judge}, ensure_ascii=False, default=str)
+        feedback = _repair_feedback(result, validation, judge)
         progress("agentic_accept", "Приёмка нашла несоответствия · Qwen исправляет", "warn",
                  "; ".join(judge.get("issues") or validation["issues"])[:500])
         time.sleep(min(2 * attempt, 5))

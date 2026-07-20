@@ -105,8 +105,9 @@ def main():
         if not hv.get("ok"):
             raise RuntimeError("holdout structural fail: " + str(hv))
         hs = hv.get("summary") or {}
+        matches = hs.get("matches", hs.get("match"))
         mismatch = hs.get("qty_mismatch", hs.get("qty_mismatches", hs.get("quantity_mismatch")))
-        assert hs.get("processed_files") == 2 and hs.get("matches") == 1, hs
+        assert hs.get("processed_files") == 2 and matches == 1, hs
         assert hs.get("only_excel", 0) == 0 and hs.get("only_pdf") == 1 and mismatch == 1, hs
         print("HOLDOUT ✓ " + json.dumps(hs, ensure_ascii=False), flush=True)
 

@@ -1261,18 +1261,21 @@ def _run_build(session_id, build_id):
         prog["stages"].append({"id": sid, "title": title, "status": status, **extra})
         save()
 
+    # Сессия помнит Qwen, которого выбрал и проверил сам пользователь. Он приоритетнее статического
+    # agent_id установки: интервью, стройка и последующая память тогда действительно принадлежат
+    # одному мозгу. Внешний Qwen через любой OpenAI-compatible base_url/key остаётся равноправным путём.
+    try:
+        _build_session = json.loads((SESS_DIR / (session_id + ".json")).read_text(encoding="utf-8"))
+    except Exception:
+        _build_session = {}
     llm = {"api_key": CONFIG.get("llm_api_key", ""), "model": CONFIG.get("llm_model", ""),
            "base_url": CONFIG.get("llm_base_url", ""),
            "api_token": CONFIG.get("auth_token", ""), "api_base": BASE,
-           # keyless-кодоген идёт на канонический Qwen (см. qwen_agent) — НЕ Claude-дефолт agent_extella_default (жёг бы баланс).
-           "agent_id": qwen_agent()}
+           "agent_id": _build_session.get("agent_id") or qwen_agent()}
     tok = {"api_token": CONFIG["auth_token"]}
 
     # namespace: короткий snake-префикс для экспертов процесса (из имени клиента)
-    try:
-        _s = json.loads((SESS_DIR / (session_id + ".json")).read_text(encoding="utf-8"))
-    except Exception:
-        _s = {}
+    _s = _build_session
     _words = re.findall(r"[A-Za-z]+", _s.get("client_name", "") or "")
     if _words:
         ns = ("".join(w[0] for w in _words[:3]) if len("".join(w[0] for w in _words[:3])) >= 2 else _words[0][:3]).lower()
