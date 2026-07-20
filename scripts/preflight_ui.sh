@@ -47,6 +47,11 @@ for f in ui/*.py; do
     && echo "   ✓ $f" || { echo "   ✗ $f — СИНТАКСИС"; fail=1; }
 done
 
+echo "→ человеческие названия шагов карты"
+python3 scripts/check_placement_labels.py \
+  && echo "   ✓ карта не показывает владельцу только expert_name" \
+  || { echo "   ✗ карта снова техническая"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re
