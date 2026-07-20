@@ -7173,7 +7173,7 @@ class Handler(BaseHTTPRequestHandler):
             _pd = (s.get("schedule") or {}).get("period") or "запуск вручную"
             _kind = "композиция из готовых блоков" if (s.get("builds") or [{}])[-1].get("flow_id") else "построенный бизнес-процесс"
             prompt = ("Ты — маршрутизатор правок автоматизации Extella. Верни ТОЛЬКО JSON без пояснений:\n"
-                      '{"depth":"light"|"medium"|"strong","op":"recipients"|"schedule"|"template"|"pause"|"resume"|"other",'
+                      '{"depth":"light"|"medium"|"strong","op":"recipients"|"schedule"|"template"|"pause"|"resume"|"brain"|"other",'
                       '"args":{...},"summary":"<что будет сделано, одной фразой, тем же языком что фраза владельца>"}\n\n'
                       "light = настройка обвязки, БЕЗ изменения логики:\n"
                       "- получатели результата → op=recipients, args.recipients = ПОЛНЫЙ НОВЫЙ список из [telegram,email,slack,whatsapp,sms] (учти текущих!)\n"
@@ -7182,7 +7182,13 @@ class Handler(BaseHTTPRequestHandler):
                       "- остановить/включить → op=pause | op=resume\n"
                       "- ВИД ОТЧЁТА (заголовок, разрезы/группировки, что за главное число, цвет, подпись) "
                       "→ op=report, args.message=<фраза владельца целиком>\n"
-                      "medium = новое поле/правило/фильтр/колонка, влияющие на расчёт или содержание результата (op=other).\n"
+                      "МОЗГ АГЕНТА (знания и правила САМОГО АГЕНТА, не про шаги процесса) → op=brain:\n"
+                      "- ФАКТ/справка о бизнесе, «запомни/учти/у нас … = …», регламент, значение, определение "
+                      "→ args.brain_op=add_concept, args.text=<что запомнить, полной фразой>\n"
+                      "- ПОВЕДЕНИЕ агента, «всегда/никогда/обращайся/подписывай/не делай без подтверждения» "
+                      "→ args.brain_op=add_rule, args.text=<правило поведения, полной фразой>\n"
+                      "  (op=brain — это про то, что агент ЗНАЕТ или КАК себя ведёт, а не про колонки/фильтры результата)\n"
+                      "medium = новое поле/правило/фильтр/колонка процесса, влияющие на расчёт или содержание результата (op=other).\n"
                       "strong = изменить сами шаги/этапы/источники процесса (op=other).\n"
                       "При сомнении между light и medium — выбирай medium (честность важнее удобства).\n\n"
                       "Автоматизация: «" + str(s.get("client_name") or sid)[:60] + "» (" + _kind + "). "
@@ -7204,7 +7210,7 @@ class Handler(BaseHTTPRequestHandler):
                 if depth not in ("light", "medium", "strong"):
                     depth = "medium"
                 op = str(v.get("op", "other")).lower()
-                if op not in ("recipients", "schedule", "template", "pause", "resume", "other"):
+                if op not in ("recipients", "schedule", "template", "pause", "resume", "brain", "other"):
                     op = "other"
                 args = v.get("args") if isinstance(v.get("args"), dict) else {}
                 # санитария light-аргументов (никакого свободного исполнения)
@@ -7216,6 +7222,14 @@ class Handler(BaseHTTPRequestHandler):
                     args = {"period": _p if _p in ("Каждый час", "Ежедневно", "Еженедельно", "Ежемесячно", "") else "Ежедневно"}
                 elif op == "template":
                     args = {"template": str(args.get("template", ""))[:2000]}
+                elif op == "brain":
+                    _bop = str(args.get("brain_op", "")).lower()
+                    _txt = str(args.get("text", "")).strip()[:2000]
+                    if _bop not in ("add_concept", "add_rule") or not _txt:
+                        op, args = "other", {}   # неполная правка мозга → в общий разбор
+                    else:
+                        args = {"brain_op": _bop, "text": _txt}
+                        depth = "light"   # правка мозга применяется сразу по подтверждению, как обвязка
                 else:
                     args = {}
                 self._send({"status": "success", "depth": depth, "op": op, "args": args,

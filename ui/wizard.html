@@ -4020,14 +4020,25 @@ function _wzCabRender(){
         '<button onclick="closeWzCabinet()" style="border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.14);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer;font:600 13px var(--sans);flex-shrink:0;position:relative">✕ Закрыть</button>'+
       '</div>'+
     '</div>'+
-    '<div style="display:flex;gap:4px;padding:10px 20px;border-bottom:1px solid var(--cream-dark);background:var(--paper)">'+tabBar+'</div>'+
-    '<div style="flex:1;overflow-y:auto;padding:22px 26px" id="wz_cab_body">'+_wzCabBody(a)+'</div>'+
-    // C4: чат автоматизации — док-бар на всех вкладках (единое окно допиливания, CABINET_TZ §5.1)
-    '<div id="wz_cab_chatdock" style="flex-shrink:0;border-top:1px solid var(--cream-dark);background:var(--paper);padding:10px 22px 12px">'+
-      '<div id="cabchat_thread" style="max-height:170px;overflow-y:auto"></div>'+
-      '<div style="display:flex;gap:8px;margin-top:6px">'+
-        '<input id="cabchat_in" class="sess-select" style="flex:1;max-width:none" placeholder="Скажи, что поменять: «шли ещё на email» · «поставь еженедельно» · «добавь колонку…»" onkeydown="if(event.key===\'Enter\')cabChat()">'+
-        '<button class="btn gold sm" onclick="cabChat()">Отправить</button></div></div>';
+    // Чат доводки — БОКОВОЙ панелью (как «Помощник» в Мастере), а не полоской внизу: заметен, виден
+    // всегда, и в нём доводят И процесс, И мозг агента одним разговором (идея Анвара 20.07).
+    '<div style="display:flex;flex:1;min-height:0">'+
+      '<div style="flex:1;display:flex;flex-direction:column;min-width:0">'+
+        '<div style="display:flex;gap:4px;padding:10px 20px;border-bottom:1px solid var(--cream-dark);background:var(--paper)">'+tabBar+'</div>'+
+        '<div style="flex:1;overflow-y:auto;padding:22px 26px" id="wz_cab_body">'+_wzCabBody(a)+'</div>'+
+      '</div>'+
+      '<div id="wz_cab_chatside" style="width:380px;flex-shrink:0;border-left:1px solid var(--cream-dark);background:var(--paper);display:flex;flex-direction:column;min-height:0">'+
+        '<div style="padding:13px 18px;border-bottom:1px solid var(--cream-dark);flex-shrink:0">'+
+          '<div style="font:700 14px var(--sans)">💬 Доводка</div>'+
+          '<div style="font-size:11.5px;color:var(--silver);margin-top:2px">Поправьте словами — процесс или мозг агента</div>'+
+        '</div>'+
+        '<div id="cabchat_thread" style="flex:1;overflow-y:auto;padding:14px 18px"></div>'+
+        '<div style="padding:12px 18px;border-top:1px solid var(--cream-dark);flex-shrink:0;display:flex;gap:8px">'+
+          '<input id="cabchat_in" class="sess-select" style="flex:1;max-width:none" placeholder="«шли ещё на email» · «запомни: НДС 12%» · «всегда на вы» · «добавь колонку»" onkeydown="if(event.key===\'Enter\')cabChat()">'+
+          '<button class="btn gold sm" onclick="cabChat()">→</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
   _cabChatRestore();
 }
 // ── C4: чат автоматизации — классификация глубины и маршрутизация с подтверждением ──
@@ -4084,7 +4095,19 @@ async function cabChat(){
       ' <button class="btn ghost sm" style="padding:3px 10px;font-size:11.5px" onclick="cabCancel()">Отмена</button>'));
     return;
   }
-  if(r.depth==='light' && r.op!=='other'){
+  if(r.op==='brain'){
+    // Идея Анвара: доводить в этом же чате не только процесс, но и МОЗГ агента (знания+правила).
+    // Явно называем, КОГО правим и что это (знание vs поведение) — чтобы человек понимал: это
+    // осядет в мозг агента, а не изменит шаги процесса.
+    window._cabAct={op:'brain', args:r.args, msg:msg};
+    var _vid=(_agents&&_agents.agents||[]).find(function(x){return x.id===(_agents&&_agents.current);});
+    var _an=_vid?_vid.name:'выбранного агента';
+    var _kind=r.args.brain_op==='add_rule'?'правило поведения':'знание';
+    _cabPush(_cabA('Это в <b>мозг агента «'+esc(_an)+'»</b> — '+_kind+', не шаг процесса:<br>'
+      +'<span style="color:var(--ink-soft)">«'+esc(r.args.text||'')+'»</span>'
+      +'<div style="font-size:11.5px;color:var(--silver);margin-top:4px">Агент запомнит это для всех процессов, где он мозг.</div>'
+      +_cabBtns('Запомнить')));
+  } else if(r.depth==='light' && r.op!=='other'){
     window._cabAct={op:r.op, args:r.args, msg:msg};
     _cabPush(_cabA(esc(r.summary||'Сделаю.')+_cabBtns('Применить')));
   } else if(a.flow_id){
@@ -4146,6 +4169,14 @@ async function cabApply(){
     var r4=await jpost('/x/pause',{session_id:a.session_id, paused:act.op==='pause'});
     if(r4&&r4.status==='success'){ a.paused=(act.op==='pause'); _cabPush(_cabA(a.paused?'⏸ На паузе':'▶ Возобновлено')); _wzCabRender(); }
     else _cabPush(_cabA('Ошибка: '+esc((r4&&r4.message)||'')));
+  } else if(act.op==='brain'){
+    // Правка мозга агента словами → /x/brain_edit (текущий агент). Знание=add_concept, поведение=add_rule.
+    var rb=await jpost('/x/brain_edit',{op:act.args.brain_op, text:act.args.text||''});
+    if(rb&&rb.status==='success'){
+      var _an=(rb.agent&&rb.agent.name)||'агента';
+      _cabPush(_cabA('✓ Запомнил в мозг «'+esc(_an)+'»: '+(act.args.brain_op==='add_rule'?'правило':'знание')+' добавлено. '
+        +'Посмотреть/убрать — кнопка <b>«Мозг»</b> в шапке.'));
+    } else _cabPush(_cabA('Не записал в мозг: '+esc((rb&&rb.message)||'агент не выбран?')));
   } else if(act.op==='compose'){
     _cabPush('<div id="cabchat_wait" style="margin:5px 0;color:var(--silver);font-size:12.5px"><span class="spin"></span> пересобираю… (до 2 мин)</div>');
     var r5=await jpost('/x/compose_chat',{flow_id:a.flow_id, session_id:a.session_id, message:act.args.message});
