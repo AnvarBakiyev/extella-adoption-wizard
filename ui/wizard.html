@@ -3416,8 +3416,24 @@ function renderBuildResult(lb){
       <div style="font-size:13px;color:var(--nav)">${experts.map(e=>`<code style="background:var(--cream);padding:1px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(e)}</code>`).join(" ")}</div>
       ${(lb.needs_review&&lb.needs_review.length)?`<div style="font-size:13px;margin-top:10px;padding:10px 12px;border:1px solid #e0b48a;border-radius:10px;background:rgba(224,168,94,.08)"><b>⚠ Требуют доводки (${lb.needs_review.length}):</b> собраны и запустились, но результат по смыслу сомнителен — проверьте и поправьте словами в кабинете.<ul class="plain" style="margin-top:6px">${lb.needs_review.map(r=>`<li><b>${esc(r.title||r.expert)}</b> — ${esc(r.why||'')}</li>`).join("")}</ul></div>`:""}
       ${(aud.issues&&aud.issues.length)?`<div style="font-size:13px;color:var(--warn);margin-top:8px"><b>На подтверждение:</b><ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`:`<div style="font-size:13px;color:var(--ok);margin-top:8px">Проверка безопасности замечаний не нашла.</div>`}
+      <!-- #4: после сборки человек не понимал, что дальше. Явный следующий шаг — кабинет, где живёт
+           чат доводки («Скажи, что поменять») и запуск. Идея Анвара: доводить и запускать словами там. -->
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn gold" style="padding:10px 18px;font-size:14px" onclick="goToCabinet()">Открыть кабинет — довести словами и запустить →</button>
+        <span style="font-size:12.5px;color:var(--silver)">В кабинете: чат правок, пробный прогон, расписание, ${(lb.needs_review&&lb.needs_review.length)?'и подсветка шагов на доводку':'результаты'}.</span>
+      </div>
       ${threadHTML("build:result")}
     </div>`;
+}
+// #4: единый переход в кабинет текущего собранного процесса (там чат доводки и запуск).
+async function goToCabinet(){
+  var sid=S.sessionId; if(!sid){ toast('Нет активной сессии','err'); return; }
+  try{
+    var d=await jget('/x/automations'); var list=(d&&d.automations)||[];
+    var idx=list.findIndex(function(a){return a.session_id===sid;});
+    if(idx<0){ toast('Кабинет появится после полной сборки','warn'); return; }
+    AUTOS=list; setMode('automations'); openWzCabinet(idx);
+  }catch(e){ toast('Кабинет не открылся: '+((e&&e.message)||''),'err'); }
 }
 
 /* ================= запуск (аудит-гейт) ================= */
@@ -4203,6 +4219,31 @@ async function cabApply(){
 }
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
+// Карточка доводки: сомнительные по смыслу шаги, найденные при сборке. Ведёт к чату кабинета
+// («Скажи, что поменять» внизу) — там доводка словами и есть. Идея Анвара: доделать процесс тут.
+function _wzCabReviewCard(a){
+  var nr=(a&&a.needs_review)||[];
+  if(!nr.length) return '';
+  window._cabReview=nr;                          // для кнопок «Поправить словами» (по индексу)
+  return '<div style="border:1px solid #e0b48a;border-radius:14px;padding:16px 18px;background:rgba(224,168,94,.09);margin-bottom:14px">'
+    +'<div style="font:700 14px var(--sans);margin-bottom:4px">⚠ Шаги, которые стоит довести ('+nr.length+')</div>'
+    +'<div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:10px">Они собрались и запускаются, но результат по смыслу сомнителен. Поправьте словами в чате внизу — например: «в поиске поставщиков ищи по названиям товаров, не по суммам».</div>'
+    +nr.map(function(r,i){
+      return '<div style="padding:7px 0;border-top:1px dashed #e0b48a;font-size:13px">'
+        +'<b>'+esc(r.title||r.expert||'шаг')+'</b>'
+        +'<span style="color:#a9701a"> — '+esc(r.why||'сомнительный результат')+'</span>'
+        +' <button class="btn ghost sm" style="padding:2px 10px;font-size:11.5px;margin-left:4px" onclick="_cabReviewFix('+i+')">Поправить словами</button>'
+        +'</div>';
+    }).join('')+'</div>';
+}
+// «Поправить словами» — переводит фокус в чат кабинета и подсказывает формулировку.
+function _cabReviewFix(i){
+  var r=(window._cabReview||[])[i]||{};
+  var title=r.title||r.expert||'этот шаг';
+  var inp=el('cabchat_in');
+  if(inp){ inp.value='Поправь шаг «'+title+'»: '; inp.focus();
+           inp.scrollIntoView&&inp.scrollIntoView({block:'nearest'}); }
+}
 function _wzCabBody(a){
   if(_wzCabTab==='panel' && a.panel_url)
     return '<div style="display:flex;flex-direction:column;height:calc(100vh - 200px)">'+
@@ -4215,7 +4256,7 @@ function _wzCabBody(a){
   // старые адреса вкладок ведут в новые места — внешние ссылки и наш же код не ломаются
   if(_wzCabTab==='process') _wzCabTab='overview';
   if(_wzCabTab==='rules'||_wzCabTab==='template') _wzCabTab='settings';
-  if(_wzCabTab==='overview') return _sb + _wzCabLaunch(a);
+  if(_wzCabTab==='overview') return _sb + _wzCabReviewCard(a) + _wzCabLaunch(a);
   if(_wzCabTab==='runs') return _sb + _wzCabRuns(a);
   if(_wzCabTab==='settings') return _sb + _wzCabSettings(a);
   return '';

@@ -4468,6 +4468,9 @@ class Handler(BaseHTTPRequestHandler):
                     "stages_meta": [{"title": st.get("title"), "inputs": st.get("inputs"),
                                      "outputs": st.get("outputs"), "capability_ids": st.get("capability_ids")}
                                     for st in ((bp or {}).get("stages") or [])],
+                    # Шаги, собранные структурно, но сомнительные по смыслу (смысловой гейт сборки).
+                    # Показываем В КАБИНЕТЕ, чтобы доводка была направленной: видно, ЧТО поправить словами.
+                    "needs_review": (lb or {}).get("needs_review") or [],
                 })
             self._send({"status": "success", "automations": out})
         elif path == "/x/monitor":
