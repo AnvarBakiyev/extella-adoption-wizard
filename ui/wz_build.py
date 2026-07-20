@@ -108,6 +108,84 @@ def _inspect_sample(session_id):
     return "", str(f)
 
 
+def _entity_columns(session_id):
+    """Колонки-СУЩНОСТИ файла-образца — по которым МОЖНО осмысленно искать во внешних источниках
+    (названия товаров, компаний, поставщиков). Возвращает (entity_cols, all_cols). Классификация
+    детерминированная по нескольким строкам: колонка = сущность, если её заголовок не число и в
+    примерах преобладают НЕЧИСЛОВЫЕ текстовые значения длиной ≥3 (не суммы, не даты, не id).
+    Нужна, чтобы закрепить ключ веб-поиска за реальной текстовой колонкой, а не дать шагу искать
+    по суммам/заголовкам (мусор Гульжан, 20.07). Пусто = искать не по чему → шаг не строим."""
+    fdir = SESS_DIR / (session_id + "_files")
+    if not fdir.is_dir():
+        return [], []
+    files = [p for p in sorted(fdir.iterdir()) if p.is_file()]
+    if not files:
+        return [], []
+    f = files[0]
+    ext = f.suffix.lower()
+    rows = []
+    try:
+        if ext in (".xlsx", ".xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(str(f), read_only=True, data_only=True)
+            ws = wb[wb.sheetnames[0]]
+            rows = [[("" if c.value is None else str(c.value)) for c in r]
+                    for r in ws.iter_rows(min_row=1, max_row=25)]
+            wb.close()
+        elif ext == ".csv":
+            import csv as _csv
+            rows = list(_csv.reader(open(str(f), "r", encoding="utf-8", errors="replace")))[:25]
+    except Exception:
+        return [], []
+    if not rows:
+        return [], []
+    # строка-заголовок: максимум непустых нечисловых ячеек
+    hdr = max(range(min(len(rows), 10)),
+              key=lambda i: sum(1 for v in rows[i] if str(v).strip() and not _looks_numeric(v)), default=0)
+    header = [str(v).strip() for v in rows[hdr]]
+    body = rows[hdr + 1:hdr + 21]
+    all_cols, entity_cols = [], []
+    for ci, name in enumerate(header):
+        if not name:
+            continue
+        all_cols.append(name)
+        vals = [str(r[ci]).strip() for r in body if ci < len(r) and str(r[ci]).strip()]
+        if not vals:
+            continue
+        texty = sum(1 for v in vals if not _looks_numeric(v) and not _looks_date(v) and len(v) >= 3
+                    and re.search(r"[^\W\d_]", v, re.U))   # есть буква
+        if texty >= max(2, int(len(vals) * 0.6)) and not _looks_numeric(name):
+            entity_cols.append(name)
+    return entity_cols, all_cols
+
+
+def _looks_numeric(v):
+    return bool(re.fullmatch(r"[\d\s.,%+\-()]+", str(v).strip() or "x"))
+
+
+def _looks_date(v):
+    s = str(v).strip()
+    return bool(re.search(r"\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4}", s) or
+                re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", s))
+
+
+_WEBSEARCH_TASK_MARKERS = ("веб-поиск", "веб поиск", "интернет", "в сети", "в интернете", "поиск постав",
+                           "внешн", "обогащ", "enrich", "web_search", "web search", "websearch",
+                           "external", "lookup", "duckduckgo", "google", "найти в", "search the")
+
+
+def _is_websearch_task(t):
+    """Шаг плана — это внешний веб-поиск/обогащение? По маркерам в назначении/описании/имени и по
+    capability_ids из blueprint. Нужно, чтобы закрепить за таким шагом колонку-сущность или не строить."""
+    if not isinstance(t, dict):
+        return False
+    caps = t.get("capability_ids") or t.get("capabilities") or []
+    if isinstance(caps, list) and any("web" in str(c).lower() or "external" in str(c).lower() or "enrich" in str(c).lower() for c in caps):
+        return True
+    blob = " ".join(str(t.get(k, "")) for k in ("purpose", "description", "goal", "title", "name", "expert_name")).lower()
+    return any(m in blob for m in _WEBSEARCH_TASK_MARKERS)
+
+
 _BUILD_SYS = """Ты — генератор кода СТАДИИ КОНВЕЙЕРА для платформы Extella. Верни ТОЛЬКО JSON:
 {"code":"<полный код>", "description":"<англ.: что делает>"}
 
@@ -406,7 +484,7 @@ BUILD_ERRORS = {
 
 
 def _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file, slice_summary,
-                      kp_pack=None, build_id="", session_id=""):
+                      kp_pack=None, build_id="", session_id="", skip_ids=None):
     """AC-06 МАНИФЕСТ: собранный процесс должен САМ СЕБЯ описывать — что ест, что отдаёт, из чего
     состоит и какие контракты держит. Без этого процесс существует только как код: его нельзя
     честно переиспользовать у другого клиента, положить в пак или проверить на совместимость.
@@ -422,8 +500,12 @@ def _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file, slice
         inputs = []
     outs = sorted(slice_summary.keys()) if isinstance(slice_summary, dict) else []
     steps = []
+    skip_ids = skip_ids or set()
     for i, tk in enumerate(data_tasks or []):
         nm = tk.get("expert_name") or (ns + "_" + tk.get("id", "t%d" % (i + 1)))
+        if tk.get("id", "t%d" % (i + 1)) in skip_ids:   # намеренно не вошёл в каркас (искать не по чему)
+            steps.append({"name": nm, "title": _human_title(tk, ns), "mode": "skipped", "ok": True})
+            continue
         steps.append({"name": nm, "title": _human_title(tk, ns),
                       "mode": "reuse" if str(tk.get("action", "build")).lower() == "reuse" else "built",
                       "ok": nm in (built_ok or [])})
@@ -1052,10 +1134,31 @@ def _run_build(session_id, build_id):
         current_input = sample_file
         slice_ok = bool(sample_file)
         stage_doubts = []   # шаги, собранные структурно, но сомнительные по смыслу (требуют доводки)
+        _entity_cols, _all_cols = _entity_columns(session_id)   # колонки для веб-поиска (детерминированно)
+        _skip_ids = set()   # веб-поиск, которому не по чему искать — исключаем из каркаса ПРАВИЛЬНО, а не строим мусор
         for idx, t in enumerate(data_tasks):
             tid = t.get("id", "t%d" % (idx + 1))
             title = _human_title(t, ns)
             nm = t.get("expert_name") or (ns + "_" + tid)
+            # ГЕЙТ «каркас правильно»: веб-поиск обязан искать по колонке-СУЩНОСТИ, а не по суммам/
+            # заголовкам. Нет текстовой колонки в источнике → шаг не строим (честно пропускаем), иначе
+            # закрепляем разрешённые колонки жёсткой директивой в подсказку сборки (мусор Гульжан, 20.07).
+            _stage_hint = schema_hint
+            if _is_websearch_task(t):
+                if not _entity_cols:
+                    _skip_ids.add(tid)
+                    stage_doubts.append({"expert": nm, "title": title,
+                                         "why": "в источнике нет текстовой колонки-названия для веб-поиска — шаг пропущен"})
+                    stage("task_" + tid, "Пропущен (искать не по чему): " + title, "warn",
+                          expert=nm, detail="в источнике нет колонки-названия для внешнего поиска; "
+                                            "добавьте её или уберите этот шаг в чате доводки", needs_review=True)
+                    continue
+                _stage_hint = schema_hint + (
+                    "\n\nЖЁСТКО ДЛЯ ЭТОГО ШАГА (внешний веб-поиск): формируй поисковый запрос ТОЛЬКО из "
+                    "значений колонок-названий " + json.dumps(_entity_cols, ensure_ascii=False) + " — по ОДНОМУ "
+                    "запросу на запись, из 1–2 таких колонок. КАТЕГОРИЧЕСКИ НЕЛЬЗЯ искать по суммам, числам, "
+                    "датам, id и по названиям колонок. Если у записи эти колонки пусты — пропусти запись с "
+                    "честной пометкой, не выдумывай запрос.")
             stage("task_" + tid, "Собираю и проверяю: " + title, "running")
             if not current_input:
                 stage("task_" + tid, "Ошибка: " + title, "error", expert=nm,
@@ -1088,7 +1191,7 @@ def _run_build(session_id, build_id):
                         ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
                 doubt = None
             else:
-                ok, outp, detail, doubt = _build_one(nm, t, schema_hint, is_first=(idx == 0),
+                ok, outp, detail, doubt = _build_one(nm, t, _stage_hint, is_first=(idx == 0),
                                                      is_last=(idx == len(data_tasks) - 1),
                                                      accept_input=current_input, llm=llm)
             if ok:
@@ -1153,7 +1256,8 @@ def _run_build(session_id, build_id):
         # блокируют built (раньше статус ставился безусловно и маскировал провал стадии).
         missing = [(t.get("title") or t.get("expert_name") or t.get("id") or "?")
                    for i, t in enumerate(data_tasks)
-                   if (t.get("expert_name") or (ns + "_" + t.get("id", "t%d" % (i + 1)))) not in built_ok]
+                   if t.get("id", "t%d" % (i + 1)) not in _skip_ids   # намеренно пропущенный веб-поиск ≠ провал сборки
+                   and (t.get("expert_name") or (ns + "_" + t.get("id", "t%d" % (i + 1)))) not in built_ok]
         if missing or not slice_ok or (stage_experts and not orchestrator):
             if missing:
                 prog["error_struct"] = _build_error("stages_missing",
@@ -1168,7 +1272,8 @@ def _run_build(session_id, build_id):
             save(); _unlock(); return
 
         prog["manifest"] = _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file,
-                                             prog.get("slice_summary"), kp_pack, build_id, session_id)
+                                             prog.get("slice_summary"), kp_pack, build_id, session_id,
+                                             skip_ids=_skip_ids)
         # Сомнительные по смыслу шаги — в итог сборки, чтобы «готово» не скрывало доводку.
         # Процесс собран (built), но честно сказано, какие шаги стоит проверить/поправить словами.
         if stage_doubts:
