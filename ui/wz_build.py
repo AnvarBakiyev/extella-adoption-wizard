@@ -551,6 +551,7 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
 
     STAGES = %(STAGES)s
     KP_STAGES = %(KP_STAGES)s
+    WEB_STAGES = %(WEB_STAGES)s   # Qwen-ведомые шаги веб-обогащения — им нужен api_token (agent_id вшит)
     # A1 КАРТА РАЗМЕЩЕНИЯ: {стадия: target}. Процесс больше не живёт целиком на одном устройстве —
     # чтение 1С на машине с 1С, отчёт и доставка на хостинге. Пусто = старое поведение (один target).
     PLACEMENT = {}
@@ -700,6 +701,9 @@ def %(NAME)s(source_file: str = "", work_dir: str = "%(WORKDIR)s", api_token: st
         if name in KP_STAGES:   # knowledge-стадия реюзает kp_ask — нужен target (где лежит база) и токен
             _params["target"] = _tgt
             _params["api_token"] = api_token
+        if name in WEB_STAGES:   # веб-обогащение зовёт платформенную Qwen — нужен токен (agent_id вшит в стадию)
+            _params["api_token"] = api_token
+            _params["target"] = _tgt
         body = {"expert_name": name, "params": _params, "global": True}
         if _tgt:
             body["target"] = _tgt
@@ -972,6 +976,139 @@ def _build_kp_stage(name, pack_id):
     return (name if ok else None), sv
 
 
+# ВЕБ-ОБОГАЩЕНИЕ = QWEN-ВЕДОМЫЙ ШАГ (модель в контуре), НЕ механический код (идея Анвара 20.07:
+# «если скинуть эксель в чат, Qwen сам найдёт поставщиков и не перепутает колонки»). Раньше визард
+# застывал задачу в тупой перебор ячеек — и терял суждение модели: искал по суммам/заголовкам →
+# мусор (Гульжан). Теперь стадия детерминирована ПО СТРУКТУРЕ (шаблон, не кодоген), а ВНУТРИ зовёт
+# платформенную Qwen (web_search в каноне): модель читает строку, сама берёт название из разрешённых
+# текстовых колонок и ищет — как чат, только застывшее в работника. entity_fields ВШИТЫ на сборке
+# (детерминированный `_entity_columns`), agent_id — платформенная Qwen (НЕ Claude-дефолт).
+_WEB_STAGE_TEMPLATE = '''$extens("include.py")
+include("import urllib.request", [])
+
+def %(NAME)s(input_path="", output_path="", target="", api_token="", api_base="https://api.extella.ai", rules_json="", fields_json="") -> dict:   # rules/fields — контракт F2 (заглушки: веб-стадия обогащает)
+    import json, re
+    from pathlib import Path
+
+    def _b(v):
+        return (not v) or str(v).startswith("{{")
+
+    if _b(api_token):
+        try:
+            api_token = json.loads((Path.home() / "extella_wizard" / "app" / "config.json").read_text(encoding="utf-8")).get("auth_token", "")
+        except Exception:
+            api_token = ""
+    agent_id = "%(AGENT_ID)s"
+    if _b(agent_id) or agent_id == "agent_extella_default":   # никогда не платный Claude-дефолт
+        agent_id = "agent_extella_alibaba_default"
+    entity_fields = %(ENTITY_FIELDS)s   # разрешённые колонки-названия (вшиты на сборке)
+
+    data = {}
+    try:
+        if input_path and Path(input_path).exists():
+            data = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    reckey = None
+    if isinstance(data, list):
+        recs = data
+    elif isinstance(data, dict):
+        for k in ("records", "rows", "items"):
+            if isinstance(data.get(k), list):
+                recs, reckey = data[k], k
+                break
+        else:
+            recs = []
+    else:
+        recs = []
+
+    def _entity(r):
+        parts = []
+        for f in entity_fields:
+            v = str((r or {}).get(f, "")).strip()
+            if v and re.search(r"[^\\W\\d_]", v) and not re.fullmatch(r"[\\d\\s.,%%+\\-()]+", v):
+                parts.append(v)
+        return " ".join(parts[:2]).strip()
+
+    idx = [i for i, r in enumerate(recs) if isinstance(r, dict) and _entity(r)]
+    enriched = 0
+    # Нечего искать (нет api_token или ни одной текстовой сущности) — ЧЕСТНО проводим вход дальше,
+    # не выдумывая запросы (канон: немой отказ = дефект, но и мусор выдавать нельзя).
+    if api_token and idx:
+        BATCH = 8
+        for b in range(0, len(idx), BATCH):
+            chunk = idx[b:b + BATCH]
+            items = [{"i": j, "name": _entity(recs[j])} for j in chunk]
+            prompt = ("Ты ищешь внешних поставщиков/предложения в интернете по позициям закупки. "
+                      "Для КАЖДОЙ позиции ищи ТОЛЬКО по её полю name (это товар/поставщик) — НИКОГДА по числам, "
+                      "суммам, датам или служебным полям. Верни СТРОГО JSON-массив объектов без пояснений; "
+                      "у каждого объекта поле i (индекс позиции как дано) и поле suppliers — список объектов "
+                      "с полями name (поставщик), url (ссылка), note (кратко). Если по позиции ничего "
+                      "релевантного нет — suppliers пустой список. Позиции (JSON):\\n"
+                      + json.dumps(items, ensure_ascii=False))
+            try:
+                body = {"agent_id": agent_id, "input": prompt, "store": False}
+                req = urllib.request.Request(api_base.rstrip("/") + "/api/agent/run",
+                                             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                             headers={"X-Auth-Token": api_token, "Content-Type": "application/json",
+                                                      "X-Profile-Id": "default", "X-Agent-Id": agent_id},
+                                             method="POST")
+                rr = json.loads(urllib.request.urlopen(req, timeout=180).read().decode("utf-8"))
+                text = ""
+                for it in (rr.get("output") or []):
+                    if isinstance(it, dict) and it.get("type") == "message":
+                        for c in it.get("content", []):
+                            if isinstance(c, dict) and c.get("type") == "output_text":
+                                text += c.get("text", "")
+                if not text:
+                    _r = rr.get("output_text") or rr.get("result") or ""
+                    text = _r if isinstance(_r, str) else json.dumps(_r, ensure_ascii=False)
+                m = re.search(r"\\[.*\\]", text, re.S)
+                arr = json.loads(m.group(0)) if m else []
+                for e in (arr if isinstance(arr, list) else []):
+                    if not isinstance(e, dict):
+                        continue
+                    j = e.get("i")
+                    if isinstance(j, int) and 0 <= j < len(recs) and isinstance(recs[j], dict):
+                        recs[j]["external_suppliers"] = e.get("suppliers") or []
+                        enriched += 1
+            except Exception as ex:
+                for j in chunk:
+                    if isinstance(recs[j], dict):
+                        recs[j].setdefault("external_suppliers", [])
+                        recs[j]["_enrich_note"] = "обогащение недоступно: " + str(ex)[:80]
+
+    if reckey:
+        data[reckey] = recs
+        out = data
+    elif isinstance(data, list):
+        out = recs
+    else:
+        out = data
+    if output_path:
+        Path(output_path).write_text(json.dumps(out, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return {"status": "success", "enriched": enriched, "candidates": len(idx), "total": len(recs)}
+'''
+
+
+def _build_websearch_stage(name, entity_fields, agent_id):
+    """Qwen-ведомый шаг веб-обогащения (детерминированный шаблон, модель в контуре). Возвращает (name|None, sv)."""
+    code = _WEB_STAGE_TEMPLATE % {"NAME": name,
+                                  "AGENT_ID": str(agent_id or ""),
+                                  "ENTITY_FIELDS": json.dumps(list(entity_fields or []), ensure_ascii=False)}
+    sv = api("/api/expert/save", {"name": name,
+                                  "description": "Qwen-driven web enrichment stage (model in the loop): reads each "
+                                                 "record, takes the entity name from allowed text columns and finds "
+                                                 "external suppliers via the platform Qwen (web_search). No mechanical "
+                                                 "cell iteration — never searches by numbers/headers.",
+                                  "code": code,
+                                  "kwargs": {"input_path": "", "output_path": "", "target": "",
+                                             "api_token": "", "api_base": "https://api.extella.ai"},
+                                  "cspl": "fython", "global": True})
+    ok = sv.get("status") == "success" or sv.get("id") is not None
+    return (name if ok else None), sv
+
+
 def _kp_install_on(pack_id, target):
     """Авто-установка базы знаний на устройство прогона (best-effort, не роняет сборку)."""
     try:
@@ -983,7 +1120,7 @@ def _kp_install_on(pack_id, target):
         return {"status": "error", "message": str(e)[:150]}
 
 
-def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None, want_code=False):
+def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None, want_code=False, web_stages=None):
     """Создаёт (external save → persist) вызываемый оркестратор процесса с вшитыми стадиями.
     session_id вшивается (%(SID)s) для резолвера файла из общего стора на хостинге.
     kp_stages — имена knowledge-стадий, которым оркестратор пробрасывает target+api_token (реюз kp_ask).
@@ -993,6 +1130,7 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None,
     code = _ORCH_TEMPLATE % {"NAME": name, "WORKDIR": work_dir,
                              "STAGES": json.dumps(stage_names, ensure_ascii=False),
                              "KP_STAGES": json.dumps(kp_stages or [], ensure_ascii=False),
+                             "WEB_STAGES": json.dumps(web_stages or [], ensure_ascii=False),
                              "SID": session_id}
     sv = api("/api/expert/save", {"name": name,
                                   "description": "Auto-generated process orchestrator: runs the contract pipeline ("
@@ -1105,6 +1243,7 @@ def _run_build(session_id, build_id):
             return bool(kp_pack) and t.get("stage_id") in kp_stage_ids
 
         kp_stage_names = []
+        web_stage_names = []   # Qwen-ведомые шаги веб-обогащения (реюз шаблона, не кодоген)
         if kp_pack and not kp_stage_ids:
             # база объявлена, но НИ ОДНА стадия не помечена knowledge_grounding — манифест неконсистентен;
             # честно показываем (раньше keyword-эвристика маскировала это, угадывая стадию по словам)
@@ -1140,25 +1279,18 @@ def _run_build(session_id, build_id):
             tid = t.get("id", "t%d" % (idx + 1))
             title = _human_title(t, ns)
             nm = t.get("expert_name") or (ns + "_" + tid)
-            # ГЕЙТ «каркас правильно»: веб-поиск обязан искать по колонке-СУЩНОСТИ, а не по суммам/
-            # заголовкам. Нет текстовой колонки в источнике → шаг не строим (честно пропускаем), иначе
-            # закрепляем разрешённые колонки жёсткой директивой в подсказку сборки (мусор Гульжан, 20.07).
-            _stage_hint = schema_hint
-            if _is_websearch_task(t):
-                if not _entity_cols:
-                    _skip_ids.add(tid)
-                    stage_doubts.append({"expert": nm, "title": title,
-                                         "why": "в источнике нет текстовой колонки-названия для веб-поиска — шаг пропущен"})
-                    stage("task_" + tid, "Пропущен (искать не по чему): " + title, "warn",
-                          expert=nm, detail="в источнике нет колонки-названия для внешнего поиска; "
-                                            "добавьте её или уберите этот шаг в чате доводки", needs_review=True)
-                    continue
-                _stage_hint = schema_hint + (
-                    "\n\nЖЁСТКО ДЛЯ ЭТОГО ШАГА (внешний веб-поиск): формируй поисковый запрос ТОЛЬКО из "
-                    "значений колонок-названий " + json.dumps(_entity_cols, ensure_ascii=False) + " — по ОДНОМУ "
-                    "запросу на запись, из 1–2 таких колонок. КАТЕГОРИЧЕСКИ НЕЛЬЗЯ искать по суммам, числам, "
-                    "датам, id и по названиям колонок. Если у записи эти колонки пусты — пропусти запись с "
-                    "честной пометкой, не выдумывай запрос.")
+            # ГЕЙТ «каркас правильно»: веб-поиск обязан искать по колонке-СУЩНОСТИ. Нет текстовой колонки
+            # в источнике → шаг не строим (честно пропускаем). Есть → это Qwen-ВЕДОМЫЙ шаг (модель в
+            # контуре), а не механический кодоген — см. _build_websearch_stage (идея Анвара 20.07).
+            _is_web = _is_websearch_task(t)
+            if _is_web and not _entity_cols:
+                _skip_ids.add(tid)
+                stage_doubts.append({"expert": nm, "title": title,
+                                     "why": "в источнике нет текстовой колонки-названия для веб-поиска — шаг пропущен"})
+                stage("task_" + tid, "Пропущен (искать не по чему): " + title, "warn",
+                      expert=nm, detail="в источнике нет колонки-названия для внешнего поиска; "
+                                        "добавьте её или уберите этот шаг в чате доводки", needs_review=True)
+                continue
             stage("task_" + tid, "Собираю и проверяю: " + title, "running")
             if not current_input:
                 stage("task_" + tid, "Ошибка: " + title, "error", expert=nm,
@@ -1166,7 +1298,25 @@ def _run_build(session_id, build_id):
                       **_build_error("no_sample_file", "шаг «" + str(title) + "» остался без входных данных"))
                 slice_ok = False
                 break
-            if is_kp_task(t):
+            if _is_web:
+                # QWEN-ВЕДОМЫЙ ШАГ: детерминированный шаблон, внутри — платформенная Qwen (web_search).
+                # На build-срезе passthrough (реальное обогащение — на прогоне, как kp): не гоняем веб на
+                # каждой сборке. Модель сама читает строку и ищет по названию — не по суммам/заголовкам.
+                web_stage_names.append(nm)
+                nm2, sv = _build_websearch_stage(nm, _entity_cols, llm.get("agent_id"))
+                outp = str(bdir / (nm + "_out.json"))
+                if not nm2:
+                    ok, detail = False, "веб-стадия не сохранилась: " + str(sv)[:120]
+                else:
+                    try:
+                        import shutil as _sh
+                        _sh.copy(current_input, outp)   # passthrough: обогащение выполнится на прогоне
+                        ok, detail = True, "Qwen-ведомое веб-обогащение по колонкам " + \
+                            json.dumps(_entity_cols, ensure_ascii=False) + " (модель в контуре; выполнится на прогоне)"
+                    except Exception as _e:
+                        ok, detail = False, "passthrough веб-стадии не удался: " + str(_e)[:120]
+                doubt = None
+            elif is_kp_task(t):
                 # РЕЮЗ kp_ask: сохраняем тонкую обёртку и прогоняем на входе. На build-срезе без target
                 # обёртка мягко деградирует (пустой legal_context) — на run-time оркестратор даёт target.
                 kp_stage_names.append(nm)
@@ -1191,7 +1341,7 @@ def _run_build(session_id, build_id):
                         ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
                 doubt = None
             else:
-                ok, outp, detail, doubt = _build_one(nm, t, _stage_hint, is_first=(idx == 0),
+                ok, outp, detail, doubt = _build_one(nm, t, schema_hint, is_first=(idx == 0),
                                                      is_last=(idx == len(data_tasks) - 1),
                                                      accept_input=current_input, llm=llm)
             if ok:
@@ -1237,7 +1387,8 @@ def _run_build(session_id, build_id):
         if stage_experts:
             stage("orchestrator", "Собираю оркестратор процесса", "running")
             orchestrator, _sv = _make_orchestrator(ns, stage_experts, "/tmp/" + ns + "_run", session_id,
-                                                   kp_stages=[n for n in kp_stage_names if n in built_ok])
+                                                   kp_stages=[n for n in kp_stage_names if n in built_ok],
+                                                   web_stages=[n for n in web_stage_names if n in built_ok])
             stage("orchestrator", "Оркестратор процесса: " + (orchestrator or "ошибка"),
                   "success" if orchestrator else "error", expert=orchestrator)
             if orchestrator:
