@@ -52,6 +52,11 @@ python3 scripts/check_placement_labels.py \
   && echo "   ✓ карта не показывает владельцу только expert_name" \
   || { echo "   ✗ карта снова техническая"; fail=1; }
 
+echo "→ долговечность отчётов"
+python3 scripts/check_report_persistence.py \
+  && echo "   ✓ отчёт переживает /tmp и другое устройство" \
+  || { echo "   ✗ отчёт снова привязан к временной папке"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re

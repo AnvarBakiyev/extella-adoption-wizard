@@ -4159,7 +4159,10 @@ class Handler(BaseHTTPRequestHandler):
                     if _m and Path(_m).is_file():
                         fp = Path(_m)
             if not fp:
-                self._send({"status": "error", "message": "файл недоступен (нет локально или не на этом устройстве)"}, 404)
+                self._send({"status": "error", "code": "report_missing",
+                            "message": "Отчёт не найден ни на этом устройстве, ни в хранилище. "
+                                       "Запустите процесс ещё раз — новые отчёты сохраняются и "
+                                       "скачиваются с любого устройства."}, 404)
                 return
             # render-check: не отдаём клиенту БИТЫЙ отчёт как готовый (0 байт / повреждённый OOXML|PDF).
             # force=1 — всё равно скачать (для отладки).
