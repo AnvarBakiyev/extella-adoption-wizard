@@ -292,6 +292,31 @@ def _human_title(t, ns):
     return (nm[0].upper() + nm[1:])[:72] if nm else "Шаг процесса"
 
 
+def _is_pipeline_data_task(t):
+    """True только для шага, который преобразует данные внутри вертикального среза.
+
+    Планировщик иногда добавляет в tasks техническую обвязку 24/7: watcher папки, daemon,
+    launchd/systemd/autostart. У неё нет контракта input_path → output_path, поэтому кодоген
+    закономерно падает и раньше блокировал уже готовый бизнес-процесс (Гульжан, 20.07).
+    Такая обвязка настраивается после сборки через источник/расписание и не является стадией DAG.
+    """
+    name = str(t.get("expert_name") or "").lower().replace("-", "_")
+    text = " ".join(str(t.get(k) or "") for k in ("title", "purpose")).lower()
+    name_markers = (
+        "schedule_", "_schedule", "cron", "orchestr", "pipeline",
+        "notif_", "_notif", "send_", "_send_", "deliver_", "_deliver",
+        "autostart", "launchd", "systemd", "daemon",
+        "folder_monitor", "monitor_folder", "folder_watch", "watch_folder",
+        "file_watcher", "setup_monitor",
+    )
+    text_markers = (
+        "фоновый демон", "демон мониторинга", "автозапуск", "launchagent", "launchd",
+        "systemd", "background daemon", "scheduled trigger", "watch folder",
+        "отслеживает появление новых файлов",
+    )
+    return not any(m in name for m in name_markers) and not any(m in text for m in text_markers)
+
+
 def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, llm):
     """Стройка СТАДИИ по контракту input_path->output_path. Keyless-путь: модель строит НАТИВНО
     (create-действием, исходник не в чат — уважает guard fine-tune), харнесс НЕЗАВИСИМО перечитывает
@@ -1257,16 +1282,14 @@ def _run_build(session_id, build_id):
 
         # ДАТА-СТАДИИ конвейера (парсинг/анализ/отчёт) — строим ВСЕ заново под единый контракт
         # (реюз старых экспертов не по контракту рвёт цепочку). Не-дата задачи (расписание) — вне среза.
-        def is_data_stage(t):
-            nm = (t.get("expert_name") or "").lower()
-            return not any(x in nm for x in ("schedule", "orchestr", "pipeline", "notif", "send", "email", "cron"))
-        data_tasks = [t for t in tasks if is_data_stage(t)]
-        other_tasks = [t for t in tasks if not is_data_stage(t)]
+        data_tasks = [t for t in tasks if _is_pipeline_data_task(t)]
+        other_tasks = [t for t in tasks if not _is_pipeline_data_task(t)]
 
         for t in other_tasks:
             tid = t.get("id", "x")
-            stage("task_" + tid, "Вне конвейера данных: " + _human_title(t, ns),
-                  "success", skipped=True)
+            stage("task_" + tid, "После сборки: " + _human_title(t, ns), "warn", skipped=True,
+                  runtime_setup=True, detail="Это настройка запуска, а не обработка данных; "
+                                                   "источник и режим 24/7 задаются в кабинете процесса")
 
         # 2. Сборка МОСТОМ по единому контракту + вертикальный срез на реальном файле:
         #    каждая дата-стадия принимает выход предыдущей (первая — исходный файл клиента).
