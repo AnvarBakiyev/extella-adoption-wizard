@@ -7416,11 +7416,38 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/x/cap_install":
             # Установка ПОСЛЕ клик-подтверждения + регистрация в «Мои»
             kind = str(body.get("kind", "")).strip(); ref = str(body.get("install_ref", "")).strip()
+            method = str(body.get("method", "")).strip()
             if not kind or not ref:
                 self._send({"status": "error", "message": "нужны kind и install_ref"}, 400)
                 return
+            # CLI: витрина «Инструменты» (тулбар) шлёт kind=cli БЕЗ method → wz_capability_install
+            # брал бы «manual» = только ссылка, бинарь НЕ ставится, обёртка падает. Ставим бинарь
+            # РЕЗОЛВЕРОМ инструмента, если он есть: он знает СОСТАВНЫЕ рецепты (ocr=tesseract+ocrmypdf+
+            # языки; pandoc=pip; calibre/libreoffice=cask), которых голый «brew install» не повторит.
+            # Нет резолвера — честный brew. Иначе клик «поставить» ничего не устанавливал (20.07).
+            if kind.lower() == "cli" and not method:
+                _t = re.sub(r"[^A-Za-z0-9_.-]", "", str(ref).split("/")[-1])[:40]
+                _resolver = "cap_" + re.sub(r"[^a-z0-9_]", "_", _t.lower()) + "_resolver"
+                if _expert_exists(_resolver):
+                    try:
+                        rr = run_expert(_resolver, {"confirm_install": "yes"}, wait=320, glob=True)
+                        _rs = rr if isinstance(rr, dict) else {}
+                        if not isinstance(rr, dict):
+                            try:
+                                _rs = json.loads(rr) if isinstance(rr, str) else {}
+                            except Exception:
+                                _rs = {}
+                    except Exception:
+                        _rs = {}
+                    # резолвер сам поставил бинарь → оборачиваем и в каталог, минуя wz_capability_install
+                    _wrap = _cli_wrap_flow(_t, str(body.get("desc", "")) or str(body.get("title", "")))
+                    _registry_refresh_async()
+                    self._send({"status": "success", "install_status": _rs.get("status", "installed"),
+                                "wrapper": _wrap, "message": _scrub(str(_rs.get("message", ""))[:200])})
+                    return
+                method = "brew"   # нет резолвера — ставим напрямую через Homebrew
             res = run_expert("wz_capability_install",
-                             {"kind": kind, "install_ref": ref, "method": str(body.get("method", "")),
+                             {"kind": kind, "install_ref": ref, "method": method,
                               "pkg_type": str(body.get("pkg_type", "")), "title": str(body.get("title", "")),
                               "desc": str(body.get("desc", "")), "url": str(body.get("url", "")),
                               "source": str(body.get("source", ""))}, wait=320, glob=True)
