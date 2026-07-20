@@ -623,12 +623,17 @@ function _agentGateRender(list, broken, why){
   el("modHint").innerHTML = broken
     ? esc(why)
     : "Агент — это «мозг» ваших автоматизаций: он ведёт интервью, проектирует процессы и копит знания о вашей компании. Без него Помощник не сможет ответить.";
-  el("modInput").outerHTML = '<input id="modInput" type="hidden">'
-    + (rows ? '<div style="margin:10px 0 4px;font-size:12px;color:var(--silver)">Ваши агенты:</div>'+rows : '')
+  // Поле ВСТРОЕНО в шлюз: браузерный prompt() в приложении Extella (Electron) не работает —
+  // возвращает пустоту молча, и кнопка «Создать агента» выглядела мёртвой (Гульжан, 20.07).
+  el("modInput").outerHTML = '<input id="modInput" type="text" autocomplete="off" '
+    + 'placeholder="Имя нового агента (например: «Мой ассистент»)" '
+    + 'style="width:100%;box-sizing:border-box;padding:10px 12px;margin-top:10px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:9px;font-size:13.5px" '
+    + 'onkeydown="if(event.key===\'Enter\')agentGateCreate()">'
+    + (rows ? '<div style="margin:12px 0 4px;font-size:12px;color:var(--silver)">Или выберите существующего:</div>'+rows : '')
     + '<div style="display:flex;gap:8px;margin-top:12px">'
     + '<button class="btn gold" style="flex:1" onclick="agentGateCreate()">＋ Создать агента (копия Qwen)</button>'
     + '<button class="btn ghost" style="flex:0 0 40%" onclick="agentGateLink()">🔗 Привязать по id</button></div>'
-    + '<div id="agentGateMsg" style="font-size:12.5px;color:var(--silver);margin-top:10px"></div>';
+    + '<div id="agentGateMsg" style="font-size:12.5px;color:var(--silver);margin-top:10px">Впишите имя выше и нажмите «Создать».</div>';
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Позже";
   _modCb=null;
@@ -653,8 +658,13 @@ async function agentGatePick(id){
 }
 async function agentGateCreate(){
   var m=el('agentGateMsg');
-  var nm=prompt('Имя агента (например: «Мой ассистент»)');
-  if(!nm) return;
+  var inp=el('modInput');
+  var nm=(inp&&inp.value||'').trim();
+  if(!nm){                                   // без prompt(): просим заполнить встроенное поле
+    if(m) m.innerHTML='<span style="color:#a97e35">Впишите имя агента в поле выше.</span>';
+    if(inp) inp.focus();
+    return;
+  }
   if(m) m.innerHTML='<span class="spin"></span> создаю агента…';
   var r=await jpost('/x/agent_create',{name:nm});
   if(!r||r.status!=='success'){
@@ -665,11 +675,22 @@ async function agentGateCreate(){
 }
 async function agentGateLink(){
   var m=el('agentGateMsg');
-  var id=prompt('id агента (agent_…)');
-  if(!id) return;
-  var r=await jpost('/x/agent_link',{agent_id:id.trim()});
-  if(!r||r.status!=='success'){ if(m) m.textContent=(r&&r.message)||'не удалось привязать'; return; }
-  await _agentGateVerify(id.trim(), m);
+  var inp=el('modInput');
+  var id=(inp&&inp.value||'').trim();
+  // Для привязки в то же поле вставляют id (agent_…). Если поле под имя — подсказываем.
+  if(!id){
+    if(inp){ inp.placeholder='Вставьте id агента: agent_…'; inp.focus(); }
+    if(m) m.innerHTML='<span style="color:#a97e35">Вставьте id агента (agent_…) в поле выше и нажмите «Привязать».</span>';
+    return;
+  }
+  if(id.indexOf('agent_')!==0){
+    if(m) m.innerHTML='<span style="color:#c0392b">Это не похоже на id агента — он начинается с «agent_».</span>';
+    return;
+  }
+  if(m) m.innerHTML='<span class="spin"></span> привязываю…';
+  var r=await jpost('/x/agent_link',{agent_id:id});
+  if(!r||r.status!=='success'){ if(m) m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.message)||'не удалось привязать')+'</span>'; return; }
+  await _agentGateVerify(id, m);
 }
 async function refreshAgentBadge(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){ _agents={agents:[],current:""}; }
