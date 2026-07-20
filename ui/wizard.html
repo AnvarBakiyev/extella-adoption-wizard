@@ -3388,12 +3388,16 @@ async function pollBuild(){
   S.buildTimer = setTimeout(pollBuild, 4000);
 }
 function buildStageRow(s){
-  const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>` : s.status==="error" ? "✕" : "·";
-  const col = s.status==="error"?"var(--bad)":s.status==="success"?"var(--ok)":"var(--gold)";
+  // Четыре состояния, не три: warn = «собрано, но требует доводки» (структурно цело, смысл сомнителен).
+  const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>`
+    : s.status==="error" ? "✕" : s.status==="warn" ? "⚠" : "·";
+  const col = s.status==="error"?"var(--bad)":s.status==="success"?"var(--ok)"
+    : s.status==="warn"?"#b8862f":"var(--gold)";
   return `<div style="padding:7px 0;border-bottom:1px dashed var(--cream-dark)">
     <span style="display:inline-block;width:22px;color:${col}">${icon}</span>
     <b style="font-size:14px">${esc(s.title)}</b>
     ${s.reused?`<span class="badge ok" style="margin-left:6px">переиспользовано</span>`:""}
+    ${s.status==="warn"&&s.detail?`<div style="font-size:12.5px;color:#a9701a;padding:3px 0 0 22px">${esc(s.detail)} — поправьте словами в кабинете процесса.</div>`:""}
     ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
   </div>`;
 }
@@ -3407,9 +3411,10 @@ function renderBuildResult(lb){
     : `<span class="badge warn">пройдена с замечаниями</span>`;
   el("buildProgress").innerHTML = `
     <div class="card">
-      <div class="kicker">Процесс собран ✓</div>
+      <div class="kicker">Процесс собран ${(lb.needs_review&&lb.needs_review.length)?"— есть шаги на доводку":"✓"}</div>
       <div style="margin-bottom:8px">Построено компонентов: <b>${experts.length}</b> ${vbadge}</div>
       <div style="font-size:13px;color:var(--nav)">${experts.map(e=>`<code style="background:var(--cream);padding:1px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(e)}</code>`).join(" ")}</div>
+      ${(lb.needs_review&&lb.needs_review.length)?`<div style="font-size:13px;margin-top:10px;padding:10px 12px;border:1px solid #e0b48a;border-radius:10px;background:rgba(224,168,94,.08)"><b>⚠ Требуют доводки (${lb.needs_review.length}):</b> собраны и запустились, но результат по смыслу сомнителен — проверьте и поправьте словами в кабинете.<ul class="plain" style="margin-top:6px">${lb.needs_review.map(r=>`<li><b>${esc(r.title||r.expert)}</b> — ${esc(r.why||'')}</li>`).join("")}</ul></div>`:""}
       ${(aud.issues&&aud.issues.length)?`<div style="font-size:13px;color:var(--warn);margin-top:8px"><b>На подтверждение:</b><ul class="plain">${aud.issues.map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`:`<div style="font-size:13px;color:var(--ok);margin-top:8px">Проверка безопасности замечаний не нашла.</div>`}
       ${threadHTML("build:result")}
     </div>`;

@@ -122,7 +122,80 @@ _BUILD_SYS = """Ты — генератор кода СТАДИИ КОНВЕЙЕ
 - ВЫХОД: запиши результат в output_path как JSON. %(OUTPUT_DESC)s Если это отчётная стадия — можешь дополнительно писать .md/.docx рядом (import docx через include), но JSON в output_path обязателен.
 - ВЕРНИ компактный dict: {"status":"success","output_path":output_path, ...ключевые счётчики}. НЕ клади крупные данные в возврат.
 
-Стандарт: первая строка $extens("include.py"); зависимости через include("import X",["extella-pip install X"]) (openpyxl/ docx — так; стдлиб json/csv/datetime — include("import json",[])); РОВНО ОДНА top-level функция (имя строго заданное), хелперы ВНУТРИ неё, не переопределяй include/load_module; валидация входов с ранним return {"status":"error"}; без хардкода путей/ключей; не обращаться к KV."""
+Стандарт: первая строка $extens("include.py"); зависимости через include("import X",["extella-pip install X"]) (openpyxl/ docx — так; стдлиб json/csv/datetime — include("import json",[])); РОВНО ОДНА top-level функция (имя строго заданное), хелперы ВНУТРИ неё, не переопределяй include/load_module; валидация входов с ранним return {"status":"error"}; без хардкода путей/ключей; не обращаться к KV.
+
+ЕСЛИ СТАДИЯ ИЩЕТ ВО ВНЕШНИХ ИСТОЧНИКАХ (интернет/веб-поиск): ищи ТОЛЬКО по осмысленным сущностям — названиям товаров, компаний, поставщиков из ТЕКСТОВЫХ полей. НИКОГДА не ищи по числам, суммам, датам, id и служебным полям — это даёт мусор не по теме. Не перебирай подряд ВСЕ значения ячеек: возьми 1–2 значимых текстовых поля на запись. Если осмысленного текстового поля для поиска нет — верни пустой результат с честным status, а не выдумывай запросы."""
+
+
+def _stage_sanity(title, purpose, out_path, llm):
+    """СМЫСЛОВАЯ приёмка вывода стадии (в дополнение к структурной). Структурная ловит «пусто/не
+    JSON/нет чисел», но пропускает СТРУКТУРНО ЦЕЛЫЙ МУСОР: шаг «поиск поставщиков» искал в вебе по
+    суммам → вики про игру; форма цела, галочка зелёная, смысл — ноль (Гульжан, 20.07).
+
+    Возвращает {"ok": bool, "why": str}. ok=False → стадия собралась, но помечается «требует
+    доводки» (не зелёным). МЯГКИЙ гейт: не валит сборку, а честно называет сомнительный шаг —
+    лучше, чем показать «готово» и спрятать мусор в итоговой сводке."""
+    try:
+        raw = Path(out_path).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except Exception:
+        return {"ok": True, "why": ""}   # не разобрали — не наша забота здесь
+    recs = data if isinstance(data, list) else (
+        data.get("records") or data.get("rows") or data.get("items") or [])
+    if not isinstance(recs, list):
+        recs = []
+
+    # 1) ДЕШЁВЫЙ детерминированный флаг: поиск/запрос по чистому числу = заведомо мусор.
+    numq = 0
+    looks_search = False
+    for r in recs[:80]:
+        if not isinstance(r, dict):
+            continue
+        if any(k in r for k in ("search_query", "snippet", "url")):
+            looks_search = True
+        for k in ("search_query", "query", "q", "matched_category"):
+            v = str(r.get(k, "")).strip()
+            if v and re.fullmatch(r"[\d\s.,%+-]+", v):
+                numq += 1
+                break
+    if numq >= 2:
+        return {"ok": False, "why": "шаг искал по числовым значениям (суммам), а не по осмысленным "
+                                    "запросам — найденное не относится к задаче"}
+
+    # 2) LLM-СУДЬЯ (консервативный) — только для стадий, похожих на внешний поиск/выборку, чтобы не
+    #    удваивать время сборки на обычных стадиях парсинга/агрегации.
+    ag = (llm or {}).get("agent_id")
+    if not (looks_search and ag):
+        return {"ok": True, "why": ""}
+    sample = json.dumps(data, ensure_ascii=False, default=str)[:1600]
+    prompt = ("Ты приёмщик качества автоматизации. Шаг: «" + str(title)[:80] + "». Его задача: "
+              + str(purpose)[:160] + ".\nОбразец вывода шага:\n" + sample +
+              "\n\nВывод ОСМЫСЛЕН для задачи шага, или это мусор (веб-результаты не по теме, поиск "
+              "по числам, заглушки, данные из чужой области)? Ответь ТОЛЬКО JSON: "
+              '{"sensible": true|false, "why": "<если нет — одной короткой фразой по-русски, что не так>"}. '
+              "Будь строг к очевидному мусору, но НЕ придирайся к нормальным данным.")
+    try:
+        res = api("/api/agent/run", {"agent_id": ag, "input": prompt, "run_timeout": 50,
+                                     "store": False, "temperature": 0}, timeout=60)
+    except Exception:
+        return {"ok": True, "why": ""}   # судья недоступен — не блокируем сборку из-за него
+    text = ""
+    for it in (res or {}).get("output", []):
+        if isinstance(it, dict) and it.get("type") == "message":
+            for c in it.get("content", []):
+                if isinstance(c, dict) and c.get("type") == "output_text":
+                    text += c.get("text", "")
+    text = text or (res or {}).get("output_text", "")
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return {"ok": True, "why": ""}
+    try:
+        v = json.loads(m.group(0))
+    except Exception:
+        return {"ok": True, "why": ""}
+    if v.get("sensible") is False:
+        return {"ok": False, "why": str(v.get("why") or "результат шага не относится к задаче")[:160]}
+    return {"ok": True, "why": ""}
 
 
 def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, llm):
@@ -234,7 +307,7 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
                                       "code": code, "kwargs": {"input_path": "", "output_path": ""},
                                       "cspl": cspl, "global": True})
         if not (isinstance(sv, dict) and (sv.get("status") == "success" or sv.get("id"))):   # #25: приёмка сохранения только по явному успеху (раньше пропускался мусор без status/id/«error»)
-            return False, None, "save: " + str(sv)[:150]
+            return False, None, "save: " + str(sv)[:150], None
         # приёмка = реальный прогон стадии на фактическом входе (это же и звено среза)
         if Path(out_path).exists():
             try: Path(out_path).unlink()
@@ -275,9 +348,13 @@ def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, 
                         why = ("стадия обязана ВЫЧИСЛИТЬ summary с числами (total_count/total_sum/by_<колонка>), "
                                "а не копировать записи; сейчас summary пуст или без чисел")
         if why is None:
-            return True, out_path, "built+accepted"
+            # структурно принято → смысловая проверка (мягкая): не валит, но помечает сомнительное
+            _san = _stage_sanity(task.get("title") or expert_name, task.get("purpose") or "", out_path, llm)
+            if not _san.get("ok"):
+                return True, out_path, "built+accepted", _san.get("why")
+            return True, out_path, "built+accepted", None
         user += "\n\nПРИЁМКА УПАЛА (вход " + str(accept_input) + "): " + why + ". Исправь под контракт."
-    return False, None, "3 попытки: " + str(why or last_err or "не прошли приёмку")[:150]
+    return False, None, "3 попытки: " + str(why or last_err or "не прошли приёмку")[:150], None
 
 
 # ─────────── AC-06: СТРУКТУРНЫЕ ОШИБКИ СТРОЙКИ ───────────
@@ -958,6 +1035,7 @@ def _run_build(session_id, build_id):
         #    каждая дата-стадия принимает выход предыдущей (первая — исходный файл клиента).
         current_input = sample_file
         slice_ok = bool(sample_file)
+        stage_doubts = []   # шаги, собранные структурно, но сомнительные по смыслу (требуют доводки)
         for idx, t in enumerate(data_tasks):
             tid = t.get("id", "t%d" % (idx + 1))
             title = t.get("title") or t.get("expert_name") or tid
@@ -992,17 +1070,25 @@ def _run_build(session_id, build_id):
                         ok, detail = True, "реюз kp_ask(" + kp_pack + "): на build-срезе passthrough — retrieval выполнится на run-time"   # #28: честная метка вместо success-строки
                     else:
                         ok, detail = True, "реюз kp_ask(" + kp_pack + ")"
+                doubt = None
             else:
-                ok, outp, detail = _build_one(nm, t, schema_hint, is_first=(idx == 0),
-                                              is_last=(idx == len(data_tasks) - 1),
-                                              accept_input=current_input, llm=llm)
+                ok, outp, detail, doubt = _build_one(nm, t, schema_hint, is_first=(idx == 0),
+                                                     is_last=(idx == len(data_tasks) - 1),
+                                                     accept_input=current_input, llm=llm)
             if ok:
                 built_names.append(nm)
                 current_input = outp  # выход стадии = вход следующей (это и есть срез)
             else:
                 slice_ok = False
-            stage("task_" + tid, ("Собрано+прогнано: " if ok else "Ошибка: ") + title,
-                  "success" if ok else "error", expert=nm, detail=str(detail)[:200])
+            # ТРИ состояния, не два: собрано / собрано-но-требует-доводки / ошибка. «Требует доводки» —
+            # структурно цело, а смысл сомнителен (см. _stage_sanity): показываем ЧЕСТНО, не зелёным.
+            if ok and doubt:
+                stage_doubts.append({"expert": nm, "title": title, "why": doubt})
+                stage("task_" + tid, "Собрано, требует доводки: " + title, "warn",
+                      expert=nm, detail=str(doubt)[:200], needs_review=True)
+            else:
+                stage("task_" + tid, ("Собрано+прогнано: " if ok else "Ошибка: ") + title,
+                      "success" if ok else "error", expert=nm, detail=str(detail)[:200])
             if not ok:
                 break
 
@@ -1067,6 +1153,10 @@ def _run_build(session_id, build_id):
 
         prog["manifest"] = _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file,
                                              prog.get("slice_summary"), kp_pack, build_id, session_id)
+        # Сомнительные по смыслу шаги — в итог сборки, чтобы «готово» не скрывало доводку.
+        # Процесс собран (built), но честно сказано, какие шаги стоит проверить/поправить словами.
+        if stage_doubts:
+            prog["needs_review"] = stage_doubts
         prog["status"] = "built"
         save()
         # отметка в сессии
@@ -1084,6 +1174,7 @@ def _run_build(session_id, build_id):
                                                "orchestrator": orchestrator,
                                                "slice_summary": prog.get("slice_summary"),
                                                "manifest": prog.get("manifest"),   # AC-06: контракт собранного процесса
+                                               "needs_review": stage_doubts,   # шаги, требующие смысловой доводки
                                                "source_file": sample_file})
             # §7bis ступень 3: автопанель — новая автоматизация выходит из Строителя с готовой формой
             # настроек (best-effort; если Qwen моргнул — владелец соберёт кнопкой в кабинете).
