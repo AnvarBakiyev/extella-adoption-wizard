@@ -101,6 +101,11 @@ echo "→ QA-дельта установки"
 python3 scripts/check_delta_install.py \
   && echo "   ✓ неизменённые эксперты/концепты не переустанавливаются" \
   || { echo "   ✗ delta-фильтр установки сломан"; fail=1; }
+bash -n scripts/qa_delta_update.sh \
+  && grep -q 'check_builds_busy.py' scripts/qa_delta_update.sh \
+  && grep -q 'codex/prod-hardening' scripts/qa_delta_update.sh \
+  && echo "   ✓ короткий QA-апдейтер синтаксически цел и защищает живую стройку" \
+  || { echo "   ✗ короткий QA-апдейтер сломан или обходит защиту стройки"; fail=1; }
 
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
