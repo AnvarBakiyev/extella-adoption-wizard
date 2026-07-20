@@ -2661,6 +2661,45 @@ def _llm_error_human(res):
     return ""
 
 
+def _agent_output_text(res):
+    """Единообразно достать текст агента из Responses-подобного ответа платформы."""
+    text = ""
+    try:
+        for item in (res or {}).get("output", []):
+            if isinstance(item, dict) and item.get("type") == "message":
+                for c in (item.get("content") or []):
+                    if isinstance(c, dict) and c.get("type") == "output_text":
+                        text += str(c.get("text") or "")
+    except Exception:
+        pass
+    return text or (str((res or {}).get("output_text") or "") if isinstance(res, dict) else "")
+
+
+def _chat_should_retry(res, text=""):
+    """Один повтор только для временного/пустого сбоя, но не для ключей, прав и отсутствующего агента."""
+    if text:
+        return False
+    if not isinstance(res, dict):
+        return True
+    low = str(res).lower()
+    terminal = (("401" in low and ("api key" in low or "authentication" in low))
+                or ("not found" in low and "agent" in low)
+                or "does not belong" in low or "forbidden" in low or "permission denied" in low)
+    return not terminal
+
+
+def _run_chat_agent(payload):
+    """Чат не должен падать от единичного флапа платформы; повтор ограничен двумя попытками."""
+    res, text = {}, ""
+    for attempt in range(2):
+        raw = api("/api/agent/run", payload)
+        res = raw if isinstance(raw, dict) else {"status": "error", "message": "empty platform response"}
+        text = _agent_output_text(res)
+        if not _chat_should_retry(res, text):
+            return res, text, attempt + 1
+    return res, text, 2
+
+
 def _run_error_human(res):
     """Ответ оркестратора → {code, message, remedy, stage}. Возвращает None, если ошибки нет."""
     if not isinstance(res, dict) or str(res.get("status", "")) not in ("error", "failed"):
@@ -8271,7 +8310,10 @@ class Handler(BaseHTTPRequestHandler):
                               "вызывай его с global:true, иначе платформа ответит «Expert not found». "
                               "Если вызов всё же упал — скажи клиенту нажать «⤵ Перенести ответы в конспект», "
                               "не выдумывай, что сохранил. Конспект на экране клиента обновляется сам после "
-                              "каждого твоего сохранения — это главная ценность. Отвечай кратко, это узкая чат-панель.]\n\n")
+                              "каждого твоего сохранения — это главная ценность. Если клиент отвечает «не знаю», "
+                              "«сам найди» или не может назвать детали — НЕ повторяй тот же вопрос и не останавливайся: "
+                              "возьми проверяемые поля из приложенного образца/blueprint, явно назови своё предположение "
+                              "и перейди к следующему пробелу. Отвечай кратко, это узкая чат-панель.]\n\n")
             # НАША память разговора: платформа не держит контекст, поэтому подаём агенту всю
             # стенограмму сессии + новое сообщение → один непрерывный чат на сессию.
             history_block = ""
@@ -8297,30 +8339,22 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"agent_id": CONFIG["agent_id"],
                        "input": surface_note + history_block + enriched,
                        "run_timeout": 180, "store": True}
-            res = api("/api/agent/run", payload)
-            text = ""
-            try:
-                for item in res.get("output", []):
-                    if item.get("type") == "message":
-                        for c in item.get("content", []):
-                            if c.get("type") == "output_text":
-                                text += c.get("text", "")
-            except Exception:
-                pass
-            if not text and res.get("status") != "completed":
+            res, text, _chat_attempts = _run_chat_agent(payload)
+            if not text:
                 # Сырой ответ платформы наружу не отдаём: человеку нужен ПОНЯТНЫЙ ответ
                 # и действие, а техническая расшифровка — отдельным полем для нас.
                 _h = _llm_error_human(res)
                 self._send({"status": "error",
                             "message": _h or "Помощник не ответил. Повторите вопрос — если повторится, "
                                              "скажите нам, что именно спрашивали.",
-                            "detail": _scrub(str(res)[:300])})
+                            "detail": _scrub(str(res)[:300]), "attempts": _chat_attempts})
                 return
             if text:                              # записываем обмен в стенограмму сессии (память чата)
                 _chat_add_exchange(sid, user_input, text)
             _ac1 = _ans_count()   # #17: сверка — если фактура была, а ответов не прибавилось, UI предложит «Перенести в конспект»
             self._send({"status": "success", "text": text, "response_id": res.get("id"),
-                        "answers_count": _ac1, "answers_saved": bool(_ac1 > _ac0)})
+                        "answers_count": _ac1, "answers_saved": bool(_ac1 > _ac0),
+                        "attempts": _chat_attempts})
         else:
             self._send({"status": "error", "message": "not found"}, 404)
 

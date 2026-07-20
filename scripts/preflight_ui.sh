@@ -62,6 +62,11 @@ python3 scripts/check_build_task_roles.py \
   && echo "   ✓ runtime-обвязка не блокирует конвейер данных" \
   || { echo "   ✗ watcher/autostart снова попал в data-DAG"; fail=1; }
 
+echo "→ устойчивость чата"
+python3 scripts/check_chat_resilience.py \
+  && echo "   ✓ временный пустой ответ повторяется один раз" \
+  || { echo "   ✗ чат снова падает на первом флапе"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re
