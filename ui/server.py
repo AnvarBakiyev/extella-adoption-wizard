@@ -3734,10 +3734,24 @@ def _agent_register(agent_id, name, source):
 
 
 def _agent_create_copy(name):
-    """Создать клиентского keyless-Qwen агента = копия базового Qwen (канон: платформенная Qwen 3.7)."""
-    base = api("/api/agent/get", {"agent_id": BASE_QWEN_AGENT})
-    if not isinstance(base, dict) or not base.get("model"):
-        return {"ok": False, "err": "не удалось прочитать базового Qwen-агента"}
+    """Создать клиентского keyless-Qwen агента = копия базового Qwen (канон: платформенная Qwen 3.7).
+
+    БАЗОВЫЙ АГЕНТ ЧИТАЕТСЯ ПО ЦЕПОЧКЕ, а не по одному жёсткому id. Прежний BASE_QWEN_AGENT —
+    личный агент Анвара, его НЕТ на аккаунте клиента → «не удалось прочитать базового Qwen-агента»
+    (Гульжан, 20.07). Тот же класс «работает у нас, молча нет у клиента», только для агента.
+    Порядок: платформенный дефолт alibaba (есть на каждом аккаунте) → config.agent_id клиента →
+    личный базовый Анвара. agent_extella_default НЕ берём — это платный Claude (канон)."""
+    base = None
+    for cand in ("agent_extella_alibaba_default", str(CONFIG.get("agent_id", "")), BASE_QWEN_AGENT):
+        if not cand or cand == "agent_extella_default":   # платный Claude — мимо
+            continue
+        g = api("/api/agent/get", {"agent_id": cand})
+        if isinstance(g, dict) and g.get("model") and g.get("provider") == "alibaba":
+            base = g
+            break
+    if not base:
+        return {"ok": False, "err": "не удалось прочитать ни одного платформенного Qwen-агента для копии — "
+                                    "обновите Extella (установщик прописывает Qwen в config); если не поможет, напишите нам"}
     cr = api("/api/agent/create", {
         "name": str(name)[:80] or "Агент клиента",
         "provider": base.get("provider"), "model": base.get("model"),
