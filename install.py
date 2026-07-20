@@ -17,6 +17,14 @@ HDR = {"X-Auth-Token": TOKEN, "Content-Type": "application/json",
 if not TOKEN:
     print("В config.json нет auth_token."); sys.exit(1)
 
+# QA-дельта: без переменной ставим полный пакет как раньше; с ней — только перечисленные
+# repo-relative файлы (experts/..., concepts/..., rules/...). UI копирует быстрый shell-обновлятор.
+DELTA_FILES = {x.strip().replace("\\", "/") for x in os.environ.get("EXTELLA_DELTA_FILES", "").split(",") if x.strip()}
+
+def selected(path):
+    rel = os.path.relpath(path, HERE).replace(os.sep, "/")
+    return not DELTA_FILES or rel in DELTA_FILES
+
 def api(path, payload, timeout=120):
     req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode("utf-8"), headers=HDR, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -34,6 +42,7 @@ def header(src):
 print("== Эксперты ==")
 ok = fail = 0
 for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
+    if not selected(f): continue
     name = os.path.basename(f)[:-3]
     src = open(f, encoding="utf-8").read()
     desc, kwargs = header(src)
@@ -58,6 +67,7 @@ except Exception:
 # ---- 2. ПРАВИЛА (best-effort) ----
 print("== Правила ==")
 for f in glob.glob(os.path.join(HERE, "rules", "*.md")):
+    if not selected(f): continue
     for blk in re.split(r"(?m)^##\s*rule_id:", open(f, encoding="utf-8").read()):
         blk = blk.strip()
         if not blk or blk.startswith("#"): continue
@@ -70,6 +80,7 @@ for f in glob.glob(os.path.join(HERE, "rules", "*.md")):
 # ---- 3. КОНЦЕПТЫ (best-effort; вектор создаётся при наличии api_key эмбеддинга) ----
 print("== Концепты ==")
 for f in glob.glob(os.path.join(HERE, "concepts", "*.md")):
+    if not selected(f): continue
     if os.path.basename(f).startswith("README"): continue
     body = "\n".join(l for l in open(f, encoding="utf-8").read().splitlines()
                      if not l.startswith("# concept_id:") and not l.startswith("# tag:")).strip()

@@ -67,6 +67,11 @@ python3 scripts/check_chat_resilience.py \
   && echo "   ✓ временный пустой ответ повторяется один раз" \
   || { echo "   ✗ чат снова падает на первом флапе"; fail=1; }
 
+echo "→ QA-дельта установки"
+python3 scripts/check_delta_install.py \
+  && echo "   ✓ неизменённые эксперты/концепты не переустанавливаются" \
+  || { echo "   ✗ delta-фильтр установки сломан"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re
