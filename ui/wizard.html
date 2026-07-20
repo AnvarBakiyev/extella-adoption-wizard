@@ -2621,7 +2621,16 @@ function render(){
   renderStepper();
   if(!S.sessionId) return;
   if(S.view==="interview"){ renderBrief(); renderFiles(); }
-  if(S.view==="blueprint"){ renderBlueprint(); renderLibraryPanel(); }
+  if(S.view==="blueprint"){
+    renderBlueprint();
+    // #2 (Гульжан 20.07): отраслевая библиотека + синтетический демо-прогон на шаге плана — лишний
+    // шум на основном пути (реальная проверка идёт на шаге «Стройка»). Код renderLibraryPanel/
+    // renderDemoRunner оставлен, но с плана не вызывается — панели держим пустыми.
+    var _lp=el("libraryPanel"); if(_lp) _lp.innerHTML="";
+    var _dr=el("demoRunner"); if(_dr){ _dr.style.display="none"; _dr.innerHTML=""; }
+    var _dp=el("demoProgress"); if(_dp) _dp.innerHTML="";
+    var _drs=el("demoResult"); if(_drs) _drs.innerHTML="";
+  }
   if(S.view==="spec") renderSpec();
   if(S.view==="test") renderTest();
   if(S.view==="launch") renderLaunch();
@@ -5390,18 +5399,30 @@ async function checkSheetLink(){
     : '<span style="color:#C57E33">'+esc(r.warning||'в листе нет заголовков — укажите ссылку на лист с данными')+'</span>';
 }
 // Рецепты площадок: как получить токен СЕЙЧАС (до Composio) + преднастройка полей
+// group: разносим по категориям — «Свой API» это общий путь под ЛЮБОЙ процесс, рекламные кабинеты
+// это узкая категория. Раньше всё шло одним списком, и на процессе закупок Google Ads/Яндекс
+// сбивали с толку («причём тут реклама?», Гульжан 20.07).
 var GEN_RECIPES = {
-  custom:{label:"Свой API (ключ/токен)", endpoint:"", auth:"bearer", token_url:"",
-    recipe:"Любой REST API с ключом или токеном. Вставьте ключ ниже."},
-  meta:{label:"Meta Ads (Facebook)", endpoint:"https://graph.facebook.com/v19.0/act_ВАШ_ID/insights?fields=campaign_name,spend,impressions,clicks&date_preset=yesterday", auth:"bearer", token_url:"",
+  custom:{label:"Свой API (ключ/токен) — подходит большинству", group:"Общее", endpoint:"", auth:"bearer", token_url:"",
+    recipe:"Любой REST API с ключом или токеном — CRM, учётная система, ваш сервис. Вставьте адрес и ключ ниже."},
+  meta:{label:"Meta Ads (Facebook)", group:"Рекламные кабинеты", endpoint:"https://graph.facebook.com/v19.0/act_ВАШ_ID/insights?fields=campaign_name,spend,impressions,clicks&date_preset=yesterday", auth:"bearer", token_url:"",
     recipe:"Meta Business Settings → «Системные пользователи» → создайте системного пользователя, дайте доступ к рекламному аккаунту, сгенерируйте токен со scope <b>ads_read</b>. Такой токен не истекает. Вставьте его ниже и укажите act_&lt;ваш ID&gt; в адресе."},
-  google_ads:{label:"Google Ads", endpoint:"https://googleads.googleapis.com/v16/customers/ВАШ_ID/googleAds:search", auth:"oauth_refresh", token_url:"https://oauth2.googleapis.com/token",
+  google_ads:{label:"Google Ads", group:"Рекламные кабинеты", endpoint:"https://googleads.googleapis.com/v16/customers/ВАШ_ID/googleAds:search", auth:"oauth_refresh", token_url:"https://oauth2.googleapis.com/token",
     recipe:"Один раз получите <b>refresh_token</b> через OAuth Playground (scope adwords) + <b>client_id/secret</b> из Google Cloud + <b>developer_token</b> из Google Ads API Center. Access-токен система обновит сама. developer_token допишите в описании."},
-  yandex:{label:"Яндекс Директ", endpoint:"https://api.direct.yandex.com/json/v5/reports", auth:"bearer", token_url:"",
+  yandex:{label:"Яндекс Директ", group:"Рекламные кабинеты", endpoint:"https://api.direct.yandex.com/json/v5/reports", auth:"bearer", token_url:"",
     recipe:"Получите OAuth-токен приложения в Яндекс OAuth (scope <b>direct:api</b>) — живёт долго. Вставьте токен ниже."},
-  vk:{label:"VK Реклама", endpoint:"https://ads.vk.com/api/v2/statistics/ads.json", auth:"bearer", token_url:"",
+  vk:{label:"VK Реклама", group:"Рекламные кабинеты", endpoint:"https://ads.vk.com/api/v2/statistics/ads.json", auth:"bearer", token_url:"",
     recipe:"В кабинете VK Ads: Настройки → доступ к API → создайте токен доступа. Вставьте его ниже."}
 };
+// Список опций С ГРУППАМИ (optgroup): «Общее» сверху, «Рекламные кабинеты» отдельным блоком.
+function _genRecipeOpts(){
+  var groups={};
+  Object.keys(GEN_RECIPES).forEach(function(k){
+    var g=GEN_RECIPES[k].group||"Прочее"; (groups[g]=groups[g]||[]).push(
+      '<option value="'+k+'">'+esc(GEN_RECIPES[k].label)+'</option>'); });
+  return ["Общее","Рекламные кабинеты","Прочее"].filter(function(g){return groups[g];})
+    .map(function(g){return '<optgroup label="'+g+'">'+groups[g].join('')+'</optgroup>';}).join('');
+}
 function genPreset(){
   var p=GEN_RECIPES[(el("genPreset")||{}).value]||GEN_RECIPES.custom;
   if(el("genUrl") && p.endpoint) el("genUrl").value=p.endpoint;
@@ -5420,7 +5441,7 @@ function genAuthToggle(){
 function genSource(i){
   var a = AUTOS[i]; if(!a) return;
   var st = 'class="sess-select" style="width:100%;max-width:none;margin-bottom:8px"';
-  var opts = Object.keys(GEN_RECIPES).map(function(k){return '<option value="'+k+'">'+esc(GEN_RECIPES[k].label)+'</option>';}).join('');
+  var opts = _genRecipeOpts();
   resetModInput();
   el("modTitle").textContent = "✨ Подключи любой источник";
   el("modHint").innerHTML = "Опишите источник — Extella сама соберёт подключение и покажет первые реальные строки перед сохранением. Ключевые/токен-API работают сразу; для рекламных кабинетов (OAuth) — по рецепту (разовый токен), система держит его свежим.";
