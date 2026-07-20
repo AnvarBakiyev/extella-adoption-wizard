@@ -46,7 +46,8 @@ def main():
     html = WIZARD.read_text(encoding="utf-8")
     assert 's.status==="error"&&s.detail' in html
     assert 's.status==="blocked"&&s.detail' in html
-    print("стройка: DAG отсечён, корневой сбой виден, downstream/orchestrator/audit заблокированы ✓")
+    assert "needs_agentic = len(sample_files) > 1 or not topology" in source
+    print("стройка: DAG распознан; сложный идёт целиком в Qwen, линейный сбой не маскируется ✓")
 
 
 if __name__ == "__main__":

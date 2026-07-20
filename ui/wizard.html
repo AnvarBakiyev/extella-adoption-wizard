@@ -3406,7 +3406,7 @@ function buildStageRow(s){
     <span style="display:inline-block;width:22px;color:${col}">${icon}</span>
     <b style="font-size:14px">${esc(s.title)}</b>
     ${s.reused?`<span class="badge ok" style="margin-left:6px">переиспользовано</span>`:""}
-    ${s.status==="warn"&&s.detail?`<div style="font-size:12.5px;color:#a9701a;padding:3px 0 0 22px">${esc(s.detail)}${s.runtime_setup?'':' — поправьте словами в кабинете процесса.'}</div>`:""}
+    ${s.status==="warn"&&s.detail?`<div style="font-size:12.5px;color:#a9701a;padding:3px 0 0 22px">${esc(s.detail)}${s.needs_review?' — поправьте словами в кабинете процесса.':''}</div>`:""}
     ${s.status==="error"&&s.detail?`<div style="font-size:12.5px;color:var(--bad);padding:3px 0 0 22px">${esc(s.detail)}</div>`:""}
     ${s.status==="blocked"&&s.detail?`<div style="font-size:12.5px;color:var(--silver);padding:3px 0 0 22px">${esc(s.detail)}</div>`:""}
     ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
@@ -3417,12 +3417,15 @@ function renderBuildProgress(p){
 }
 function renderBuildResult(lb){
   const aud = lb.audit||{}; const experts = lb.experts||[];
+  const agentic = lb.build_mode==="agentic";
+  const confidence = lb.acceptance&&Number(lb.acceptance.confidence||0);
   const vbadge = aud.verdict==="allow" ? `<span class="badge ok">проверка пройдена</span>`
     : aud.verdict==="escalate" ? `<span class="badge bad">требуется эскалация</span>`
     : `<span class="badge warn">пройдена с замечаниями</span>`;
   el("buildProgress").innerHTML = `
     <div class="card">
-      <div class="kicker">Процесс собран ${(lb.needs_review&&lb.needs_review.length)?"— есть шаги на доводку":"✓"}</div>
+      <div class="kicker">${agentic?'Задача решена и упакована':'Процесс собран'} ${(lb.needs_review&&lb.needs_review.length)?"— есть шаги на доводку":"✓"}</div>
+      ${agentic?`<div style="font-size:13.5px;margin-bottom:10px;padding:10px 12px;background:var(--gold-bg);border-radius:8px"><b>🧠 Агентная стройка:</b> Qwen получила полное ТЗ и все файлы, решила задачу целиком, запустила решение на образцах и только после приёмки упаковала его в эксперта.${confidence?` Уверенность приёмки: <b>${Math.round(confidence*100)}%</b>.`:''}</div>`:''}
       <div style="margin-bottom:8px">Построено компонентов: <b>${experts.length}</b> ${vbadge}</div>
       <div style="font-size:13px;color:var(--nav)">${experts.map(e=>`<code style="background:var(--cream);padding:1px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(e)}</code>`).join(" ")}</div>
       ${(lb.needs_review&&lb.needs_review.length)?`<div style="font-size:13px;margin-top:10px;padding:10px 12px;border:1px solid #e0b48a;border-radius:10px;background:rgba(224,168,94,.08)"><b>⚠ Требуют доводки (${lb.needs_review.length}):</b> собраны и запустились, но результат по смыслу сомнителен — проверьте и поправьте словами в кабинете.<ul class="plain" style="margin-top:6px">${lb.needs_review.map(r=>`<li><b>${esc(r.title||r.expert)}</b> — ${esc(r.why||'')}</li>`).join("")}</ul></div>`:""}

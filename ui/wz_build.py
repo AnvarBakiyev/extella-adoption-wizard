@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
+from wz_agentic import build_agentic_solution
 
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
@@ -535,6 +536,11 @@ BUILD_ERRORS = {
                      "Следующие шаги не запускались, оркестратор не создавался, проверка допуска не "
                      "проводилась. Причина упавшего шага указана ниже; это задача диагностики сборки, "
                      "а не повод менять описание процесса наугад."),
+    "agentic_acceptance_failed": ("Целостное решение не прошло приёмку на ваших данных",
+                                  "Qwen уже получила фактические ошибки и пыталась исправить решение. "
+                                  "Ни частичный эксперт, ни ложный результат не опубликованы. Если ниже "
+                                  "есть вопрос владельцу — ответьте на него в интервью и повторите стройку; "
+                                  "иначе это задача диагностики Строителя."),
     "no_components_built": ("Ни один компонент не собрался",
                             "Чаще всего причина одна — нет файла-образца или он не читается. "
                             "Проверьте, что файл открывается и в нём есть заголовки колонок."),
@@ -1244,6 +1250,10 @@ def _run_build(session_id, build_id):
     def stage(sid, title, status="running", **extra):
         for s in prog["stages"]:
             if s["id"] == sid:
+                # Один логический этап может выполняться повторно (agentic repair loop).
+                # Обновляем не только статус, но и подпись: иначе во второй/третьей
+                # попытке кабинет продолжал показывать пользователю «попытка 1/3».
+                s["title"] = title
                 s["status"] = status
                 s.update(extra)
                 save()
@@ -1309,7 +1319,8 @@ def _run_build(session_id, build_id):
             prog["error_struct"] = _build_error("no_sample_file")
             prog["error"] = prog["error_struct"]["message"]
             save(); _unlock(); return
-        if len(sample_files) > 1 or not topology["supported"]:
+        needs_agentic = len(sample_files) > 1 or not topology["supported"]
+        if needs_agentic:
             facts = []
             if len(sample_files) > 1:
                 facts.append("одновременных файлов: %d (%s)" %
@@ -1319,14 +1330,101 @@ def _run_build(session_id, build_id):
             if topology["joins"]:
                 facts.append("объединение веток в: " + ", ".join(topology["joins"]))
             detail = "; ".join(facts) or "план не является последовательной цепочкой"
-            stage("topology", "Схема пока не поддерживается Строителем", "error", detail=detail)
-            prog["status"] = "error"
-            prog["error_struct"] = _build_error(
-                "unsupported_topology", detail,
-                files=[p.name for p in sample_files],
-                branches=topology["branches"], joins=topology["joins"])
-            prog["error"] = prog["error_struct"]["message"]
-            save(); _unlock(); return
+            stage("topology", "Несколько входов или ветки — Qwen решит задачу целиком", "success",
+                  detail=detail, build_mode="agentic")
+
+            def _agentic_progress(sid, title, status="running", detail=""):
+                extra = {"build_mode": "agentic"}
+                if detail:
+                    extra["detail"] = str(detail)[:700]
+                stage(sid, title, status, **extra)
+
+            solution = build_agentic_solution(
+                session_id=session_id, build_id=build_id, namespace=ns,
+                sample_files=sample_files, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
+                llm=llm, progress=_agentic_progress, max_attempts=4)
+            if not solution.get("ok"):
+                detail = str(solution.get("detail") or "решение не прошло приёмку")
+                if solution.get("owner_question"):
+                    detail += " Вопрос владельцу: " + str(solution["owner_question"])
+                prog["status"] = "error"
+                prog["build_mode"] = "agentic"
+                prog["attempts"] = solution.get("attempts") or []
+                prog["error_struct"] = _build_error(
+                    "agentic_acceptance_failed", detail,
+                    owner_question=solution.get("owner_question") or "",
+                    attempts=len(solution.get("attempts") or []))
+                prog["error"] = prog["error_struct"]["message"]
+                save(); _unlock(); return
+
+            expert = solution["expert"]
+            stage("package", "Упаковываю доказанное решение в процесс Extella", "running",
+                  build_mode="agentic")
+            aud = _audit_experts([expert])
+            prog["audit"] = aud
+            prog["built_experts"] = [expert]
+            prog["orchestrator"] = expert
+            prog["slice_summary"] = solution.get("summary") or {}
+            prog["build_mode"] = "agentic"
+            prog["acceptance"] = solution.get("judge") or {}
+            prog["source_files"] = solution.get("source_files") or []
+            manifest = {
+                "manifest_version": 2,
+                "build_mode": "agentic",
+                "process": ns,
+                "orchestrator": expert,
+                "build_id": build_id,
+                "session_id": session_id,
+                "built_at": now(),
+                "task_package_sha256": solution.get("package_sha256"),
+                "input": {"kind": "file_bundle" if len(sample_files) > 1 else "file",
+                          "files": solution.get("source_files") or []},
+                "output": {"summary_keys": sorted((solution.get("summary") or {}).keys()),
+                           "reports": ["md", "xlsx"]},
+                "steps": [{"name": expert, "title": "Целостное решение Qwen", "mode": "agentic", "ok": True}],
+                "contracts": {"params": 1, "agentic": 1, "multi_input": int(len(sample_files) > 1)},
+                "acceptance": solution.get("judge") or {},
+            }
+            prog["manifest"] = manifest
+            stage("package", "Решение упаковано в исполняемого эксперта", "success", expert=expert,
+                  detail="сначала доказан результат, затем создан процесс", build_mode="agentic")
+            stage("audit", "Проверяю код и полномочия перед запуском", "success",
+                  verdict=aud["verdict"], issues=aud["issues"], build_mode="agentic")
+
+            # Новый режим использует того же кабинета/агента/историю запусков: наружный контракт build
+            # не меняется, но внутри один эксперт уже доказал всю задачу на пакете файлов.
+            sp = SESS_DIR / (session_id + ".json")
+            s = json.loads(sp.read_text(encoding="utf-8"))
+            s["stage"] = "built"
+            s.pop("building", None)
+            s.setdefault("builds", []).append({
+                "build_id": build_id, "at": now(), "build_mode": "agentic",
+                "experts": [expert], "components_human": ["Целостное решение Qwen"],
+                "audit": aud, "orchestrator": expert,
+                "slice_summary": solution.get("summary") or {},
+                "manifest": manifest, "acceptance": solution.get("judge") or {},
+                "source_file": solution.get("source_file"),
+                "source_files": solution.get("source_files") or [],
+                "agentic_contract": 1, "params_contract": 1,
+                "report_contract": 0, "adapter_contract": 0, "placement_contract": 0,
+            })
+            if not s.get("panel_manifest"):
+                try:
+                    _bpm = json.loads((SESS_DIR / (session_id + "_blueprint.json")).read_text(
+                        encoding="utf-8")).get("blueprint", {})
+                    _mani = gen_panel_manifest(_bpm.get("goal") or _bpm.get("summary") or "",
+                                               _bpm.get("stages") or [])
+                    if _mani:
+                        s["panel_manifest"] = dict(_mani, generated_at=now())
+                except Exception:
+                    pass
+            s["updated_at"] = now()
+            sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Публикуем built ПОСЛЕ записи сборки в сессию. Иначе UI/автотест успевает открыть
+            # кабинет между двумя write и ловит «процесс ещё не построен» при уже зелёном прогрессе.
+            prog["status"] = "built"
+            save()
+            return
         stage("topology", "Входные данные образуют последовательную цепочку", "success")
 
         # KNOWLEDGE-СТАДИЯ: из blueprint берём базу знаний (knowledge_pack) и какие стадии на неё опираются.

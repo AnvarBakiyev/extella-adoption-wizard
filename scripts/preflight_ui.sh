@@ -67,6 +67,16 @@ python3 scripts/check_build_graph_gates.py \
   && echo "   ✓ нелинейный DAG и частичная сборка не маскируются" \
   || { echo "   ✗ Строитель снова выдаёт частичную цепочку за готовую"; fail=1; }
 
+echo "→ агентная стройка сложных задач"
+python3 scripts/check_agentic_builder.py \
+  && echo "   ✓ Qwen получает полное ТЗ и все входы, результат проверяется до упаковки" \
+  || { echo "   ✗ агентный solve-run-repair контракт сломан"; fail=1; }
+
+echo "→ упаковка рабочего агента"
+python3 scripts/check_agentic_packaging.py \
+  && echo "   ✓ эксперт, концепты и правила образуют один пакет" \
+  || { echo "   ✗ агент снова развёртывается без мозга/правил"; fail=1; }
+
 echo "→ устойчивость чата"
 python3 scripts/check_chat_resilience.py \
   && echo "   ✓ временный пустой ответ повторяется один раз" \
