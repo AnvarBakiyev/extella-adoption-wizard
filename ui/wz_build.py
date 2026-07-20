@@ -198,6 +198,22 @@ def _stage_sanity(title, purpose, out_path, llm):
     return {"ok": True, "why": ""}
 
 
+def _human_title(t, ns):
+    """Человеческое имя шага для прогресса. План не всегда даёт title → раньше в прогрессе
+    светилось СЫРОЕ имя эксперта (eur_send_rfq_emails), клиенту непонятное (Гульжан, 20.07).
+    Берём по порядку: явный title → первая фраза purpose → очеловеченное имя эксперта."""
+    ttl = str(t.get("title") or "").strip()
+    if ttl and not re.fullmatch(r"[a-z0-9_]+", ttl):   # не техническое имя
+        return ttl[:72]
+    p = str(t.get("purpose") or "").strip()
+    if p:
+        first = re.split(r"[.;\n]", p)[0].strip()
+        if len(first) >= 4:
+            return (first[0].upper() + first[1:])[:72]
+    nm = re.sub(r"^" + re.escape(str(ns)) + r"_", "", str(t.get("expert_name") or "")).replace("_", " ").strip()
+    return (nm[0].upper() + nm[1:])[:72] if nm else "Шаг процесса"
+
+
 def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, llm):
     """Стройка СТАДИИ по контракту input_path->output_path. Keyless-путь: модель строит НАТИВНО
     (create-действием, исходник не в чат — уважает guard fine-tune), харнесс НЕЗАВИСИМО перечитывает
@@ -408,7 +424,7 @@ def _process_manifest(ns, orchestrator, data_tasks, built_ok, sample_file, slice
     steps = []
     for i, tk in enumerate(data_tasks or []):
         nm = tk.get("expert_name") or (ns + "_" + tk.get("id", "t%d" % (i + 1)))
-        steps.append({"name": nm, "title": tk.get("title") or nm,
+        steps.append({"name": nm, "title": _human_title(tk, ns),
                       "mode": "reuse" if str(tk.get("action", "build")).lower() == "reuse" else "built",
                       "ok": nm in (built_ok or [])})
     return {
@@ -1028,7 +1044,7 @@ def _run_build(session_id, build_id):
 
         for t in other_tasks:
             tid = t.get("id", "x")
-            stage("task_" + tid, "Вне конвейера данных: " + (t.get("title") or t.get("expert_name") or tid),
+            stage("task_" + tid, "Вне конвейера данных: " + _human_title(t, ns),
                   "success", skipped=True)
 
         # 2. Сборка МОСТОМ по единому контракту + вертикальный срез на реальном файле:
@@ -1038,7 +1054,7 @@ def _run_build(session_id, build_id):
         stage_doubts = []   # шаги, собранные структурно, но сомнительные по смыслу (требуют доводки)
         for idx, t in enumerate(data_tasks):
             tid = t.get("id", "t%d" % (idx + 1))
-            title = t.get("title") or t.get("expert_name") or tid
+            title = _human_title(t, ns)
             nm = t.get("expert_name") or (ns + "_" + tid)
             stage("task_" + tid, "Собираю и проверяю: " + title, "running")
             if not current_input:

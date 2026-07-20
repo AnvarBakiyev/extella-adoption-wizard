@@ -4438,9 +4438,16 @@ function _wzSourceBanner(a, i){
     var nm = (a.source&&a.source.kind) ? _srcName(a.source.kind) : 'входящие каналы';
     return '<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.35);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#237a44">✓ Источник данных подключён: <b>'+esc(nm)+'</b> — процесс тянет свежие данные сам.</div>';
   }
-  return '<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
-    '<div style="flex:1;min-width:220px;font-size:13px;color:#7a5b1a">⚠ <b>Данные загружаются вручную файлом.</b> Чтобы процесс работал сам 24/7 — подключите живой источник (своё API / CRM / рекламный кабинет).</div>'+
-    '<button class="btn gold sm" style="font-size:12.5px;white-space:nowrap" onclick="sourceProcess('+i+')">✨ Подключить источник</button></div>';
+  // #7 (Гульжан 20.07): раньше банер вёл только в «Подключить источник» (OAuth/refresh-токены —
+  // «круги мучений»), а для ТЕСТА подключать ничего не нужно. Разводим два пути явно: тест на
+  // приложенном файле (сейчас, без подключения) и живой источник (для автономной работы 24/7).
+  return '<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:10px;padding:12px 14px;margin-bottom:14px">'+
+    '<div style="font-size:13px;color:#7a5b1a;margin-bottom:8px">Данные пока берутся из <b>приложенного файла</b>.</div>'+
+    '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-soft)">'+
+      '<div style="flex:1;min-width:200px"><b>Чтобы попробовать сейчас</b> — подключать ничего не нужно: нажмите «Сделать первый прогон» ниже, процесс отработает на файле.</div>'+
+      '<div style="flex:1;min-width:200px"><b>Чтобы работал сам 24/7</b> — подключите живой источник (своё API / CRM / рекламный кабинет).<br>'+
+        '<button class="btn ghost sm" style="font-size:12px;margin-top:6px;white-space:nowrap" onclick="sourceProcess('+i+')">✨ Подключить источник</button></div>'+
+    '</div></div>';
 }
 // ── ЖАНРЫ ПРОЦЕССОВ ───────────────────────────────────────────────────────────
 // Жанр (архетип) определяется ещё при проектировании. До сих пор кабина его игнорировала:
