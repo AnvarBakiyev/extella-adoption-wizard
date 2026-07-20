@@ -70,10 +70,7 @@ def sample_preflight(session_id):
 
 def _inspect_sample(session_id):
     """Реальные колонки загруженного файла-образца для грануднинга кодогена."""
-    fdir = SESS_DIR / (session_id + "_files")
-    if not fdir.is_dir():
-        return "", None
-    files = [p for p in sorted(fdir.iterdir()) if p.is_file()]
+    files = _sample_files(session_id)
     if not files:
         return "", None
     f = files[0]
@@ -106,6 +103,19 @@ def _inspect_sample(session_id):
     except Exception:
         return "", str(f)
     return "", str(f)
+
+
+def _sample_files(session_id):
+    """Все приложенные образцы в стабильном порядке.
+
+    Старый Строитель молча брал files[0]. Для процесса, которому одновременно нужны Excel и PDF,
+    это превращало настоящий DAG в фиктивную линейную цепочку и давало случайный результат в
+    зависимости от имени файла. Список нужен гейту топологии: неоднозначный вход нельзя скрывать.
+    """
+    fdir = SESS_DIR / (session_id + "_files")
+    if not fdir.is_dir():
+        return []
+    return [p for p in sorted(fdir.iterdir()) if p.is_file()]
 
 
 def _entity_columns(session_id):
@@ -317,6 +327,33 @@ def _is_pipeline_data_task(t):
     return not any(m in name for m in name_markers) and not any(m in text for m in text_markers)
 
 
+def _pipeline_topology(tasks):
+    """Проверяет, можно ли честно исполнить план нынешним линейным оркестратором.
+
+    Планировщик уже возвращает depends_on, но исторический исполнитель их игнорировал и всегда
+    делал t1 -> t2 -> t3. Явное ветвление или объединение веток поэтому нельзя отправлять в
+    кодоген: компоненты могут по одному позеленеть, но целого процесса из них не получится.
+    """
+    ids = [str(t.get("id") or "t%d" % (i + 1)) for i, t in enumerate(tasks or [])]
+    known = set(ids)
+    deps = {}
+    children = {tid: [] for tid in ids}
+    for i, t in enumerate(tasks or []):
+        tid = ids[i]
+        ds = [str(d) for d in (t.get("depends_on") or []) if str(d) in known and str(d) != tid]
+        deps[tid] = list(dict.fromkeys(ds))
+        for dep in deps[tid]:
+            children.setdefault(dep, []).append(tid)
+    joins = [tid for tid, ds in deps.items() if len(ds) > 1]
+    branches = [tid for tid, ch in children.items() if len(ch) > 1]
+    return {
+        "supported": not joins and not branches,
+        "joins": joins,
+        "branches": branches,
+        "dependencies": deps,
+    }
+
+
 def _build_one(expert_name, task, schema_hint, is_first, is_last, accept_input, llm):
     """Стройка СТАДИИ по контракту input_path->output_path. Keyless-путь: модель строит НАТИВНО
     (create-действием, исходник не в чат — уважает guard fine-tune), харнесс НЕЗАВИСИМО перечитывает
@@ -488,8 +525,16 @@ BUILD_ERRORS = {
                     "Уточните задачу словами в описании процесса: чем конкретнее цель и что на входе, "
                     "тем точнее план. Затем повторите стройку."),
     "plan_not_saved": ("План стройки не сохранился",
-                       "Похоже, платформа не приняла запись. Повторите стройку через минуту; "
-                       "если повторится — это вопрос к платформе, а не к описанию процесса."),
+                        "Похоже, платформа не приняла запись. Повторите стройку через минуту; "
+                        "если повторится — это вопрос к платформе, а не к описанию процесса."),
+    "unsupported_topology": ("Этот процесс требует нескольких входов или параллельных веток",
+                             "Ничего переформулировать и повторно запускать не нужно. Это ограничение "
+                             "текущего Строителя: он умеет проверять только один последовательный поток. "
+                             "Кейс нужно передать разработчикам как задачу поддержки ветвления."),
+    "stage_failed": ("Один из шагов не прошёл сборку и проверку",
+                     "Следующие шаги не запускались, оркестратор не создавался, проверка допуска не "
+                     "проводилась. Причина упавшего шага указана ниже; это задача диагностики сборки, "
+                     "а не повод менять описание процесса наугад."),
     "no_components_built": ("Ни один компонент не собрался",
                             "Чаще всего причина одна — нет файла-образца или он не читается. "
                             "Проверьте, что файл открывается и в нём есть заголовки колонок."),
@@ -1248,6 +1293,41 @@ def _run_build(session_id, build_id):
         stage("plan", "Составляю план стройки", "success", tasks_count=len(tasks))
 
         schema_hint, sample_file = _inspect_sample(session_id)
+        sample_files = _sample_files(session_id)
+
+        # Движок исполнения ниже — строго линейный input_path -> output_path. До кодогена проверяем
+        # две вещи, которые раньше молча игнорировались: несколько одновременных файлов и настоящий
+        # DAG в depends_on. Иначе первый файл выбирался по алфавиту, ветки насильно склеивались,
+        # частичный оркестратор получал allow (кейс сверки Excel+PDF у Гульжан, 20.07).
+        data_tasks = [t for t in tasks if _is_pipeline_data_task(t)]
+        other_tasks = [t for t in tasks if not _is_pipeline_data_task(t)]
+        topology = _pipeline_topology(data_tasks)
+        if not sample_files:
+            stage("topology", "Проверяю входные данные", "error",
+                  detail="не приложен файл-образец")
+            prog["status"] = "error"
+            prog["error_struct"] = _build_error("no_sample_file")
+            prog["error"] = prog["error_struct"]["message"]
+            save(); _unlock(); return
+        if len(sample_files) > 1 or not topology["supported"]:
+            facts = []
+            if len(sample_files) > 1:
+                facts.append("одновременных файлов: %d (%s)" %
+                             (len(sample_files), ", ".join(p.name for p in sample_files[:5])))
+            if topology["branches"]:
+                facts.append("разветвление после: " + ", ".join(topology["branches"]))
+            if topology["joins"]:
+                facts.append("объединение веток в: " + ", ".join(topology["joins"]))
+            detail = "; ".join(facts) or "план не является последовательной цепочкой"
+            stage("topology", "Схема пока не поддерживается Строителем", "error", detail=detail)
+            prog["status"] = "error"
+            prog["error_struct"] = _build_error(
+                "unsupported_topology", detail,
+                files=[p.name for p in sample_files],
+                branches=topology["branches"], joins=topology["joins"])
+            prog["error"] = prog["error_struct"]["message"]
+            save(); _unlock(); return
+        stage("topology", "Входные данные образуют последовательную цепочку", "success")
 
         # KNOWLEDGE-СТАДИЯ: из blueprint берём базу знаний (knowledge_pack) и какие стадии на неё опираются.
         # Такие стадии НЕ кодогеним — реюзаем готовый kp_ask (тонкая обёртка). Базу авто-ставим на target прогона.
@@ -1282,9 +1362,6 @@ def _run_build(session_id, build_id):
 
         # ДАТА-СТАДИИ конвейера (парсинг/анализ/отчёт) — строим ВСЕ заново под единый контракт
         # (реюз старых экспертов не по контракту рвёт цепочку). Не-дата задачи (расписание) — вне среза.
-        data_tasks = [t for t in tasks if _is_pipeline_data_task(t)]
-        other_tasks = [t for t in tasks if not _is_pipeline_data_task(t)]
-
         for t in other_tasks:
             tid = t.get("id", "x")
             stage("task_" + tid, "После сборки: " + _human_title(t, ns), "warn", skipped=True,
@@ -1296,6 +1373,8 @@ def _run_build(session_id, build_id):
         current_input = sample_file
         slice_ok = bool(sample_file)
         stage_doubts = []   # шаги, собранные структурно, но сомнительные по смыслу (требуют доводки)
+        failed_stage = None
+        failed_index = None
         _entity_cols, _all_cols = _entity_columns(session_id)   # колонки для веб-поиска (детерминированно)
         _skip_ids = set()   # веб-поиск, которому не по чему искать — исключаем из каркаса ПРАВИЛЬНО, а не строим мусор
         for idx, t in enumerate(data_tasks):
@@ -1316,10 +1395,14 @@ def _run_build(session_id, build_id):
                 continue
             stage("task_" + tid, "Собираю и проверяю: " + title, "running")
             if not current_input:
+                _no_input = _build_error("no_sample_file",
+                                         "шаг «" + str(title) + "» остался без входных данных")
                 stage("task_" + tid, "Ошибка: " + title, "error", expert=nm,
-                      detail="нет входа для стадии (не приложен файл-образец?)",
-                      **_build_error("no_sample_file", "шаг «" + str(title) + "» остался без входных данных"))
+                      detail=_no_input["detail"], code=_no_input["code"], remedy=_no_input["remedy"])
                 slice_ok = False
+                failed_index = idx
+                failed_stage = {"id": tid, "expert": nm, "title": title,
+                                "detail": "нет входа для стадии"}
                 break
             if _is_web:
                 # QWEN-ВЕДОМЫЙ ШАГ: детерминированный шаблон, внутри — платформенная Qwen (web_search).
@@ -1382,7 +1465,35 @@ def _run_build(session_id, build_id):
                 stage("task_" + tid, ("Собрано+прогнано: " if ok else "Ошибка: ") + title,
                       "success" if ok else "error", expert=nm, detail=str(detail)[:200])
             if not ok:
+                failed_index = idx
+                failed_stage = {"id": tid, "expert": nm, "title": title,
+                                "detail": str(detail)[:300]}
                 break
+
+        # Первый реальный провал — корневая причина. Всё ниже по цепочке не «не собрано», а вообще
+        # не запускалось. Частичный оркестратор и audit=allow здесь были ложным сигналом готовности.
+        if failed_stage:
+            downstream = []
+            for j, t in enumerate(data_tasks[(failed_index or 0) + 1:], start=(failed_index or 0) + 1):
+                tid = t.get("id", "t%d" % (j + 1))
+                title = _human_title(t, ns)
+                downstream.append(title)
+                stage("task_" + tid, "Не запускался: " + title, "blocked",
+                      detail="предыдущий шаг «%s» не прошёл проверку" % failed_stage["title"])
+            stage("orchestrator", "Оркестратор не собирался", "blocked",
+                  detail="сначала должен успешно пройти каждый шаг данных")
+            stage("audit", "Проверка допуска не проводилась", "blocked",
+                  detail="неполный процесс нельзя допускать к запуску")
+            prog["audit"] = {"verdict": "not_run", "issues": ["процесс собран не полностью"]}
+            prog["built_experts"] = [n for n in built_names if n]
+            prog["failed_stage"] = failed_stage
+            prog["status"] = "error"
+            prog["error_struct"] = _build_error(
+                "stage_failed",
+                "шаг «%s»: %s" % (failed_stage["title"], failed_stage["detail"]),
+                failed_stage=failed_stage, downstream=downstream)
+            prog["error"] = prog["error_struct"]["message"]
+            save(); _unlock(); return
 
         # итог среза: последний output = сводка
         slice_summary = None

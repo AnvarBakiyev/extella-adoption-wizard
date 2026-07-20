@@ -62,6 +62,11 @@ python3 scripts/check_build_task_roles.py \
   && echo "   ✓ runtime-обвязка не блокирует конвейер данных" \
   || { echo "   ✗ watcher/autostart снова попал в data-DAG"; fail=1; }
 
+echo "→ гейты графа стройки"
+python3 scripts/check_build_graph_gates.py \
+  && echo "   ✓ нелинейный DAG и частичная сборка не маскируются" \
+  || { echo "   ✗ Строитель снова выдаёт частичную цепочку за готовую"; fail=1; }
+
 echo "→ устойчивость чата"
 python3 scripts/check_chat_resilience.py \
   && echo "   ✓ временный пустой ответ повторяется один раз" \
