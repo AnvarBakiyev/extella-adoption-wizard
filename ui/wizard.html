@@ -3355,7 +3355,7 @@ function renderTest(){
     <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running)?"disabled":""}>${running?"Идёт сборка…":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
     ${noFiles&&bp?`<button class="btn ghost" style="margin-left:8px" onclick="genSample()">⚗️ Сгенерировать пример данных</button>`:""}
     <span class="statusline" id="stBuild" style="margin-left:10px"></span>
-    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, построит компоненты и проверит их. Это займёт несколько минут — можно не ждать у экрана, прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
+    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, создаст чернового эксперта, запустит его на образцах и опубликует только после приёмки. Одна попытка может занять до 15 минут, всего возможно четыре; экран можно закрыть — прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
   if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
   else if(running){ pollBuild(); }
   else el("buildProgress").innerHTML = "";
@@ -3424,14 +3424,30 @@ function buildStageRow(s){
     <span style="display:inline-block;width:22px;color:${col}">${icon}</span>
     <b style="font-size:14px">${esc(s.title)}</b>
     ${s.reused?`<span class="badge ok" style="margin-left:6px">переиспользовано</span>`:""}
-    ${s.status==="warn"&&s.detail?`<div style="font-size:12.5px;color:#a9701a;padding:3px 0 0 22px">${esc(s.detail)}${s.needs_review?' — поправьте словами в кабинете процесса.':''}</div>`:""}
-    ${s.status==="error"&&s.detail?`<div style="font-size:12.5px;color:var(--bad);padding:3px 0 0 22px">${esc(s.detail)}</div>`:""}
-    ${s.status==="blocked"&&s.detail?`<div style="font-size:12.5px;color:var(--silver);padding:3px 0 0 22px">${esc(s.detail)}</div>`:""}
+    ${s.detail?`<div style="font-size:12.5px;color:${s.status==='error'?'var(--bad)':s.status==='warn'?'#a9701a':'var(--silver)'};padding:3px 0 0 22px">${esc(s.detail)}${s.status==='warn'&&s.needs_review?' — поправьте словами в кабинете процесса.':''}</div>`:""}
     ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
   </div>`;
 }
+function buildActivityHTML(p){
+  const stamp=Date.parse(p.updated_at||"");
+  if(!Number.isFinite(stamp)) return "";
+  const sec=Math.max(0,Math.floor((Date.now()-stamp)/1000));
+  const age=sec<60?`${sec} сек назад`:sec<3600?`${Math.floor(sec/60)} мин назад`:`${Math.floor(sec/3600)} ч ${Math.floor((sec%3600)/60)} мин назад`;
+  const delayed=p.status==="running"&&sec>=900;
+  return `<div style="font-size:12.5px;margin:0 0 10px;padding:9px 11px;border-radius:8px;background:${delayed?'rgba(181,76,57,.08)':'var(--cream)'};color:${delayed?'var(--bad)':'var(--ink-soft)'}">
+    <b>Последняя активность:</b> ${age}. ${delayed?'Ответ задержался дольше обычного — сборка могла зависнуть.':'Прямые вызовы Qwen не отображаются в Listener и могут не создавать видимый чат.'}
+  </div>`;
+}
+function buildEventHistoryHTML(p){
+  const events=(p.agentic_events||[]).slice(-12);
+  if(!events.length) return "";
+  const icon=s=>s==="success"?"✓":s==="warn"?"⚠":s==="error"?"✕":"…";
+  return `<details open style="margin-top:12px"><summary style="cursor:pointer;font-size:13px;font-weight:700">История действий (${(p.agentic_events||[]).length})</summary>
+    <div style="margin-top:6px">${events.map(e=>{const t=String(e.at||"").slice(11,19);return `<div style="font-size:12.5px;padding:5px 0;border-top:1px dashed var(--cream-dark)"><span style="display:inline-block;width:20px">${icon(e.status)}</span><span style="color:var(--silver);margin-right:7px">${esc(t)}</span>${esc(e.title||"")}${e.detail?`<div style="color:var(--silver);padding:2px 0 0 20px">${esc(e.detail)}</div>`:""}</div>`;}).join("")}</div>
+  </details>`;
+}
 function renderBuildProgress(p){
-  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${(p.stages||[]).map(buildStageRow).join("")}</div>`;
+  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildEventHistoryHTML(p)}</div>`;
 }
 function renderBuildResult(lb){
   const aud = lb.audit||{}; const experts = lb.experts||[];

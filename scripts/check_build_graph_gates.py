@@ -44,8 +44,9 @@ def main():
     assert failure_gate < orchestrator
     assert '"verdict": "not_run"' in source
     html = WIZARD.read_text(encoding="utf-8")
-    assert 's.status==="error"&&s.detail' in html
-    assert 's.status==="blocked"&&s.detail' in html
+    # Деталь показывается для любого статуса; error при этом остаётся визуально красным.
+    assert 's.detail?`<div' in html
+    assert "s.status==='error'?'var(--bad)'" in html
     assert "needs_agentic = len(sample_files) > 1 or not topology" in source
     print("стройка: DAG распознан; сложный идёт целиком в Qwen, линейный сбой не маскируется ✓")
 

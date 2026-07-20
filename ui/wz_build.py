@@ -1226,7 +1226,8 @@ def _run_build(session_id, build_id):
     """Фоновая стройка процесса: план -> сборка задач -> аудит. Прогресс в build_progress.json."""
     bdir = RUNS_DIR / build_id
     bdir.mkdir(parents=True, exist_ok=True)
-    prog = {"build_id": build_id, "session_id": session_id, "status": "running", "stages": []}
+    prog = {"build_id": build_id, "session_id": session_id, "status": "running", "stages": [],
+            "agentic_events": []}
 
     def now():
         return datetime.now(timezone.utc).isoformat()
@@ -1248,6 +1249,7 @@ def _run_build(session_id, build_id):
             pass
 
     def stage(sid, title, status="running", **extra):
+        stamp = now()
         for s in prog["stages"]:
             if s["id"] == sid:
                 # Один логический этап может выполняться повторно (agentic repair loop).
@@ -1255,10 +1257,12 @@ def _run_build(session_id, build_id):
                 # попытке кабинет продолжал показывать пользователю «попытка 1/3».
                 s["title"] = title
                 s["status"] = status
+                s["updated_at"] = stamp
                 s.update(extra)
                 save()
                 return
-        prog["stages"].append({"id": sid, "title": title, "status": status, **extra})
+        prog["stages"].append({"id": sid, "title": title, "status": status,
+                               "updated_at": stamp, **extra})
         save()
 
     # Сессия помнит Qwen, которого выбрал и проверил сам пользователь. Он приоритетнее статического
@@ -1340,6 +1344,11 @@ def _run_build(session_id, build_id):
                 extra = {"build_mode": "agentic"}
                 if detail:
                     extra["detail"] = str(detail)[:700]
+                event = {"at": now(), "id": sid, "title": str(title)[:300], "status": status}
+                if detail:
+                    event["detail"] = str(detail)[:700]
+                prog.setdefault("agentic_events", []).append(event)
+                prog["agentic_events"] = prog["agentic_events"][-60:]
                 stage(sid, title, status, **extra)
 
             solution = build_agentic_solution(

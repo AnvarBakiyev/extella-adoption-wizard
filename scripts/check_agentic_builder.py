@@ -150,6 +150,9 @@ def main():
         assert promotions and promotions[0][1] == "pc_run_process" and "__draft_" in promotions[0][0]
         assert deletions and deletions[0][0] == promotions[0][0]
         assert any(event[0] == "agentic_accept" and event[2] == "success" for event in events)
+        assert any("Создаю чернового эксперта" in event[1] for event in events)
+        assert any("Запускаю чернового эксперта" in event[1] for event in events)
+        assert any("Постоянный эксперт опубликован" in event[1] for event in events)
 
         # Красная стройка удаляет только уникальный draft и ни разу не публикует stable-эксперта.
         runs[:] = [bad]
@@ -165,8 +168,12 @@ def main():
     assert "build_agentic_solution(" in source
     assert "max_attempts=4" in source
     assert source.index("build_agentic_solution(") < source.index("# KNOWLEDGE-СТАДИЯ")
+    assert '"agentic_events": []' in source and 'event = {"at": now()' in source
+    assert '"updated_at": stamp' in source
     html = WIZARD.read_text(encoding="utf-8")
     assert "Агентная стройка:" in html
+    assert "Последняя активность:" in html and "История действий" in html
+    assert "Прямые вызовы Qwen не отображаются в Listener" in html
     server = SERVER.read_text(encoding="utf-8")
     assert 'lb.get("agentic_contract"' in server
     assert '_fp2["output_dir"] = _agentic_output_dir' in server

@@ -720,20 +720,20 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
     source_file = str(Path(sample_files[0]).parent if len(sample_files) > 1 else Path(sample_files[0]))
     attempts, feedback = [], ""
     for attempt in range(1, max(1, int(max_attempts)) + 1):
-        progress("agentic_reason", "Qwen решает задачу целиком · попытка %d/%d" % (attempt, max_attempts),
-                 "running", "не дроблю процесс до рабочего результата")
+        progress("agentic_reason", "Создаю чернового эксперта · попытка %d/%d" % (attempt, max_attempts),
+                 "running", "Qwen пишет исполняемый код; постоянная версия появится только после проверки")
         built = _create_or_update(draft_name, package, feedback, llm)
         if not built.get("ok"):
             rec = {"attempt": attempt, "phase": "build", "issues": [built.get("why") or "эксперт не создан"]}
             attempts.append(rec)
             feedback = rec
-            progress("agentic_reason", "Qwen не сохранила рабочее решение · исправляю", "warn",
+            progress("agentic_reason", "Черновой эксперт не создан · готовлю повтор", "warn",
                      _repair_context(feedback, package))
             continue
-        progress("agentic_reason", "Целостный эксперт создан", "success", draft_name)
+        progress("agentic_reason", "Черновой эксперт создан", "success", draft_name)
         outdir = bdir / ("solution_attempt_%d" % attempt)
         outdir.mkdir(parents=True, exist_ok=True)
-        progress("agentic_run", "Запускаю решение на всех реальных образцах", "running",
+        progress("agentic_run", "Запускаю чернового эксперта на всех реальных образцах", "running",
                  ", ".join(Path(p).name for p in sample_files))
         params = {"source_file": source_file, "output_dir": str(outdir),
                   "api_token": CONFIG.get("auth_token", ""), "api_base": BASE,
@@ -742,26 +742,28 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         result = run_expert(draft_name, params, wait=900, glob=True)
         validation = validate_result(result, sample_files)
         if validation["ok"]:
-            progress("agentic_run", "Решение отработало на всех образцах", "success",
+            progress("agentic_run", "Черновой эксперт обработал все образцы", "success",
                      "файлов: %d · отчётов: %d" % (len(sample_files), len(validation.get("artifacts") or [])))
-            progress("agentic_accept", "Проверяю бизнес-результат по ТЗ", "running", "")
+            progress("agentic_accept", "Проверяю результат чернового эксперта по ТЗ", "running", "")
             judge = judge_result(package, result, validation)
         else:
             judge = {"verdict": "fail", "confidence": 1.0, "issues": validation["issues"],
                      "owner_question": ""}
-            progress("agentic_run", "Реальный прогон не прошёл · возвращаю ошибку Qwen", "warn",
+            progress("agentic_run", "Прогон чернового эксперта не прошёл · исправляю", "warn",
                      "; ".join(validation["issues"])[:500])
         rec = {"attempt": attempt, "phase": "accept", "code_sha256": built.get("code_sha256"),
                "validation": validation, "judge": judge, "result": _compact(result)}
         attempts.append(rec)
         if validation["ok"] and judge.get("verdict") == "pass" and judge.get("confidence", 0) >= 0.7:
+            progress("agentic_publish", "Публикую постоянного эксперта", "running", expert_name)
             promoted = _promote_expert(draft_name, expert_name, package)
             if not promoted.get("ok"):
                 feedback = {"phase": "publish", "issues": [promoted.get("why") or "ошибка публикации"]}
-                progress("agentic_accept", "Принятое решение не опубликовалось · повторяю", "warn",
+                progress("agentic_publish", "Постоянный эксперт не опубликовался · повторяю", "warn",
                          promoted.get("why") or "ошибка публикации")
                 continue
             _delete_draft(draft_name, llm.get("agent_id") or qwen_agent())
+            progress("agentic_publish", "Постоянный эксперт опубликован", "success", expert_name)
             progress("agentic_accept", "Бизнес-результат подтверждён", "success",
                      "уверенность приёмки: %d%%" % round(judge.get("confidence", 0) * 100))
             evidence = {"contract_version": 1, "built_at": datetime.now(timezone.utc).isoformat(),
@@ -775,7 +777,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                     "validation": validation, "judge": judge, "attempts": attempts,
                     "package_sha256": package.get("package_sha256"), "source_files": [Path(p).name for p in sample_files]}
         feedback = _repair_feedback(result, validation, judge)
-        progress("agentic_accept", "Приёмка нашла несоответствия · Qwen исправляет", "warn",
+        progress("agentic_accept", "Проверка нашла несоответствия · обновляю чернового эксперта", "warn",
                  "; ".join(judge.get("issues") or validation["issues"])[:500])
         time.sleep(min(2 * attempt, 5))
     last = attempts[-1] if attempts else {}
