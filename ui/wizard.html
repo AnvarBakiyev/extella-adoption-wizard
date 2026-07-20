@@ -3566,8 +3566,12 @@ function _reportBriefOpts(at){
 // «скачать как есть» (force). Так клиент не получает молча 0-байт/повреждённый файл как «готовый отчёт».
 async function dlReport(encPath){
   var raw; try{ raw = decodeURIComponent(encPath); }catch(e){ raw = encPath; }
+  // sid открытого кабинета → сервер сможет достать отчёт из общего стора, если локального файла нет
+  // (сформирован на другом устройстве / вычищен из /tmp).
+  var sid=""; try{ if(typeof _wzCabI!=="undefined" && _wzCabI>=0 && typeof AUTOS!=="undefined" && AUTOS[_wzCabI]) sid=AUTOS[_wzCabI].session_id||""; }catch(e){}
+  var q = "path="+encPath + (sid?("&sid="+encodeURIComponent(sid)):"");
   try{
-    const r = await fetch("/x/download?path="+encPath);
+    const r = await fetch("/x/download?"+q);
     if(r.ok){
       const blob = await r.blob(), url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href=url; a.download=(raw.split('/').pop()||'report'); document.body.appendChild(a); a.click(); a.remove();
@@ -3576,10 +3580,10 @@ async function dlReport(encPath){
     const j = await r.json().catch(()=>({}));
     if(r.status===422 && j.code==="artifact_corrupt"){
       ask("⚠ Отчёт повреждён", (j.reason||"файл битый")+".\n\nЛучше переиграть прогон. Скачать файл как есть (для отладки)?","",()=>{
-        window.open("/x/download?path="+encPath+"&force=1","_blank");
+        window.open("/x/download?"+q+"&force=1","_blank");
       });
     } else toast(j.message||"Файл недоступен","err");
-  }catch(e){ window.open("/x/download?path="+encPath,"_blank"); }
+  }catch(e){ window.open("/x/download?"+q,"_blank"); }
 }
 // «Открыть отчёт» с финиш-экрана: сохранённый digest последнего прогона (тот же, что в кабинете),
 // но прямо здесь — не заходя в кабинет
