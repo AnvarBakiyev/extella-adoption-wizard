@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.04"
+EXPECTED_VERSION="5.05"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 PY="$(command -v python3.12 || command -v python3 || true)"
@@ -36,7 +36,7 @@ if ! "$PY" "$SRC/scripts/check_builds_busy.py"; then
 fi
 
 echo "→ Проверяю скачанную дельту ${SHA:0:7}"
-"$PY" -m py_compile "$SRC/ui/server.py" "$SRC/ui/wz_agentic.py" "$SRC/ui/wz_build.py"
+"$PY" -m py_compile "$SRC"/ui/*.py
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
 # падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
 # повторяем проверку лишь когда бинарник реально запускается.
@@ -55,14 +55,14 @@ fi
 
 BACKUP="$HOME/extella_wizard/backups/qa-${EXPECTED_VERSION}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP" "$APP_DIR" "$CAT_DIR"
-for name in server.py wz_agentic.py wz_build.py wizard.html; do
+for name in server.py wz_agentic.py wz_build.py wz_llm.py wz_platform.py wizard.html; do
   [ ! -f "$APP_DIR/$name" ] || cp "$APP_DIR/$name" "$BACKUP/$name"
   cp "$SRC/ui/$name" "$APP_DIR/$name"
 done
 [ ! -f "$CAT_DIR/catalog.json" ] || cp "$CAT_DIR/catalog.json" "$BACKUP/catalog.json"
 cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
-echo "  ✓ четыре файла и каталог возможностей обновлены; backup: $BACKUP"
+echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
 echo "  ✓ эксперты, концепты и правила не переустанавливались"
 
 echo "→ Перезапускаю только мост Wizard"

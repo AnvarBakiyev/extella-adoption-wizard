@@ -41,6 +41,14 @@ def qwen_agent():
     return ch[0] if ch else CONFIG.get("agent_id", "")
 
 
+def local_target():
+    """Target id Listener'а на ЭТОМ устройстве; нужен для операций с локальными файлами."""
+    try:
+        return (Path.home() / ".extella" / "device.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def _scrub(s):
     """Секреты не наружу (чат/лог/UI): вырезаем auth_token из любых сообщений (canon: scrub)."""
     try:

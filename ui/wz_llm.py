@@ -80,7 +80,7 @@ def _llm_backend_down(res):
     return any(k in m for k in ("llm empty output", "endpoint", "ngrok", "offline", "err_ngrok", "platform llm"))
 
 
-def run_llm_expert(expert_name, params, wait=660, agents=None):
+def run_llm_expert(expert_name, params, wait=660, agents=None, target=None):
     """LLM-эксперт с ретраем и ФОЛБЭКОМ по цепочке Qwen-агентов (config.llm_agents): основной моргнул →
     следующий. Делает keyless-путь устойчивым к падению бэкенда одного агента. Возвращает первый НЕ-LLM-ошибочный
     результат либо последнюю ошибку. agents — явная цепочка (напр. design-агент первым), иначе qwen_agents()."""
@@ -96,7 +96,7 @@ def run_llm_expert(expert_name, params, wait=660, agents=None):
         p = dict(params)
         p["agent_id"] = aid
         for attempt in range(2):   # флап обычно отпускает за секунды → короткий ретрай
-            r = run_expert(expert_name, p, wait=wait, glob=True)
+            r = run_expert(expert_name, p, wait=wait, glob=True, target=target)
             if not _llm_backend_down(r):
                 return r
             last = r
