@@ -115,6 +115,7 @@ def main():
         def build_solution(*_args, **kwargs):
             step = kwargs["step_contract"]
             step_id = str(step["id"])
+            assert kwargs["max_total_attempts"] == 4, kwargs["max_total_attempts"]
             calls.append((step_id, int(step["version"])))
             if step_id == "transform" and fail_transform["value"]:
                 fail_transform["value"] = False
@@ -165,6 +166,10 @@ def main():
         assert calls == [("transform", 2), ("report", 1)], calls
         assert final_steps["collect"]["version"] == 1
         assert final_steps["transform"]["version"] == 2
+        assert final["run"]["attempts_used"] == 4, final["run"]
+        assert final["run"]["llm_calls_used"] == 8, final["run"]
+        assert final["run"]["tokens_used"] == 96000, final["run"]
+        assert final["run"]["estimated_cost_usd"] > 0, final["run"]
         assert any(x.get("kind") == "concept" and x.get("status") == "verified"
                    for x in final.get("memory") or []), final.get("memory")
         final_session = json.loads(session_path.read_text(encoding="utf-8"))

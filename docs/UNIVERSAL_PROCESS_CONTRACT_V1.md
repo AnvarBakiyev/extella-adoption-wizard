@@ -82,6 +82,9 @@ file + rename. Событийный журнал добавляется толь
     "max_step_attempts": 4,
     "max_wall_seconds": 14400,
     "max_llm_calls": 120,
+    "max_total_tokens": 2000000,
+    "max_cost_usd": 20.0,
+    "estimated_cost_per_1k_tokens_usd": 0.01,
     "max_generated_experts": 40
   },
   "permissions": {},
@@ -90,6 +93,13 @@ file + rename. Событийный журнал добавляется толь
   "updated_at": "ISO-8601"
 }
 ```
+
+`run` хранит переживающие restart счётчики `attempts_used`, `llm_calls_used`, `tokens_used`,
+`estimated_cost_usd`, `generated_experts_used` и `dynamic_steps_used`. До запуска каждого шага runtime
+резервирует его bounded build/run/verify budget. При нехватке любого ресурса шаг становится
+`blocked_human` до явного изменения лимита. Если провайдер не возвращает точную стоимость, применяется
+настраиваемая консервативная оценка и ставится `usage_estimated=true`; отсутствие billing metadata не
+отключает денежный gate молча.
 
 `steps` — нормальный DAG; `edges` хранят причинную связь и условие. Для иерархии шаг может содержать
 `subgraph_ref`, а не неограниченно раздувать верхний граф. Динамическое добавление допустимо только

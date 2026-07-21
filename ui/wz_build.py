@@ -16,10 +16,12 @@ from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
 from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
 from wz_process import (accept_step as universal_accept_step, atomic_write_json,
+                        budget_preflight as universal_budget_preflight,
                         block_for_human as universal_block_for_human,
                         checkpoint as process_checkpoint, memory_entry as universal_memory_entry,
                         expand_subgraph as universal_expand_subgraph,
                         normalize_step_result, process_from_blueprint,
+                        record_usage as universal_record_usage,
                         recover_after_restart as universal_recover_after_restart,
                         process_status as universal_process_status, ready_steps as universal_ready_steps,
                         step_map as universal_step_map, transition_step as universal_transition_step)
@@ -1878,6 +1880,43 @@ def _run_build(session_id, build_id):
                         _wait_owner(question, "upc_step:" + step_id, mode)
                         return
 
+                    budgets = process_graph.get("budgets") or {}
+                    run_usage = process_graph.get("run") or {}
+                    step_limit = max(1, min(10, int((step.get("retry_policy") or {}).get(
+                        "max_attempts") or budgets.get("max_step_attempts") or 4)))
+                    remaining_attempts = int(budgets.get("max_total_attempts") or 0) - int(
+                        run_usage.get("attempts_used") or 0)
+                    remaining_calls = int(budgets.get("max_llm_calls") or 0) - int(
+                        run_usage.get("llm_calls_used") or 0)
+                    remaining_tokens = int(budgets.get("max_total_tokens") or 0) - int(
+                        run_usage.get("tokens_used") or 0)
+                    rate = max(0.0, float(budgets.get("estimated_cost_per_1k_tokens_usd") or 0))
+                    remaining_cost = float(budgets.get("max_cost_usd") or 0) - float(
+                        run_usage.get("estimated_cost_usd") or 0)
+                    if int(budgets.get("max_total_attempts") or 0) > 0:
+                        step_limit = min(step_limit, remaining_attempts)
+                    if int(budgets.get("max_llm_calls") or 0) > 0:
+                        step_limit = min(step_limit, max(0, (remaining_calls - 1) // 2))
+                    if int(budgets.get("max_total_tokens") or 0) > 0:
+                        step_limit = min(step_limit, max(0, remaining_tokens // 24000))
+                    if float(budgets.get("max_cost_usd") or 0) > 0 and rate > 0:
+                        step_limit = min(step_limit, max(0, int(remaining_cost // (24 * rate))))
+                    generated_reserve = 1 if mode in ("generate", "llm_worker", "delegate") else 0
+                    reserve = {"attempts": max(3, step_limit), "llm_calls": 1 + 2 * max(3, step_limit),
+                               "tokens": 24000 * max(3, step_limit),
+                               "generated_experts": generated_reserve}
+                    gate = universal_budget_preflight(process_graph, reserve=reserve)
+                    if step_limit < 3 or not gate.get("ok"):
+                        detail = gate.get("message") or "недостаточно бюджета хотя бы для build/run/verify"
+                        question = ("Лимит процесса исчерпан перед шагом «%s»: %s. "
+                                    "Увеличьте ограничение или отмените шаг." %
+                                    (step.get("title") or step_id, detail))
+                        universal_block_for_human(process_graph, step_id, question)
+                        sync_process({"type": "process_budget_exhausted", "step_id": step_id,
+                                      "budget": gate, "question": question})
+                        _wait_owner(question, "upc_budget:" + step_id, detail)
+                        return
+
                     step_files = input_files_for(step)
                     universal_transition_step(process_graph, step_id, "running",
                                               "resolving and building step implementation")
@@ -1925,10 +1964,23 @@ def _run_build(session_id, build_id):
                     solution = build_agentic_solution(
                         session_id=session_id, build_id=build_id, namespace=ns,
                         sample_files=step_files, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
-                        llm=llm, progress=agentic_progress, max_creation_attempts=4,
-                        max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=10,
+                        llm=llm, progress=agentic_progress,
+                        max_creation_attempts=max(1, min(4, step_limit - 2)),
+                        max_run_repairs=2, max_acceptance_repairs=2,
+                        max_total_attempts=step_limit,
                         max_elapsed_seconds=3600, prepared_context=step_context,
                         step_contract=step, expert_name_override=stable_expert)
+                    attempt_count = len(solution.get("attempts") or [])
+                    judged_count = sum(1 for row in (solution.get("attempts") or [])
+                                       if isinstance(row, dict) and (row.get("validation") or {}).get("ok"))
+                    llm_calls_used = max(1, attempt_count + judged_count + 1)
+                    universal_record_usage(
+                        process_graph, attempts=attempt_count, llm_calls=llm_calls_used,
+                        tokens=llm_calls_used * 12000,
+                        generated_experts=1 if solution.get("draft_created") else 0,
+                        estimated=True)
+                    sync_process({"type": "process_usage_recorded", "step_id": step_id,
+                                  "usage": dict(process_graph.get("run") or {})})
                     if not solution.get("ok"):
                         detail = str(solution.get("detail") or "шаг не прошёл приёмку")
                         question = str(solution.get("owner_question") or "")

@@ -112,6 +112,9 @@ def default_budgets():
         "max_step_attempts": 4,
         "max_wall_seconds": 14400,
         "max_llm_calls": 120,
+        "max_total_tokens": 2000000,
+        "max_cost_usd": 20.0,
+        "estimated_cost_per_1k_tokens_usd": 0.01,
         "max_generated_experts": 40,
     }
 
@@ -300,6 +303,8 @@ def process_from_blueprint(session_id, blueprint, build_plan=None, origin="wizar
         "memory_policy": {"promote_only_after_acceptance": True, "max_entries": 500},
         "memory": [],
         "run": {"run_id": "", "status": "pending", "attempts_used": 0,
+                "llm_calls_used": 0, "tokens_used": 0, "estimated_cost_usd": 0.0,
+                "generated_experts_used": 0, "dynamic_steps_used": 0,
                 "started_at": None, "finished_at": None, "updated_at": stamp},
         "created_at": stamp,
         "updated_at": stamp,
@@ -390,6 +395,75 @@ def refresh_ready(graph):
 def ready_steps(graph):
     refresh_ready(graph)
     return [x for x in (graph.get("steps") or []) if x.get("status") == "ready"]
+
+
+def budget_preflight(graph, reserve=None, at=None):
+    """Fail closed before allocating another step; all counters survive checkpoints/restarts."""
+    budgets = graph.get("budgets") if isinstance(graph.get("budgets"), dict) else {}
+    run = graph.get("run") if isinstance(graph.get("run"), dict) else {}
+    reserve = reserve if isinstance(reserve, dict) else {}
+    checks = (
+        ("attempts", "attempts_used", "max_total_attempts", int),
+        ("llm_calls", "llm_calls_used", "max_llm_calls", int),
+        ("tokens", "tokens_used", "max_total_tokens", int),
+        ("cost_usd", "estimated_cost_usd", "max_cost_usd", float),
+        ("generated_experts", "generated_experts_used", "max_generated_experts", int),
+    )
+    exceeded = []
+    remaining = {}
+    for public, used_key, max_key, cast in checks:
+        limit = cast(budgets.get(max_key) or 0)
+        used = cast(run.get(used_key) or 0)
+        extra = cast(reserve.get(public) or 0)
+        remaining[public] = max(0, limit - used) if limit > 0 else None
+        if limit > 0 and used + extra > limit:
+            exceeded.append({"resource": public, "used": used, "reserve": extra, "limit": limit})
+    wall_limit = int(budgets.get("max_wall_seconds") or 0)
+    started = str(run.get("started_at") or "")
+    wall_used = 0.0
+    if started:
+        try:
+            current = at if isinstance(at, datetime) else datetime.now(timezone.utc)
+            parsed = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            wall_used = max(0.0, (current - parsed).total_seconds())
+        except Exception:
+            exceeded.append({"resource": "wall_seconds", "used": "invalid_started_at",
+                             "reserve": 0, "limit": wall_limit})
+    remaining["wall_seconds"] = max(0.0, wall_limit - wall_used) if wall_limit > 0 else None
+    if wall_limit > 0 and wall_used >= wall_limit:
+        exceeded.append({"resource": "wall_seconds", "used": wall_used,
+                         "reserve": 0, "limit": wall_limit})
+    return {"ok": not exceeded, "code": "" if not exceeded else "budget_exhausted",
+            "message": "" if not exceeded else "process budget exhausted: " +
+                       ", ".join(str(x["resource"]) for x in exceeded),
+            "exceeded": exceeded, "remaining": remaining}
+
+
+def record_usage(graph, attempts=0, llm_calls=0, tokens=0, cost_usd=None,
+                 generated_experts=0, estimated=True):
+    """Record provider usage or a conservative estimate; never silently disables the cost ceiling."""
+    run = graph.setdefault("run", {})
+    budgets = graph.get("budgets") if isinstance(graph.get("budgets"), dict) else {}
+    attempts = max(0, int(attempts or 0))
+    llm_calls = max(0, int(llm_calls or 0))
+    tokens = max(0, int(tokens or 0))
+    if cost_usd is None:
+        rate = max(0.0, float(budgets.get("estimated_cost_per_1k_tokens_usd") or 0))
+        cost_usd = tokens * rate / 1000.0
+        estimated = True
+    cost_usd = max(0.0, float(cost_usd or 0))
+    run["attempts_used"] = int(run.get("attempts_used") or 0) + attempts
+    run["llm_calls_used"] = int(run.get("llm_calls_used") or 0) + llm_calls
+    run["tokens_used"] = int(run.get("tokens_used") or 0) + tokens
+    run["estimated_cost_usd"] = round(float(run.get("estimated_cost_usd") or 0) + cost_usd, 6)
+    run["generated_experts_used"] = int(run.get("generated_experts_used") or 0) + max(
+        0, int(generated_experts or 0))
+    run["usage_estimated"] = bool(run.get("usage_estimated") or estimated)
+    run["updated_at"] = now_iso()
+    graph["updated_at"] = run["updated_at"]
+    return budget_preflight(graph)
 
 
 def transition_step(graph, step_id, new_status, reason="", extra=None):

@@ -10,9 +10,9 @@ sys.path.insert(0, str(ROOT / "ui"))
 
 from wz_process import (  # noqa: E402
     STEP_RESULT_SCHEMA, accept_step, answer_human, block_for_human, checkpoint,
-    memory_entry, normalize_step_result, permission_preflight, process_from_blueprint,
+    budget_preflight, memory_entry, normalize_step_result, permission_preflight, process_from_blueprint,
     process_status, ready_steps, record_approval, recover_after_restart, repair_step,
-    step_map, transition_step, validate_process,
+    record_usage, step_map, transition_step, validate_process,
 )
 
 
@@ -50,6 +50,19 @@ def test_unknown_task_is_generate():
     assert validate_process(graph)["ok"]
     assert graph["steps"][0]["implementation"]["mode"] == "generate"
     assert graph["steps"][0]["status"] == "ready"
+
+
+def test_resource_budgets_survive_and_fail_closed():
+    graph = process_from_blueprint("wz_budget", {"process_name": "Budget", "goal": "Bound work"})
+    assert budget_preflight(graph, {"attempts": 4, "llm_calls": 8, "tokens": 48000,
+                                    "generated_experts": 1})["ok"]
+    state = record_usage(graph, attempts=4, llm_calls=8, tokens=48000, generated_experts=1)
+    assert state["ok"] and graph["run"]["usage_estimated"] is True
+    assert graph["run"]["estimated_cost_usd"] > 0
+    graph["budgets"]["max_total_attempts"] = 4
+    stopped = budget_preflight(graph, {"attempts": 1})
+    assert not stopped["ok"] and stopped["code"] == "budget_exhausted"
+    assert stopped["exceeded"][0]["resource"] == "attempts"
 
 
 def test_parallel_merge_and_local_repair():
