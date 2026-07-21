@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTALL = ROOT / "install.py"
+DELTA = ROOT / "scripts" / "qa_delta_update.sh"
 
 
 def main():
@@ -24,6 +25,14 @@ def main():
     assert not selected(ROOT / "concepts" / "unchanged.md")
     ns["DELTA_FILES"].clear()
     assert selected(ROOT / "experts" / "wz_session.py")  # полный установщик обратно совместим
+    delta = DELTA.read_text(encoding="utf-8")
+    for name in ("server.py", "wz_agentic.py", "wz_build.py", "wz_llm.py",
+                 "wz_platform.py", "wz_process.py", "wizard.html"):
+        assert name in delta, f"QA-дельта не переносит runtime-файл {name}"
+    for name in ("wz_generate_blueprint.py", "wz_build_plan.py", "wz_auto_compose.py"):
+        assert f"experts/{name}" in delta, f"QA-дельта не обновляет изменённого эксперта {name}"
+    for name in ("dist/workspace/$name", "WS_DIR", "Workspace v1.1.0", "EXTELLA_QA_SHA"):
+        assert name in delta, f"QA-дельта не обновляет общий Workspace-адаптер: {name}"
     print("QA-дельта: изменённые артефакты выбраны, полный режим сохранён ✓")
 
 

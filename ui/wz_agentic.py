@@ -6,7 +6,9 @@
 """
 import hashlib
 import base64
+import copy
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -29,8 +31,8 @@ EXPERT_KWARGS = {
 REPORT_KEYS = ("report_md", "report_xlsx", "report_pdf", "report_docx", "report_pptx")
 SOURCE_STATUSES = ("ready", "need_human", "acquire")
 BUILD_STRATEGIES = ("reuse", "compose", "build", "holistic_build", "acquire", "need_human")
-MEMORY_KINDS = ("concept", "rule")
-MEMORY_STATUSES = ("candidate", "verified", "rejected")
+MEMORY_KINDS = ("evidence", "lesson", "concept", "rule", "artifact")
+MEMORY_STATUSES = ("candidate", "verified", "rejected", "superseded")
 
 
 def _clip(value, limit=400):
@@ -597,6 +599,7 @@ def _builder_brief(task_package):
         "brief_version": 3,
         "language": p.get("language") or "ru",
         "task_contract": p.get("task_contract"),
+        "upc_step": p.get("upc_step"),
         "source_model": p.get("source_model"),
         "working_memory": p.get("working_memory"),
         "goal": {"process_name": p.get("client_name"), "original_request": p.get("original_request")},
@@ -930,9 +933,57 @@ def _source_memory(model):
     return [x for x in additions if x]
 
 
-def prepare_task_context(session_id, sample_files, sess_dir, llm, progress=None):
+def _apply_upc_step(package, step_contract):
+    """Narrow the full owner contract to one graph step without losing source/permission facts."""
+    if not isinstance(step_contract, dict):
+        return package
+    package["upc_step"] = _compact(step_contract)
+    contract = copy.deepcopy(package.get("task_contract") or {})
+    contract["business_goal"] = str(step_contract.get("purpose") or step_contract.get("title") or "")
+    acceptance = step_contract.get("acceptance") if isinstance(step_contract.get("acceptance"), dict) else {}
+    output_contract = (step_contract.get("output_contract")
+                       if isinstance(step_contract.get("output_contract"), dict) else {})
+    required_artifacts = (acceptance.get("required_artifacts") or
+                          output_contract.get("artifacts") or [])
+    required_artifacts = [str(x) for x in required_artifacts if str(x).strip()]
+    # Every step leaves a machine-readable trace even when its business output is not a file.
+    # Human reports are only required when the planner explicitly asks for them.
+    if not required_artifacts:
+        required_artifacts = ["step_result_json"]
+    contract["required_result"] = {
+        "success_criteria": ((acceptance.get("deterministic_checks") or []) +
+                             (acceptance.get("semantic_criteria") or [])),
+        "planned_steps": [step_contract.get("purpose") or step_contract.get("title")],
+        "stage_outputs": output_contract.get("artifacts") or output_contract.get("postconditions") or [],
+        "required_artifacts": required_artifacts,
+    }
+    contract["upc_step_id"] = step_contract.get("id")
+    contract["upc_step_version"] = step_contract.get("version")
+    contract["permissions"] = step_contract.get("permissions") or {}
+    package["runtime_input_contract"] = {
+        "source_file": "file or dependency bundle selected by the UPC runtime",
+        "output_dir": "isolated directory for this step version; inputs are immutable",
+        "build_validation": "dangerous effects are preview-only while the expert is being accepted",
+    }
+    package["acceptance_contract"] = {
+        "must_use_every_sample": not bool(step_contract.get("dependencies")),
+        "must_run_on_real_samples": True,
+        "must_return": ["status=success", "summary", "evidence.acceptance_checks", "artifacts"],
+        "required_artifacts": required_artifacts,
+        "no_external_writes": True,
+        "step_result_artifact": True,
+    }
+    contract_raw = json.dumps({k: v for k, v in contract.items() if k != "sha256"},
+                              ensure_ascii=False, sort_keys=True, default=str)
+    contract["sha256"] = hashlib.sha256(contract_raw.encode("utf-8")).hexdigest()
+    package["task_contract"] = contract
+    return _refresh_package(package)
+
+
+def prepare_task_context(session_id, sample_files, sess_dir, llm, progress=None, step_contract=None):
     """Общий Task Contract + Source Model для линейного и агентного Builder до любого кодогена."""
     package = _attach_capabilities(make_task_package(session_id, sample_files, sess_dir, llm=llm))
+    package = _apply_upc_step(package, step_contract)
     checked = (build_source_model(package, llm, max_tries=2, progress=progress) if progress else
                build_source_model(package, llm, max_tries=2))
     if not checked.get("ok"):
@@ -1031,11 +1082,35 @@ def _persist_agentic_state(sess_dir, session_id, bdir, package, source_model, st
     (bdir / "working_memory.json").write_text(
         json.dumps(memory, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     session_path = root / (session_id + ".json")
-    session = _read_json(session_path, {}) or {}
-    session["agentic_memory"] = memory
-    temp_path = root / (session_id + ".json.agentic.tmp")
-    temp_path.write_text(json.dumps(session, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    temp_path.replace(session_path)
+    lock_handle = None
+    temp_path = None
+    try:
+        import fcntl
+        lock_handle = open(str(session_path) + ".lock", "w")
+        fcntl.flock(lock_handle, fcntl.LOCK_EX)
+        session = _read_json(session_path, {}) or {}
+        session["agentic_memory"] = memory
+        fd, temp_name = tempfile.mkstemp(prefix=session_path.name + ".agentic.",
+                                         suffix=".tmp", dir=str(root))
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(session, handle, ensure_ascii=False, indent=2, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(session_path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        if lock_handle is not None:
+            try:
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                lock_handle.close()
+            except Exception:
+                pass
     return memory
 
 
@@ -1131,6 +1206,20 @@ def _llm_json(llm, prompt, max_tokens=3800, timeout=260):
 
 def _build_prompt(expert_name, task_package, feedback, agent_id):
     brief_json = json.dumps(_builder_brief(task_package), ensure_ascii=False, indent=2, default=str)
+    upc_step = task_package.get("upc_step") if isinstance(task_package.get("upc_step"), dict) else None
+    step_directive = ""
+    if upc_step:
+        required = ((task_package.get("acceptance_contract") or {}).get("required_artifacts") or
+                    ["step_result_json"])
+        step_directive = ("\n\nЭТО ОДИН ШАГ UNIVERSAL PROCESS CONTRACT. Реализуй ТОЛЬКО upc_step из BUILD_BRIEF, "
+                          "не всю конечную задачу и не соседние шаги. Выполни его input/output contract, "
+                          "не расширяй permissions и верни наблюдаемые доказательства именно его acceptance. "
+                          "Зависимости уже приняты runtime-ом и передаются через source_file. "
+                          "При контрольной сборке любые move/modify/delete/install/send/external_write выполняй "
+                          "только как preview: создай manifest точных предполагаемых действий, но не меняй внешний мир. "
+                          "Всегда запиши в output_dir файл step_result.json с summary, output и evidence; верни его в "
+                          "artifacts как kind=step_result_json. Дополнительные обязательные артефакты: " +
+                          json.dumps(required, ensure_ascii=False) + ".")
     repair = ""
     if feedback:
         repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
@@ -1168,12 +1257,13 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
 - если нужен смысловой шаг, разрешена платформенная Qwen через api_token; agent_id={agent_id};
 - на этапе создания ТОЛЬКО сохрани/обнови эксперта. Не запускай его сам и не делай пробных вызовов:
   Визард отдельно прогонит сохранённый код с явными source_file и output_dir;
-- обязательно создай человекочитаемые report.md и report.xlsx;
+- для целостной legacy-сборки создай report.md и report.xlsx; для шага UPC создай перечисленные в
+  acceptance_contract артефакты и обязательный step_result.json;
 	- верни dict:
-	  {{"status":"success","summary":{{...,"processed_files":N,"total_count":N}},
+	  {{"status":"success","summary":{{...,"processed_files":N}},"output":{{...}},
 	    "evidence":{{"files_used":["basename",...],"capabilities_used":[{{"id":"...","evidence":"факт вызова"}}],"acceptance_checks":[
       {{"criterion":"...","passed":true,"evidence":"конкретный факт"}}]}},
-    "report_md":"/absolute/generated/report.md","report_xlsx":"/absolute/generated/report.xlsx"}}
+    "artifacts":[{{"kind":"step_result_json","path":"/absolute/generated/step_result.json"}}]}}
 - acceptance_checks доказывают, что алгоритм выполнил требование и честно отразил результат. Найденное
   расхождение, исключение, пустая категория или отрицательный бизнес-вердикт — это passed=true, если они
   корректно вычислены и показаны; passed=false означает только сбой/неполную обработку. Не зашивай в
@@ -1184,7 +1274,7 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
 После действия ответь кратко, но источником истины будет сохранённый эксперт и его реальный прогон.
 
 BUILD_BRIEF:
-{brief_json}{repair}"""
+{brief_json}{step_directive}{repair}"""
 
 
 def _sample_literals(task_package):
@@ -1347,22 +1437,25 @@ def validate_result(result, sample_files, task_package=None):
     if result.get("status") != "success":
         issues.append("status не success: " + _clip(result.get("message") or result.get("status"), 300))
     summary = result.get("summary")
-    if not isinstance(summary, dict) or len(summary) < 2:
+    if not isinstance(summary, dict) or not summary:
         issues.append("нет содержательной summary")
+    acceptance_contract = ((task_package or {}).get("acceptance_contract")
+                           if isinstance(task_package, dict) else {}) or {}
     evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
     used = evidence.get("files_used") or result.get("files_used") or []
     used = {_ref_key(Path(str(x)).name) for x in used if str(x).strip()}
     expected_names = {_ref_key(Path(str(x)).name): _nfc(Path(str(x)).name) for x in sample_files}
     expected = set(expected_names)
     missing = [expected_names[key] for key in sorted(expected - used)]
-    if missing:
+    if acceptance_contract.get("must_use_every_sample", True) and missing:
         issues.append("нет доказательства обработки файлов: " + ", ".join(missing))
     processed = (summary or {}).get("processed_files") if isinstance(summary, dict) else None
-    try:
-        if int(processed) < len(expected):
-            issues.append("processed_files меньше числа входов")
-    except Exception:
-        issues.append("summary.processed_files не задан")
+    if acceptance_contract.get("must_use_every_sample", True) and expected:
+        try:
+            if int(processed) < len(expected):
+                issues.append("processed_files меньше числа входов")
+        except Exception:
+            issues.append("summary.processed_files не задан")
     checks = evidence.get("acceptance_checks") or result.get("acceptance_checks") or []
     if not isinstance(checks, list) or not checks:
         issues.append("нет evidence.acceptance_checks")
@@ -1388,10 +1481,14 @@ def validate_result(result, sample_files, task_package=None):
                 live.append((key, str(p), p.stat().st_size))
         except Exception:
             continue
-    if not any(k == "report_md" for k, _, _ in live):
-        issues.append("не создан открываемый report_md")
-    if not any(k == "report_xlsx" for k, _, _ in live):
-        issues.append("не создан открываемый report_xlsx")
+    required = acceptance_contract.get("required_artifacts")
+    if not isinstance(required, list):
+        required = ["report_md", "report_xlsx"]
+    for need in [str(x).casefold() for x in required if str(x).strip()]:
+        matches = [(kind, path, size) for kind, path, size in live
+                   if need in (str(kind) + " " + Path(path).name + " " + path).casefold()]
+        if not matches:
+            issues.append("не создан обязательный артефакт: " + need)
     return {"ok": not issues, "issues": issues, "artifacts": live,
             "files_used": sorted(used), "summary": summary if isinstance(summary, dict) else {}}
 
@@ -1478,7 +1575,8 @@ def judge_result(task_package, result, validation):
 def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_dir, runs_dir, llm,
                             progress=None, max_attempts=None, max_creation_attempts=4,
                             max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=10,
-                            max_elapsed_seconds=3600, prepared_context=None):
+                            max_elapsed_seconds=3600, prepared_context=None,
+                            step_contract=None, expert_name_override=""):
     """Настоящий draft → run_expert → два гейта → bounded repair → stable.
 
     Бюджеты генерации, ремонта технического прогона и ремонта смысловой приёмки независимы. Поэтому
@@ -1494,12 +1592,21 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
     total_budget = max(create_budget + 2, int(max_total_attempts or 1))
     time_budget = max(300, int(max_elapsed_seconds or 3600))
     started_monotonic = time.monotonic()
-    bdir = Path(runs_dir) / build_id
+    step_contract = step_contract if isinstance(step_contract, dict) else None
+    if step_contract:
+        step_dir = re.sub(r"[^A-Za-z0-9_-]+", "_", str(step_contract.get("id") or "step"))[:80]
+        step_version = max(1, int(step_contract.get("version") or 1))
+        bdir = Path(runs_dir) / build_id / "process" / "steps" / step_dir / ("v%d" % step_version)
+    else:
+        bdir = Path(runs_dir) / build_id
     bdir.mkdir(parents=True, exist_ok=True)
-    progress("agentic_context", "Собираю Task Contract и изучаю все файлы", "running", "")
+    progress("agentic_context", "Собираю Task Contract и изучаю все файлы", "running",
+             ("шаг: " + str(step_contract.get("title") or step_contract.get("id"))) if step_contract else "")
     context = prepared_context if isinstance(prepared_context, dict) else prepare_task_context(
-        session_id, sample_files, sess_dir, llm)
-    package = context.get("package") or {}
+        session_id, sample_files, sess_dir, llm, step_contract=step_contract)
+    package = copy.deepcopy(context.get("package") or {})
+    if step_contract:
+        package = _apply_upc_step(package, step_contract)
     progress("agentic_context", "Task Contract собран", "success",
              "образцов: %d · контракт %s" %
              (len(sample_files), (package.get("task_contract") or {}).get("sha256", "")[:10]))
@@ -1543,7 +1650,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                 "working_memory": package.get("working_memory"), "verified_memory": [], "draft_created": False,
                 "expert_ran": False, "package_sha256": package.get("package_sha256")}
 
-    expert_name = namespace + "_run_process"
+    expert_name = str(expert_name_override or (namespace + "_run_process"))
     draft_name = expert_name + "__draft_" + hashlib.sha256(str(build_id).encode("utf-8")).hexdigest()[:8]
     source_file = str(Path(sample_files[0]).parent if len(sample_files) > 1 else Path(sample_files[0]))
     attempts, feedback = [], ""

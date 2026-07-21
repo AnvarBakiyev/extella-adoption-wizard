@@ -40,7 +40,8 @@ def main():
     assert 'target=(_local_tgt or None)' in SERVER
     assert 'params.setdefault("session_path", str(SESS_DIR / (_sid_plan + ".json")))' in SERVER
     assert 'params.setdefault("output_path", str(SESS_DIR / (_sid_plan + "_blueprint.json")))' in SERVER
-    assert 'wz_llm.py wz_platform.py wizard.html' in DELTA
+    assert 'wz_llm.py wz_platform.py wz_process.py wizard.html' in DELTA
+    assert 'experts/wz_generate_blueprint.py,experts/wz_build_plan.py,experts/wz_auto_compose.py' in DELTA
     print("локальные эксперты: target текущего Listener + явные пути + полная дельта модулей ✓")
 
 

@@ -15,6 +15,14 @@ from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
 from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
+from wz_process import (accept_step as universal_accept_step, atomic_write_json,
+                        block_for_human as universal_block_for_human,
+                        checkpoint as process_checkpoint, memory_entry as universal_memory_entry,
+                        expand_subgraph as universal_expand_subgraph,
+                        normalize_step_result, process_from_blueprint,
+                        recover_after_restart as universal_recover_after_restart,
+                        process_status as universal_process_status, ready_steps as universal_ready_steps,
+                        step_map as universal_step_map, transition_step as universal_transition_step)
 
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
@@ -1255,6 +1263,243 @@ def _make_orchestrator(ns, stage_names, work_dir, session_id="", kp_stages=None,
     return (name if ok else None), sv
 
 
+_UPC_ORCH_TEMPLATE = r'''$extens("include.py")
+include("import requests", ["extella-pip install requests"])
+
+def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "", adapter_json: str = "", report_spec_json: str = "", approval_json: str = "") -> dict:
+    """Universal Process Contract v1 DAG runner with durable per-run checkpoints."""
+    import json
+    import hashlib
+    import shutil
+    import uuid
+    import requests
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    GRAPH = __GRAPH__
+    ERROR_MARKERS = ("[execution error]", "traceback (most recent call last)", "nameerror:",
+                     "typeerror:", "valueerror:", "eoferror", "syntaxerror:", "runtimeerror:")
+    DANGEROUS = ("move", "modify", "delete", "install", "send", "external_write")
+
+    def stamp():
+        return datetime.now(timezone.utc).isoformat()
+
+    def atomic_json(path, value):
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        tmp.replace(path)
+
+    def result_error(value):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str).casefold()
+        except Exception:
+            text = str(value).casefold()
+        return next((marker for marker in ERROR_MARKERS if marker in text), "")
+
+    if not api_token:
+        cfg = Path.home() / "extella_wizard" / "app" / "config.json"
+        try:
+            api_token = json.loads(cfg.read_text(encoding="utf-8")).get("auth_token", "")
+        except Exception:
+            api_token = ""
+    if not api_token:
+        return {"status": "error", "message": "api_token is required"}
+    if not source_file:
+        return {"status": "error", "message": "source_file is required"}
+    source = Path(source_file)
+    if not source.exists():
+        return {"status": "error", "message": "source_file does not exist: " + str(source)}
+    if not run_id or run_id.startswith("{"):
+        run_id = uuid.uuid4().hex[:16]
+    root = Path(output_dir or __WORKDIR__) / "upc_runs" / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = root / "checkpoint.json"
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except Exception:
+        checkpoint = {"schema": "upc-run/1.0", "run_id": run_id,
+                      "process_id": GRAPH.get("process_id"), "accepted": {}, "events": []}
+    if checkpoint.get("run_id") != run_id or checkpoint.get("process_id") != GRAPH.get("process_id"):
+        checkpoint = {"schema": "upc-run/1.0", "run_id": run_id,
+                      "process_id": GRAPH.get("process_id"), "accepted": {}, "events": []}
+    try:
+        approvals = (json.loads(approval_json)
+                     if approval_json and not approval_json.startswith("{{") else {})
+    except Exception:
+        approvals = {}
+    accepted = checkpoint.setdefault("accepted", {})
+    headers = {"X-Auth-Token": api_token, "Content-Type": "application/json",
+               "X-Profile-Id": "default", "X-Agent-Id": "agent_extella_default"}
+    placement = {}
+    try:
+        placement = (json.loads(placement_json)
+                     if placement_json and not placement_json.startswith("{{") else {})
+    except Exception:
+        placement = {}
+    steps = {str(step.get("id")): step for step in GRAPH.get("steps") or []}
+
+    # A checkpoint is trusted only while its artifact evidence still exists.
+    for sid in list(accepted):
+        row = accepted.get(sid) or {}
+        if int(row.get("step_version") or 0) != int((steps.get(sid) or {}).get("version") or 0):
+            accepted.pop(sid, None)
+            continue
+        artifacts = row.get("artifacts") or []
+        if artifacts and not all(Path(str(item.get("path") if isinstance(item, dict) else item)).exists()
+                                 for item in artifacts):
+            accepted.pop(sid, None)
+
+    while len(accepted) < len(steps):
+        ready = []
+        for sid, step in steps.items():
+            if sid in accepted:
+                continue
+            if all(str(dep) in accepted for dep in step.get("dependencies") or []):
+                ready.append(step)
+        if not ready:
+            return {"status": "error", "message": "process graph is cyclic or blocked",
+                    "run_id": run_id, "accepted_steps": sorted(accepted)}
+        progressed = False
+        for step in ready:
+            sid = str(step.get("id"))
+            version = int(step.get("version") or 1)
+            mode = str((step.get("implementation") or {}).get("mode") or "")
+            expert = str((step.get("implementation") or {}).get("expert_ref") or "")
+            if mode in ("human", "acquire") or not expert:
+                return {"status": "blocked_human", "run_id": run_id, "step_id": sid,
+                        "question": ((step.get("human_gate") or {}).get("question") or
+                                     "Шаг требует решения человека: " + str(step.get("title") or sid)),
+                        "accepted_steps": sorted(accepted)}
+            dangerous = [kind for kind in DANGEROUS if (step.get("permissions") or {}).get(kind)]
+            approval_key = sid + ":v" + str(version)
+            if dangerous and approvals.get(approval_key) is not True:
+                return {"status": "blocked_human", "run_id": run_id, "step_id": sid,
+                        "question": "Подтвердите точное действие перед исполнением шага",
+                        "permission_preview": {"approval_key": approval_key, "permissions": dangerous,
+                                               "targets": {k: (step.get("permissions") or {}).get(k)
+                                                           for k in dangerous}},
+                        "accepted_steps": sorted(accepted)}
+
+            step_dir = root / ("step_" + sid) / ("v" + str(version))
+            step_dir.mkdir(parents=True, exist_ok=True)
+            deps = [str(x) for x in step.get("dependencies") or []]
+            if not deps:
+                step_source = source
+            else:
+                bundle = step_dir / "inputs"
+                bundle.mkdir(parents=True, exist_ok=True)
+                manifest = {"schema": "upc-dependency-bundle/1.0", "step_id": sid, "dependencies": []}
+                for dep in deps:
+                    dep_row = accepted.get(dep) or {}
+                    dep_copy = {"step_id": dep, "output": dep_row.get("output"), "artifacts": []}
+                    for index, raw in enumerate(dep_row.get("artifacts") or []):
+                        item = raw if isinstance(raw, dict) else {"path": str(raw)}
+                        src = Path(str(item.get("path") or ""))
+                        if src.exists() and src.is_file():
+                            dest = bundle / (dep + "_" + str(index) + "_" + src.name)
+                            if not dest.exists():
+                                shutil.copy2(str(src), str(dest))
+                            dep_copy["artifacts"].append({"kind": item.get("kind") or "artifact",
+                                                          "path": str(dest)})
+                    manifest["dependencies"].append(dep_copy)
+                atomic_json(bundle / "dependency_manifest.json", manifest)
+                step_source = bundle
+            params = {"source_file": str(step_source), "output_dir": str(step_dir / "outputs"),
+                      "api_token": api_token, "api_base": api_base, "target": target,
+                      "rules_json": rules_json, "fields_json": fields_json,
+                      "run_id": run_id + ":" + sid + ":v" + str(version)}
+            body = {"expert_name": expert, "params": params, "global": True}
+            step_target = placement.get(sid) or placement.get(expert) or target
+            if step_target:
+                body["target"] = step_target
+            try:
+                response = requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers,
+                                         json=body, timeout=900)
+                envelope = response.json()
+                result = envelope.get("result", envelope)
+            except Exception as exc:
+                result = {"status": "error", "message": "transport: " + str(exc)}
+            marker = result_error(result)
+            if not isinstance(result, dict) or result.get("status") != "success" or marker:
+                checkpoint["events"].append({"at": stamp(), "type": "step_failed", "step_id": sid,
+                                             "detail": marker or str(result)[:500]})
+                atomic_json(checkpoint_path, checkpoint)
+                return {"status": "error", "run_id": run_id, "failed_step": sid,
+                        "step_version": version, "detail": marker or str(result)[:800],
+                        "accepted_steps": sorted(accepted), "resumable": True}
+            evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+            checks = evidence.get("acceptance_checks") or result.get("acceptance_checks") or []
+            if not checks or any(not isinstance(row, dict) or row.get("passed") is not True for row in checks):
+                return {"status": "error", "run_id": run_id, "failed_step": sid,
+                        "detail": "step returned no accepted evidence", "accepted_steps": sorted(accepted),
+                        "resumable": True}
+            artifacts = []
+            for raw in result.get("artifacts") or []:
+                item = raw if isinstance(raw, dict) else {"path": str(raw), "kind": "artifact"}
+                path = Path(str(item.get("path") or ""))
+                if path.exists() and path.is_file() and path.stat().st_size > 0:
+                    artifacts.append({"kind": item.get("kind") or "artifact", "path": str(path),
+                                      "bytes": path.stat().st_size})
+            if not artifacts:
+                return {"status": "error", "run_id": run_id, "failed_step": sid,
+                        "detail": "step did not create an observable artifact", "accepted_steps": sorted(accepted),
+                        "resumable": True}
+            accepted[sid] = {"step_version": version, "expert_ref": expert,
+                             "output": result.get("output") or result.get("summary"),
+                             "artifacts": artifacts, "evidence": checks, "accepted_at": stamp()}
+            checkpoint["events"].append({"at": stamp(), "type": "step_accepted", "step_id": sid,
+                                         "step_version": version})
+            atomic_json(checkpoint_path, checkpoint)
+            progressed = True
+        if not progressed:
+            return {"status": "error", "message": "scheduler made no progress", "run_id": run_id}
+
+    report = root / "process_report.md"
+    lines = ["# " + str(GRAPH.get("title") or "Процесс"), "", "Run: `" + run_id + "`", ""]
+    for step in GRAPH.get("steps") or []:
+        row = accepted.get(str(step.get("id"))) or {}
+        lines.append("- ✓ " + str(step.get("title") or step.get("id")) + " · v" +
+                     str(row.get("step_version") or step.get("version") or 1))
+    report.write_text("\n".join(lines), encoding="utf-8")
+    return {"status": "success", "run_id": run_id,
+            "summary": {"processed_files": 1, "accepted_steps": len(accepted), "total_steps": len(steps)},
+            "output": {"accepted_steps": sorted(accepted)},
+            "evidence": {"files_used": [source.name], "acceptance_checks": [
+                {"criterion": "all UPC steps accepted", "passed": len(accepted) == len(steps),
+                 "evidence": str(len(accepted)) + "/" + str(len(steps))}]},
+            "artifacts": [{"kind": "process_report_md", "path": str(report)},
+                          {"kind": "process_checkpoint_json", "path": str(checkpoint_path)}],
+            "report_md": str(report)}
+'''
+
+
+def _make_upc_orchestrator(ns, graph, work_dir):
+    """Compile accepted UPC steps into one resumable Extella expert without a second state model."""
+    name = ns + "_run_process"
+    public_graph = {
+        "schema": graph.get("schema"), "process_id": graph.get("process_id"),
+        "version": graph.get("version"), "title": graph.get("title"),
+        "steps": [{k: step.get(k) for k in ("id", "title", "dependencies", "implementation",
+                                               "permissions", "version")}
+                  for step in graph.get("steps") or []],
+    }
+    code = (_UPC_ORCH_TEMPLATE.replace("__NAME__", name)
+            .replace("__GRAPH__", json.dumps(public_graph, ensure_ascii=False, default=str))
+            .replace("__WORKDIR__", json.dumps(str(work_dir), ensure_ascii=False)))
+    saved = api("/api/expert/save", {
+        "name": name,
+        "description": "Universal Process Contract v1 DAG runner with checkpoint, per-step evidence and HITL.",
+        "code": code,
+        "kwargs": {"source_file": "", "output_dir": str(work_dir), "api_token": "",
+                   "api_base": "https://api.extella.ai", "target": "", "source_key": "",
+                   "rules_json": "", "fields_json": "", "run_id": "", "placement_json": "",
+                   "adapter_json": "", "report_spec_json": "", "approval_json": ""},
+        "cspl": "fython", "global": True,
+    })
+    ok = isinstance(saved, dict) and (saved.get("status") == "success" or saved.get("id"))
+    return (name if ok else None), saved, code
+
+
 def _run_build(session_id, build_id):
     """Фоновая стройка процесса: план -> сборка задач -> аудит. Прогресс в build_progress.json."""
     bdir = RUNS_DIR / build_id
@@ -1300,6 +1545,31 @@ def _run_build(session_id, build_id):
             sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def _save_process_pointer(graph, status=None):
+        """Coordinate with server._update_session through the same cross-process lock file."""
+        sp = SESS_DIR / (session_id + ".json")
+        lock_handle = None
+        try:
+            import fcntl
+            lock_handle = open(str(sp) + ".lock", "w")
+            fcntl.flock(lock_handle, fcntl.LOCK_EX)
+            current = json.loads(sp.read_text(encoding="utf-8"))
+            current["process_contract"] = {
+                "schema": graph.get("schema"), "path": str(SESS_DIR / (session_id + "_process.json")),
+                "process_id": graph.get("process_id"), "active_version": graph.get("version"),
+                "active_run_id": (graph.get("run") or {}).get("run_id") or "",
+                "status": status or universal_process_status(graph), "updated_at": now(),
+            }
+            current["updated_at"] = now()
+            atomic_write_json(sp, current)
+        finally:
+            if lock_handle is not None:
+                try:
+                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                    lock_handle.close()
+                except Exception:
+                    pass
 
     def stage(sid, title, status="running", **extra):
         stamp = now()
@@ -1362,6 +1632,47 @@ def _run_build(session_id, build_id):
         built_names = []
         stage("plan", "Составляю план стройки", "success", tasks_count=len(tasks))
 
+        # UPC v1 is the canonical graph for every new build. Legacy blueprint/build-plan remain
+        # compatible projections, while all four surfaces can now read this same sidecar.
+        blueprint_path = SESS_DIR / (session_id + "_blueprint.json")
+        blueprint_doc = json.loads(blueprint_path.read_text(encoding="utf-8"))
+        blueprint = blueprint_doc.get("blueprint", blueprint_doc)
+        process_path = SESS_DIR / (session_id + "_process.json")
+        process_events_path = SESS_DIR / (session_id + "_process_events.jsonl")
+        candidate_graph = process_from_blueprint(session_id, blueprint, plan, origin="wizard")
+        process_graph = candidate_graph
+        # A human answer or bridge restart must resume the same accepted graph, not rebuild every
+        # independent predecessor. The deterministic process_id protects against reusing another plan.
+        if process_path.exists():
+            try:
+                previous_graph = json.loads(process_path.read_text(encoding="utf-8"))
+                if (previous_graph.get("schema") == candidate_graph.get("schema") and
+                        previous_graph.get("process_id") == candidate_graph.get("process_id") and
+                        universal_process_status(previous_graph) != "succeeded"):
+                    process_graph = previous_graph
+                    recovered = universal_recover_after_restart(process_graph)
+                    if recovered:
+                        process_checkpoint(process_graph, process_path, process_events_path, {
+                            "type": "process_recovered", "steps": recovered,
+                        })
+            except Exception:
+                process_graph = candidate_graph
+        process_graph["run"]["run_id"] = build_id
+        process_graph["task_contract_ref"] = {"path": str(bdir / "task_contract.json"), "sha256": ""}
+        process_graph["source_model_ref"] = {"path": str(bdir / "source_model.json"), "sha256": ""}
+        process_checkpoint(process_graph, process_path, process_events_path, {
+            "type": "process_planned", "build_id": build_id, "process_id": process_graph["process_id"],
+            "version": process_graph["version"], "steps": len(process_graph["steps"]),
+        })
+        _save_process_pointer(process_graph)
+        prog["process_contract"] = {
+            "schema": process_graph["schema"], "process_id": process_graph["process_id"],
+            "version": process_graph["version"], "status": universal_process_status(process_graph),
+            "steps": process_graph["steps"],
+        }
+        stage("process_contract", "Universal Process Contract собран", "success",
+              detail="шагов: %d · неизвестные capability идут в generate/llm_worker" % len(process_graph["steps"]))
+
         schema_hint, sample_file = _inspect_sample(session_id)
         sample_files = _sample_files(session_id)
 
@@ -1373,12 +1684,25 @@ def _run_build(session_id, build_id):
         other_tasks = [t for t in tasks if not _is_pipeline_data_task(t)]
         topology = _pipeline_topology(data_tasks)
         if not sample_files:
-            stage("topology", "Проверяю входные данные", "error",
-                  detail="не приложен файл-образец")
-            prog["status"] = "error"
-            prog["error_struct"] = _build_error("no_sample_file")
-            prog["error"] = prog["error_struct"]["message"]
-            save(); _unlock(); return
+            # Non-file tasks (Downloads cleanup, API action, scheduled reasoning) still need a
+            # reproducible build input. This envelope is an inert fixture, never a hidden fallback
+            # to the user's home directory. Dangerous actions stay preview-only during acceptance.
+            fixture_dir = bdir / "build_fixture"
+            fixture_dir.mkdir(parents=True, exist_ok=True)
+            fixture = fixture_dir / "task_input.json"
+            fixture.write_text(json.dumps({
+                "schema": "upc-build-fixture/1.0", "session_id": session_id,
+                "goal": _build_session.get("questionnaire_task") or _build_session.get("goal") or
+                        blueprint.get("goal") or blueprint.get("process_name") or "",
+                "answers": _build_session.get("answers") or {},
+                "execution_mode": "build_validation_preview",
+                "constraints": ["do not mutate external state", "write only to output_dir"],
+            }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            sample_files = [fixture]
+            schema_hint, sample_file = "", str(fixture)
+            prog["synthetic_build_fixture"] = str(fixture)
+            stage("topology", "Создан безопасный образец для нефайловой задачи", "success",
+                  detail="внешние действия проверяются только как preview")
         # Один контракт и одна Source Model обязательны для ОБОИХ Builder-путей. Линейный Builder
         # остаётся на месте, но больше не кодогенит стадии из одного schema_hint в обход интервью/ТЗ.
         stage("task_contract", "Собираю единый Task Contract", "running")
@@ -1403,6 +1727,15 @@ def _run_build(session_id, build_id):
                               ("task_package.json", task_package)):
             (bdir / _name).write_text(json.dumps(_value, ensure_ascii=False, indent=2, default=str),
                                       encoding="utf-8")
+        process_graph["task_contract_ref"]["sha256"] = str(
+            (task_package.get("task_contract") or {}).get("sha256") or "")
+        process_graph["source_model_ref"]["sha256"] = hashlib.sha256(
+            json.dumps(source_model, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        process_checkpoint(process_graph, process_path, process_events_path, {
+            "type": "task_context_ready", "build_id": build_id,
+            "task_contract_sha256": process_graph["task_contract_ref"]["sha256"],
+            "source_model_sha256": process_graph["source_model_ref"]["sha256"],
+        })
         if not prepared.get("ok"):
             detail = str(prepared.get("why") or source_model.get("reason") or "Source Model не построена")
             stage("source_model", "Source Model не прошла проверку", "error", detail=detail)
@@ -1426,6 +1759,15 @@ def _run_build(session_id, build_id):
                                                  draft_created=False, expert_ran=False)
             prog["error"] = prog["error_struct"]["message"]
             if source_model["status"] == "need_human":
+                first = next(iter(universal_ready_steps(process_graph)), None)
+                if first:
+                    universal_block_for_human(process_graph, first["id"], question or detail)
+                    process_checkpoint(process_graph, process_path, process_events_path, {
+                        "type": "step_blocked_human", "step_id": first["id"], "question": question,
+                    })
+                    prog["process_contract"]["steps"] = process_graph["steps"]
+                    prog["process_contract"]["status"] = universal_process_status(process_graph)
+                    _save_process_pointer(process_graph)
                 stage("source_model", "Нужно подтвердить бизнес-смысл источников", "warn", detail=detail)
                 _wait_owner(question, "source_model", detail)
                 return
@@ -1434,8 +1776,334 @@ def _run_build(session_id, build_id):
         # Линейный кодоген получает ту же авторитетную фактуру; agentic path получает готовый
         # context и не делает второй, потенциально расходящийся вызов Source Model.
         llm["task_context"] = _builder_brief(task_package)
+        process_modes = {str((x.get("implementation") or {}).get("mode") or "")
+                         for x in (process_graph.get("steps") or [])}
         needs_agentic = (len(sample_files) > 1 or not topology["supported"] or
-                         source_model.get("strategy") == "holistic_build")
+                         source_model.get("strategy") == "holistic_build" or
+                         (len(process_graph.get("steps") or []) == 1 and
+                          bool(process_modes & {"generate", "llm_worker", "delegate"})))
+        use_upc_scheduler = (len(process_graph.get("steps") or []) > 1 or
+                             bool(process_modes & {"generate", "llm_worker", "acquire",
+                                                   "human", "delegate"}))
+        if use_upc_scheduler:
+            facts = []
+            if len(sample_files) > 1:
+                facts.append("входов: %d" % len(sample_files))
+            if topology["branches"]:
+                facts.append("ветки: " + ", ".join(topology["branches"]))
+            if topology["joins"]:
+                facts.append("merge: " + ", ".join(topology["joins"]))
+            stage("topology", "Граф передан пошаговому UPC runtime", "success",
+                  detail="; ".join(facts) or "каждый шаг имеет отдельного эксперта и checkpoint",
+                  build_mode="universal_process")
+            built_steps = []
+            all_verified_memory = []
+
+            def sync_process(event=None):
+                process_checkpoint(process_graph, process_path, process_events_path, event)
+                prog["process_contract"]["steps"] = process_graph["steps"]
+                prog["process_contract"]["status"] = universal_process_status(process_graph)
+                prog["process_contract"]["version"] = process_graph.get("version")
+                _save_process_pointer(process_graph)
+                save()
+
+            def step_progress(step, sid, title, status="running", detail=""):
+                prefix = "upc_" + re.sub(r"[^a-zA-Z0-9_-]+", "_", str(step.get("id") or "step"))
+                event_id = prefix + "_" + str(sid)
+                extra = {"build_mode": "universal_process", "step_id": step.get("id"),
+                         "step_version": step.get("version")}
+                if detail:
+                    extra["detail"] = str(detail)[:700]
+                prog.setdefault("agentic_events", []).append({
+                    "at": now(), "id": event_id, "step_id": step.get("id"),
+                    "title": str(title)[:300], "status": status,
+                    "detail": str(detail)[:700] if detail else "",
+                })
+                prog["agentic_events"] = prog["agentic_events"][-100:]
+                stage(event_id, title, status, **extra)
+
+            def input_files_for(step):
+                deps = [str(x) for x in step.get("dependencies") or []]
+                if not deps:
+                    return list(sample_files)
+                by_id = universal_step_map(process_graph)
+                files = []
+                dependency_doc = {"schema": "upc-dependency-bundle/1.0",
+                                  "step_id": step.get("id"), "dependencies": []}
+                for dep_id in deps:
+                    dep = by_id.get(dep_id) or {}
+                    dep_row = {"step_id": dep_id, "version": dep.get("version"),
+                               "output": dep.get("output"), "artifacts": dep.get("artifact_refs") or []}
+                    dependency_doc["dependencies"].append(dep_row)
+                    for raw in dep.get("artifact_refs") or []:
+                        path = Path(str(raw.get("path") if isinstance(raw, dict) else raw))
+                        if path.exists() and path.is_file():
+                            files.append(path)
+                if files:
+                    return list(dict.fromkeys(files))
+                dep_dir = bdir / "process" / "dependency_inputs"
+                dep_dir.mkdir(parents=True, exist_ok=True)
+                dep_path = dep_dir / (str(step.get("id")) + "_v" + str(step.get("version")) + ".json")
+                dep_path.write_text(json.dumps(dependency_doc, ensure_ascii=False, indent=2, default=str),
+                                    encoding="utf-8")
+                return [dep_path]
+
+            while True:
+                status_now = universal_process_status(process_graph)
+                if status_now == "succeeded":
+                    break
+                ready = list(universal_ready_steps(process_graph))
+                if not ready:
+                    detail = "нет готовых шагов; состояние графа: " + status_now
+                    prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                    prog["error_struct"] = _build_error("agentic_build_failed", detail,
+                                                         failure_kind="scheduler")
+                    prog["error"] = prog["error_struct"]["message"]
+                    sync_process({"type": "process_stalled", "detail": detail})
+                    _unlock(); return
+
+                for step in ready:
+                    step_id = str(step.get("id"))
+                    mode = str((step.get("implementation") or {}).get("mode") or "generate")
+                    if mode in ("human", "acquire"):
+                        question = (("Подтвердите или предоставьте способность для шага: "
+                                     if mode == "acquire" else "Нужен ответ для шага: ") +
+                                    str(step.get("title") or step_id))
+                        universal_block_for_human(process_graph, step_id, question)
+                        sync_process({"type": "step_blocked_human", "step_id": step_id,
+                                      "step_version": step.get("version"), "mode": mode,
+                                      "question": question})
+                        step_progress(step, "human", "Нужен человек · " + step.get("title", step_id),
+                                      "warn", question)
+                        _wait_owner(question, "upc_step:" + step_id, mode)
+                        return
+
+                    step_files = input_files_for(step)
+                    universal_transition_step(process_graph, step_id, "running",
+                                              "resolving and building step implementation")
+                    sync_process({"type": "step_started", "step_id": step_id,
+                                  "step_version": step.get("version"), "mode": mode,
+                                  "dependencies": step.get("dependencies") or []})
+                    step_progress(step, "resolve", "Собираю шаг · " + step.get("title", step_id),
+                                  "running", "режим: " + mode)
+
+                    def source_progress(attempt, total, state, detail, _step=step):
+                        step_progress(_step, "source", "Проверяю входы шага · попытка %d/%d" %
+                                      (attempt, total), "running" if state == "running" else state, detail)
+
+                    step_context = prepare_task_context(
+                        session_id, step_files, SESS_DIR, llm, progress=source_progress,
+                        step_contract=step)
+                    if not step_context.get("ok"):
+                        source = step_context.get("source_model") or {}
+                        question = str(source.get("question") or "")
+                        detail = str(step_context.get("why") or source.get("reason") or
+                                     "не удалось доказанно понять входы шага")
+                        if question or source.get("status") in ("need_human", "acquire"):
+                            universal_block_for_human(process_graph, step_id, question or detail)
+                            sync_process({"type": "step_blocked_human", "step_id": step_id,
+                                          "question": question or detail, "detail": detail})
+                            _wait_owner(question or detail, "upc_step:" + step_id, detail)
+                            return
+                        universal_transition_step(process_graph, step_id, "failed", detail,
+                                                  {"error": {"code": "source_model_failed",
+                                                             "message": detail}})
+                        sync_process({"type": "step_failed", "step_id": step_id,
+                                      "code": "source_model_failed", "detail": detail})
+                        prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                        prog["error_struct"] = _build_error("source_model_failed", detail,
+                                                             failure_kind="builder_defect")
+                        prog["error"] = prog["error_struct"]["message"]
+                        save(); _unlock(); return
+
+                    safe_step = re.sub(r"[^a-z0-9]+", "_", step_id.casefold()).strip("_")[:28] or "step"
+                    stable_expert = (ns + "_" + safe_step + "_v" + str(step.get("version")))[:64]
+
+                    def agentic_progress(sid, title, state="running", detail="", _step=step):
+                        step_progress(_step, sid, title, state, detail)
+
+                    solution = build_agentic_solution(
+                        session_id=session_id, build_id=build_id, namespace=ns,
+                        sample_files=step_files, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
+                        llm=llm, progress=agentic_progress, max_creation_attempts=4,
+                        max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=10,
+                        max_elapsed_seconds=3600, prepared_context=step_context,
+                        step_contract=step, expert_name_override=stable_expert)
+                    if not solution.get("ok"):
+                        detail = str(solution.get("detail") or "шаг не прошёл приёмку")
+                        question = str(solution.get("owner_question") or "")
+                        step["attempts"] = solution.get("attempts") or []
+                        step["error"] = {"code": solution.get("code") or "agentic_acceptance_failed",
+                                         "message": detail}
+                        if question:
+                            universal_block_for_human(process_graph, step_id, question)
+                            event = "step_blocked_human"
+                        else:
+                            universal_transition_step(process_graph, step_id, "failed", detail)
+                            event = "step_failed"
+                        sync_process({"type": event, "step_id": step_id,
+                                      "step_version": step.get("version"),
+                                      "code": solution.get("code"), "detail": detail})
+                        prog["attempts"] = solution.get("attempts") or []
+                        prog["working_memory"] = solution.get("working_memory") or {}
+                        prog["repair_budgets"] = solution.get("budgets") or {}
+                        if question:
+                            _wait_owner(question, "upc_step:" + step_id, detail)
+                            return
+                        prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                        error_code = solution.get("code") if solution.get("code") in BUILD_ERRORS else "agentic_acceptance_failed"
+                        prog["error_struct"] = _build_error(
+                            error_code, detail, attempts=len(solution.get("attempts") or []),
+                            failure_kind=solution.get("failure_kind") or "",
+                            draft_created=bool(solution.get("draft_created")),
+                            expert_ran=bool(solution.get("expert_ran")),
+                            last_applied_lesson=solution.get("last_applied_lesson") or "",
+                            last_unapplied_lesson=solution.get("last_unapplied_lesson") or "")
+                        prog["error"] = prog["error_struct"]["message"]
+                        save(); _unlock(); return
+
+                    step["implementation"]["expert_ref"] = solution.get("expert")
+                    step["implementation"]["expert_version"] = step.get("version")
+                    step["implementation"]["package_sha256"] = solution.get("package_sha256")
+                    step_result = normalize_step_result(
+                        solution.get("result") or {}, step_id, step.get("version"),
+                        attempt=len(solution.get("attempts") or []) or 1)
+                    raw_result = solution.get("result") if isinstance(solution.get("result"), dict) else {}
+                    proposal = raw_result.get("proposed_steps") if raw_result.get("needs_subprocess") else None
+                    expansion = None
+                    if proposal:
+                        try:
+                            expansion = universal_expand_subgraph(
+                                process_graph, step_id, proposal,
+                                reason=raw_result.get("subprocess_reason") or step.get("purpose") or "",
+                                delegation_depth=int(((step.get("delegation") or {}).get("depth") or 0)) + 1)
+                        except Exception as exc:
+                            detail = "предложенный подграф отклонён runtime: " + str(exc)
+                            universal_transition_step(process_graph, step_id, "failed", detail,
+                                                      {"error": {"code": "invalid_subgraph",
+                                                                 "message": detail}})
+                            sync_process({"type": "subgraph_rejected", "step_id": step_id,
+                                          "detail": detail})
+                            prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                            prog["error_struct"] = _build_error("agentic_acceptance_failed", detail,
+                                                                 failure_kind="delegation")
+                            prog["error"] = prog["error_struct"]["message"]
+                            save(); _unlock(); return
+                    memory = []
+                    for raw in solution.get("verified_memory") or []:
+                        if not isinstance(raw, dict) or not raw.get("text"):
+                            continue
+                        kind = raw.get("kind") if raw.get("kind") in ("concept", "rule") else "concept"
+                        memory.append(universal_memory_entry(
+                            kind, raw.get("text"), status="candidate",
+                            scope=raw.get("scope") or "process",
+                            source={"type": "llm_judge", "ref": solution.get("package_sha256") or ""},
+                            evidence_refs=[step_result.get("raw_sha256") or ""],
+                            confidence=raw.get("confidence", 0.8), step_id=step_id,
+                            step_version=step.get("version"),
+                            attempt=len(solution.get("attempts") or []) or 1))
+                    accepted = universal_accept_step(
+                        process_graph, step_id, step_result,
+                        semantic_verdict=solution.get("judge") or {}, memory=memory)
+                    if not accepted.get("ok"):
+                        detail = "; ".join((accepted.get("validation") or {}).get("issues") or [])
+                        sync_process({"type": "step_repairing", "step_id": step_id,
+                                      "step_version": step.get("version"), "detail": detail})
+                        prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                        prog["error_struct"] = _build_error("agentic_acceptance_failed", detail,
+                                                             failure_kind="acceptance",
+                                                             draft_created=True, expert_ran=True)
+                        prog["error"] = prog["error_struct"]["message"]
+                        save(); _unlock(); return
+                    built_steps.append(solution.get("expert"))
+                    all_verified_memory.extend(solution.get("verified_memory") or [])
+                    sync_process({"type": "step_accepted", "step_id": step_id,
+                                  "step_version": step.get("version"),
+                                  "expert_ref": solution.get("expert"),
+                                  "step_result_sha256": step_result.get("raw_sha256"),
+                                  "subgraph": expansion})
+                    step_progress(step, "accepted", "Шаг принят · " + step.get("title", step_id),
+                                  "success", "эксперт: " + str(solution.get("expert")))
+
+            stage("package", "Компилирую принятый граф в процесс Extella", "running",
+                  build_mode="universal_process")
+            orchestrator, orch_saved, orch_code = _make_upc_orchestrator(
+                ns, process_graph, str(bdir / "process_runtime"))
+            if not orchestrator:
+                detail = "оркестратор не сохранён: " + str(orch_saved)[:500]
+                prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                prog["error_struct"] = _build_error("orchestrator_failed", detail)
+                prog["error"] = prog["error_struct"]["message"]
+                save(); _unlock(); return
+            built_names = list(dict.fromkeys(built_steps + [orchestrator]))
+            aud = _audit_experts(built_names)
+            manifest = {
+                "manifest_version": 4, "contract": "upc/1.0", "build_mode": "universal_process",
+                "process": ns, "process_id": process_graph.get("process_id"),
+                "process_version": process_graph.get("version"), "orchestrator": orchestrator,
+                "build_id": build_id, "session_id": session_id, "built_at": now(),
+                "process_contract_path": str(process_path),
+                "task_contract": task_package.get("task_contract") or {},
+                "source_model": source_model,
+                "steps": [{"id": row.get("id"), "title": row.get("title"),
+                           "mode": (row.get("implementation") or {}).get("mode"),
+                           "expert": (row.get("implementation") or {}).get("expert_ref"),
+                           "version": row.get("version"), "status": row.get("status"),
+                           "dependencies": row.get("dependencies") or []}
+                          for row in process_graph.get("steps") or []],
+                "verified_memory": all_verified_memory,
+                "runtime": {"checkpoint": True, "local_repair": True, "human_interrupt": True,
+                            "approval_json": True, "max_steps": 40},
+            }
+            (bdir / "upc_orchestrator.py.cspl").write_text(orch_code, encoding="utf-8")
+            (bdir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2,
+                                                            default=str), encoding="utf-8")
+            prog.update({"audit": aud, "built_experts": built_names, "orchestrator": orchestrator,
+                         "build_mode": "universal_process", "manifest": manifest,
+                         "verified_memory": all_verified_memory})
+            stage("package", "Граф упакован в возобновляемый процесс", "success",
+                  expert=orchestrator, detail="шагов: %d · checkpoint: да" % len(built_steps),
+                  build_mode="universal_process")
+            stage("audit", "Проверяю код и полномочия перед запуском", "success",
+                  verdict=aud["verdict"], issues=aud["issues"], build_mode="universal_process")
+
+            sp = SESS_DIR / (session_id + ".json")
+            lock_handle = None
+            try:
+                import fcntl
+                lock_handle = open(str(sp) + ".lock", "w")
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+                session = json.loads(sp.read_text(encoding="utf-8"))
+                session["stage"] = "built"
+                session.pop("building", None)
+                session.pop("waiting_build", None)
+                session.setdefault("builds", []).append({
+                    "build_id": build_id, "at": now(), "build_mode": "universal_process",
+                    "experts": built_names, "components_human": [row.get("title") for row in
+                                                                    process_graph.get("steps") or []],
+                    "audit": aud, "orchestrator": orchestrator, "manifest": manifest,
+                    "source_file": str(sample_files[0]) if len(sample_files) == 1 else str(Path(sample_files[0]).parent),
+                    "source_files": [str(x) for x in sample_files],
+                    "task_contract": task_package.get("task_contract") or {},
+                    "source_model": source_model, "verified_memory": all_verified_memory,
+                    "process_contract": session.get("process_contract"), "agentic_contract": 2,
+                    "process_contract_version": 1,
+                })
+                session["updated_at"] = now()
+                atomic_write_json(sp, session)
+            finally:
+                if lock_handle is not None:
+                    try:
+                        fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                        lock_handle.close()
+                    except Exception:
+                        pass
+            process_graph["run"]["finished_at"] = now()
+            sync_process({"type": "process_built", "orchestrator": orchestrator,
+                          "experts": built_names})
+            prog["status"] = "built"
+            save()
+            return
         if needs_agentic:
             facts = []
             if len(sample_files) > 1:
@@ -1448,6 +2116,24 @@ def _run_build(session_id, build_id):
             detail = "; ".join(facts) or "план не является последовательной цепочкой"
             stage("topology", "Несколько входов или ветки — Qwen решит задачу целиком", "success",
                   detail=detail, build_mode="agentic")
+
+            # A single-step unknown task is the vertical UPC path: the generated Extella expert is
+            # the implementation of that exact step, and only its accepted StepResult closes it.
+            # Multi-step DAGs remain explicit in the ledger; they are not falsely marked accepted by
+            # the legacy holistic fallback while the per-step scheduler is being applied below.
+            upc_active_step = None
+            if len(process_graph.get("steps") or []) == 1:
+                upc_active_step = next(iter(universal_ready_steps(process_graph)), None)
+                if upc_active_step:
+                    universal_transition_step(process_graph, upc_active_step["id"], "running",
+                                              "Builder started the generated implementation")
+                    process_checkpoint(process_graph, process_path, process_events_path, {
+                        "type": "step_started", "step_id": upc_active_step["id"],
+                        "step_version": upc_active_step["version"], "mode": "generate",
+                    })
+                    prog["process_contract"]["steps"] = process_graph["steps"]
+                    prog["process_contract"]["status"] = universal_process_status(process_graph)
+                    _save_process_pointer(process_graph)
 
             def _agentic_progress(sid, title, status="running", detail=""):
                 extra = {"build_mode": "agentic"}
@@ -1492,6 +2178,21 @@ def _run_build(session_id, build_id):
                 prog["expert_ran"] = bool(solution.get("expert_ran"))
                 prog["last_applied_lesson"] = solution.get("last_applied_lesson") or ""
                 prog["last_unapplied_lesson"] = solution.get("last_unapplied_lesson") or ""
+                if upc_active_step:
+                    if solution.get("owner_question"):
+                        universal_block_for_human(process_graph, upc_active_step["id"],
+                                                  solution.get("owner_question"))
+                        event_type = "step_blocked_human"
+                    else:
+                        universal_transition_step(process_graph, upc_active_step["id"], "failed", detail)
+                        event_type = "step_failed"
+                    process_checkpoint(process_graph, process_path, process_events_path, {
+                        "type": event_type, "step_id": upc_active_step["id"],
+                        "code": solution.get("code") or "agentic_acceptance_failed", "detail": detail,
+                    })
+                    prog["process_contract"]["steps"] = process_graph["steps"]
+                    prog["process_contract"]["status"] = universal_process_status(process_graph)
+                    _save_process_pointer(process_graph)
                 error_code = solution.get("code") or "agentic_acceptance_failed"
                 if error_code not in BUILD_ERRORS:
                     error_code = "agentic_acceptance_failed"
@@ -1512,6 +2213,46 @@ def _run_build(session_id, build_id):
                     _wait_owner(solution.get("owner_question") or "", "acceptance", detail)
                     return
                 save(); _unlock(); return
+
+            if upc_active_step:
+                step_result = normalize_step_result(
+                    solution.get("result") or {}, upc_active_step["id"], upc_active_step["version"],
+                    attempt=len(solution.get("attempts") or []) or 1)
+                accepted_memory = []
+                for raw in solution.get("verified_memory") or []:
+                    if not isinstance(raw, dict) or not raw.get("text"):
+                        continue
+                    kind = raw.get("kind") if raw.get("kind") in ("concept", "rule") else "concept"
+                    accepted_memory.append(universal_memory_entry(
+                        kind, raw.get("text"), status="candidate", scope=raw.get("scope") or "process",
+                        source={"type": "llm_judge", "ref": solution.get("package_sha256") or ""},
+                        evidence_refs=[step_result.get("raw_sha256") or ""],
+                        confidence=raw.get("confidence", 0.8), step_id=upc_active_step["id"],
+                        step_version=upc_active_step["version"],
+                        attempt=len(solution.get("attempts") or []) or 1))
+                upc_acceptance = universal_accept_step(
+                    process_graph, upc_active_step["id"], step_result,
+                    semantic_verdict=solution.get("judge") or {}, memory=accepted_memory)
+                process_checkpoint(process_graph, process_path, process_events_path, {
+                    "type": "step_accepted" if upc_acceptance.get("ok") else "step_repairing",
+                    "step_id": upc_active_step["id"], "step_version": upc_active_step["version"],
+                    "step_result_sha256": step_result.get("raw_sha256"),
+                    "issues": (upc_acceptance.get("validation") or {}).get("issues") or [],
+                })
+                prog["process_contract"]["steps"] = process_graph["steps"]
+                prog["process_contract"]["status"] = universal_process_status(process_graph)
+                _save_process_pointer(process_graph)
+                if not upc_acceptance.get("ok"):
+                    detail = "; ".join((upc_acceptance.get("validation") or {}).get("issues") or [])
+                    stage("upc_accept", "UPC не принял StepResult", "error", detail=detail)
+                    prog["status"] = "error"
+                    prog["error_struct"] = _build_error("agentic_acceptance_failed", detail,
+                                                         failure_kind="acceptance",
+                                                         draft_created=True, expert_ran=True)
+                    prog["error"] = prog["error_struct"]["message"]
+                    save(); _unlock(); return
+                stage("upc_accept", "Шаг UPC принят и сохранён в checkpoint", "success",
+                      detail=upc_active_step["title"] + " · v" + str(upc_active_step["version"]))
 
             expert = solution["expert"]
             stage("package", "Упаковываю доказанное решение в процесс Extella", "running",

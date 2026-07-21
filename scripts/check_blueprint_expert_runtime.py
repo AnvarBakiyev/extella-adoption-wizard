@@ -13,12 +13,15 @@ SRC = (ROOT / "experts" / "wz_generate_blueprint.py").read_text(encoding="utf-8"
 class FakeResponse:
     status_code = 200
     text = ""
+    unknown = False
 
     def json(self):
         bp = {
             "process_name": "Тестовый процесс", "goal": "Проверить runtime",
             "stages": [{"id": "read", "title": "Чтение",
-                        "capability_ids": ["documents"], "asset_names": ["doc_read"]}],
+                        "capability_ids": (["uncatalogued_cleanup"] if self.unknown else ["documents"]),
+                        "asset_names": ([] if self.unknown else ["doc_read"]),
+                        "implementation_mode": ("reuse" if self.unknown else "reuse")}],
             "gaps": [], "open_questions": [],
             "suitability": {"score": 80, "risk_level": "low",
                             "self_serve_allowed": True, "rationale": "test"},
@@ -71,8 +74,27 @@ def main():
         assert result.get("status") == "success", result
         saved = json.loads(output.read_text(encoding="utf-8"))
         assert saved["blueprint"]["crux_layer"]["layer"] == "orchestration"
+        assert saved["blueprint"]["stages"][0]["implementation_mode"] == "reuse"
         assert json.loads(session.read_text(encoding="utf-8"))["blueprint_path"] == str(output)
-    print("wz_generate_blueprint: prompt строится, LLM-ветка исполняется, файл сохраняется ✓")
+        # Каталог — инвентарь: неизвестный компонент не делает план пустым и маршрутизируется в generate.
+        FakeResponse.unknown = True
+        old_requests = sys.modules.get("requests")
+        sys.modules["requests"] = FakeRequests
+        try:
+            result = load_expert()(session_path=str(session), catalog_path=str(catalog),
+                                   output_path=str(output), api_key="fake", model="qwen-test")
+        finally:
+            FakeResponse.unknown = False
+            if old_requests is None:
+                sys.modules.pop("requests", None)
+            else:
+                sys.modules["requests"] = old_requests
+        assert result.get("status") == "success", result
+        saved = json.loads(output.read_text(encoding="utf-8"))
+        stage = saved["blueprint"]["stages"][0]
+        assert stage["implementation_mode"] == "generate", stage
+        assert stage["requested_components"] == ["uncatalogued_cleanup"]
+    print("wz_generate_blueprint: prompt/runtime + catalog-as-inventory unknown→generate ✓")
 
 
 if __name__ == "__main__":

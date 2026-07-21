@@ -35,6 +35,16 @@ from wz_platform import CONFIG, BASE, HEADERS, _scrub, api, parse_expert_result,
 
 # Фаза 1, шов #2: LLM/агент-роутинг (run_llm_expert/_gen_identity/design_agent) вынесен в wz_llm.py
 from wz_llm import run_llm_expert, _gen_identity, design_agent
+from wz_process import (answer_human as process_answer_human,
+                        atomic_write_json as process_atomic_write,
+                        checkpoint as process_checkpoint,
+                        memory_entry as process_memory_entry,
+                        add_memory as process_add_memory,
+                        process_status as universal_process_status,
+                        process_from_blueprint,
+                        record_approval as process_record_approval,
+                        repair_step as process_repair_step,
+                        step_map as universal_step_map)
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
 _CAT_DIR = Path.home() / "extella_wizard" / "catalog"
@@ -149,7 +159,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "5.06"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "5.07"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -1658,6 +1668,77 @@ def _composer_catalog_add(block):
                             "description": "composer catalog", "global": True})
     ok = not (isinstance(r, dict) and r.get("status") == "error")
     return {"ok": ok, "blocks": len(blocks), "why": "" if ok else _scrub(str(r)[:120])}
+
+
+def _composer_process_contract(task, composer_result):
+    """Project Composer output onto the same durable process used by Wizard/Chat/Workspace.
+
+    A catalog miss is represented as a generative/acquire step, never as an empty automation.
+    Composer may still keep its legacy flow card, but it no longer owns execution truth.
+    """
+    result = composer_result if isinstance(composer_result, dict) else {}
+    sid = "wz_comp_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    steps = []
+    previous = []
+    for index, raw in enumerate(result.get("steps") or [], 1):
+        if not isinstance(raw, dict):
+            continue
+        expert = str(raw.get("expert") or "").strip()
+        title = str(raw.get("title") or raw.get("save_as") or expert or ("Шаг %d" % index))
+        step_id = "c%03d" % index
+        steps.append({"id": step_id, "title": title, "business_description": title,
+                      "depends_on": list(previous), "implementation_mode": "reuse",
+                      "capability_ref": expert, "expert_ref": expert,
+                      "inputs": ["previous step output"] if previous else ["task input"],
+                      "outputs": [str(raw.get("save_as") or "step_result_json")],
+                      "permissions": {"read": ["declared_inputs"], "create": ["run_output_dir"]}})
+        previous = [step_id]
+    for missing in result.get("missing") or []:
+        text = str(missing).strip()
+        if not text:
+            continue
+        step_id = "c%03d" % (len(steps) + 1)
+        acquire = any(word in text.casefold() for word in ("установ", "install", "token", "ключ", "доступ"))
+        permissions = {"read": ["declared_inputs"], "create": ["run_output_dir"]}
+        if acquire:
+            permissions["install"] = [text]
+        steps.append({"id": step_id, "title": text, "business_description": text,
+                      "depends_on": list(previous),
+                      "implementation_mode": "acquire" if acquire else "generate",
+                      "inputs": ["previous step output"] if previous else ["task input"],
+                      "outputs": ["step_result_json"], "permissions": permissions})
+        previous = [step_id]
+    if not steps:
+        steps = [{"id": "c001", "title": str(task)[:240],
+                  "business_description": str(task)[:1000], "depends_on": [],
+                  "implementation_mode": "generate", "inputs": ["task input"],
+                  "outputs": ["step_result_json"],
+                  "permissions": {"read": ["declared_inputs"], "create": ["run_output_dir"]}}]
+    title = str(((result.get("card") or {}).get("name") if isinstance(result.get("card"), dict) else "")
+                or task)[:240]
+    blueprint = {"schema_version": 1, "process_name": title, "goal": str(task)[:2000],
+                 "summary": str(task)[:1000], "archetype": {"id": "universal_process"},
+                 "suitability": {"score": 100, "reason": "Universal Process Runtime"},
+                 "stages": steps, "origin": "composer"}
+    stamp = datetime.now(timezone.utc).isoformat()
+    session = {"session_id": sid, "client_name": title, "goal": str(task)[:2000],
+               "questionnaire_task": str(task)[:2000], "stage": "blueprint",
+               "answers": {"task": {"question": "Что сделать?", "answer": str(task)[:6000]}},
+               "files": [], "agent_id": qwen_agent(), "created_at": stamp, "updated_at": stamp}
+    graph = process_from_blueprint(sid, blueprint, origin="composer")
+    process_path = SESS_DIR / (sid + "_process.json")
+    events_path = SESS_DIR / (sid + "_process_events.jsonl")
+    process_checkpoint(graph, process_path, events_path, {
+        "type": "process_created", "origin": "composer", "steps": len(graph.get("steps") or [])})
+    session["process_contract"] = {"schema": graph.get("schema"), "path": str(process_path),
+                                   "process_id": graph.get("process_id"),
+                                   "active_version": graph.get("version"), "active_run_id": "",
+                                   "status": universal_process_status(graph), "updated_at": stamp}
+    process_atomic_write(SESS_DIR / (sid + ".json"), session)
+    process_atomic_write(SESS_DIR / (sid + "_blueprint.json"), {"blueprint": blueprint,
+                                                                 "created_at": stamp})
+    return {"session_id": sid, "process_id": graph.get("process_id"),
+            "process_status": universal_process_status(graph), "process": graph}
 
 
 def _wrap_spec(tool, purpose, agent_id=None):
@@ -4636,10 +4717,15 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 try:
                     s = json.loads(p.read_text(encoding="utf-8"))
+                    process_pointer = (s.get("process_contract")
+                                       if isinstance(s.get("process_contract"), dict) else {})
                     out.append({"session_id": s.get("session_id"), "client_name": s.get("client_name"),
                                 "stage": s.get("stage"), "updated_at": s.get("updated_at"),
                                 "answers_count": len(s.get("answers", {})),
                                 "agent_id": s.get("agent_id"), "agent_name": s.get("agent_name"),
+                                "process_id": process_pointer.get("process_id"),
+                                "process_status": process_pointer.get("status"),
+                                "process_version": process_pointer.get("active_version"),
                                 "comments_open": sum(1 for c in s.get("comments", []) if not c.get("resolved"))})
                 except Exception:
                     continue
@@ -4651,6 +4737,41 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"status": "error", "message": "session not found"}, 404)
             else:
                 self._send(json.loads(p.read_text(encoding="utf-8")))
+        elif path == "/x/process":
+            # Canonical read model for Wizard, Chat, Composer and Workspace. `surface` is only
+            # attribution; no surface owns a second copy of execution state.
+            import urllib.parse as _up
+            sid = _up.unquote(qs.get("session_id", "") or qs.get("id", ""))
+            if not SAFE_ID.match(sid or ""):
+                self._send({"status": "error", "message": "bad session_id"}, 400)
+                return
+            sp = SESS_DIR / (sid + ".json")
+            pp = SESS_DIR / (sid + "_process.json")
+            if not sp.exists():
+                self._send({"status": "error", "message": "session not found"}, 404)
+                return
+            if not pp.exists():
+                session = json.loads(sp.read_text(encoding="utf-8"))
+                self._send({"status": "success", "process": None,
+                            "legacy": not bool(session.get("process_contract")),
+                            "surface": qs.get("surface", "wizard")})
+                return
+            try:
+                graph = json.loads(pp.read_text(encoding="utf-8"))
+                events = []
+                ep = SESS_DIR / (sid + "_process_events.jsonl")
+                if ep.exists():
+                    for line in ep.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]:
+                        try:
+                            events.append(json.loads(line))
+                        except Exception:
+                            pass
+                self._send({"status": "success", "surface": qs.get("surface", "wizard"),
+                            "process_status": universal_process_status(graph),
+                            "process": graph, "events": events})
+            except Exception as exc:
+                self._send({"status": "error", "message": "process contract is corrupt: " +
+                            _scrub(str(exc)[:240])}, 500)
         elif path == "/x/agents":
             # Ф2: реестр агентов визарда + текущий выбранный (инвариант «видно, для кого строим»)
             self._send({"status": "success", **_agents_state()})
@@ -6058,6 +6179,94 @@ class Handler(BaseHTTPRequestHandler):
                              kwargs={"wait": 3600}, daemon=True).start()
             self._send({"status": "success", "run_id": run_id})
 
+        elif self.path == "/x/process_action":
+            # Shared mutation seam for Chat, Wizard, Composer and Workspace. Every action changes
+            # the canonical sidecar and appends an event before an optional resume build starts.
+            sid = str(body.get("session_id", ""))
+            action = str(body.get("action", "")).strip().lower()
+            step_id = str(body.get("step_id", ""))
+            sp = SESS_DIR / (sid + ".json")
+            pp = SESS_DIR / (sid + "_process.json")
+            ep = SESS_DIR / (sid + "_process_events.jsonl")
+            if not SAFE_ID.match(sid or "") or not sp.exists() or not pp.exists():
+                self._send({"status": "error", "message": "process not found"}, 404)
+                return
+            session = json.loads(sp.read_text(encoding="utf-8"))
+            active = str(session.get("building") or "")
+            if active:
+                try:
+                    active_status = json.loads((RUNS_DIR / active / "build_progress.json").read_text(
+                        encoding="utf-8")).get("status")
+                except Exception:
+                    active_status = ""
+                if active_status == "running":
+                    self._send({"status": "error", "message": "стройка уже выполняет граф"}, 409)
+                    return
+            try:
+                graph = json.loads(pp.read_text(encoding="utf-8"))
+                step = universal_step_map(graph).get(step_id)
+                if not step:
+                    raise ValueError("unknown step")
+                event = {"type": "process_action", "action": action, "step_id": step_id,
+                         "surface": str(body.get("surface") or "wizard")[:40]}
+                resume = False
+                if action in ("repair", "retry"):
+                    outcome = process_repair_step(
+                        graph, step_id, str(body.get("reason") or "owner requested local repair")[:1000])
+                    event.update({"type": "step_repair_requested", "outcome": outcome})
+                    resume = True
+                elif action == "answer":
+                    answer = str(body.get("answer") or "").strip()[:6000]
+                    if not answer:
+                        raise ValueError("answer is empty")
+                    process_answer_human(graph, step_id, answer, by="owner")
+                    rule = process_memory_entry(
+                        "rule", answer, status="verified", scope="process",
+                        source={"type": "owner", "ref": "process_action"},
+                        evidence_refs=["human_answer:" + step_id], confidence=1.0,
+                        step_id=step_id, step_version=step.get("version"), attempt=0)
+                    process_add_memory(graph, [rule], accepted=True)
+                    event.update({"type": "human_answered", "answer_ref": rule.get("id")})
+                    resume = True
+                elif action == "approve":
+                    permission = str(body.get("permission") or "")
+                    target = str(body.get("target") or "")
+                    payload = body.get("payload")
+                    approved = body.get("approved") is True
+                    approval = process_record_approval(
+                        graph, step_id, permission, target, payload, approved, by="owner")
+                    event.update({"type": "permission_decided", "approval": approval})
+                    approval_key = step_id + ":v" + str(step.get("version") or 1)
+                    def remember_approval(s):
+                        s.setdefault("process_approvals", {})[approval_key] = approved
+                    _update_session(sid, remember_approval)
+                elif action == "resume":
+                    if step.get("status") not in ("ready", "repairing", "failed", "stale"):
+                        raise ValueError("step is not resumable from " + str(step.get("status")))
+                    if step.get("status") != "ready":
+                        process_repair_step(graph, step_id, "owner resumed step")
+                    event["type"] = "process_resume_requested"
+                    resume = True
+                else:
+                    raise ValueError("unsupported process action")
+                process_checkpoint(graph, pp, ep, event)
+                def pointer(s):
+                    p = s.get("process_contract") if isinstance(s.get("process_contract"), dict) else {}
+                    p.update({"schema": graph.get("schema"), "path": str(pp),
+                              "process_id": graph.get("process_id"),
+                              "active_version": graph.get("version"),
+                              "status": universal_process_status(graph),
+                              "updated_at": datetime.now(timezone.utc).isoformat()})
+                    s["process_contract"] = p
+                _update_session(sid, pointer)
+                build_id = _start_build_job(sid) if resume else ""
+                self._send({"status": "success", "action": action, "step_id": step_id,
+                            "process_status": universal_process_status(graph),
+                            "process_version": graph.get("version"), "build_id": build_id,
+                            "event": event})
+            except Exception as exc:
+                self._send({"status": "error", "message": _scrub(str(exc)[:400])}, 409)
+
         elif self.path == "/x/build_answer":
             sid = str(body.get("session_id", ""))
             previous_build_id = str(body.get("build_id", ""))
@@ -6099,6 +6308,40 @@ class Handler(BaseHTTPRequestHandler):
                 apply_owner_clarification(s, question, answer, previous_build_id)
 
             _update_session(sid, save_answer)
+            waiting_phase = str(progress.get("waiting_phase") or "")
+            if waiting_phase.startswith("upc_step:"):
+                step_id = waiting_phase.split(":", 1)[1]
+                process_path = SESS_DIR / (sid + "_process.json")
+                events_path = SESS_DIR / (sid + "_process_events.jsonl")
+                try:
+                    graph = json.loads(process_path.read_text(encoding="utf-8"))
+                    step = universal_step_map(graph).get(step_id)
+                    if not step or step.get("status") != "blocked_human":
+                        raise ValueError("step is no longer waiting for an answer")
+                    process_answer_human(graph, step_id, answer, by="owner")
+                    rule = process_memory_entry(
+                        "rule", answer, status="verified", scope="process",
+                        source={"type": "owner", "ref": previous_build_id},
+                        evidence_refs=["human_answer:" + previous_build_id], confidence=1.0,
+                        step_id=step_id, step_version=step.get("version"), attempt=0)
+                    process_add_memory(graph, [rule], accepted=True)
+                    process_checkpoint(graph, process_path, events_path, {
+                        "type": "human_answered", "step_id": step_id,
+                        "step_version": step.get("version"), "answer_ref": rule.get("id"),
+                    })
+                    def update_process_pointer(s):
+                        pointer = s.get("process_contract") if isinstance(s.get("process_contract"), dict) else {}
+                        pointer.update({"schema": graph.get("schema"), "path": str(process_path),
+                                        "process_id": graph.get("process_id"),
+                                        "active_version": graph.get("version"),
+                                        "status": universal_process_status(graph),
+                                        "updated_at": datetime.now(timezone.utc).isoformat()})
+                        s["process_contract"] = pointer
+                    _update_session(sid, update_process_pointer)
+                except Exception as exc:
+                    self._send({"status": "error", "message": "не удалось продолжить шаг: " +
+                                _scrub(str(exc)[:300])}, 409)
+                    return
             answer_id = "builder_clarification_" + hashlib.sha256(question.encode("utf-8")).hexdigest()[:12]
             progress["status"] = "resumed"
             progress["owner_answer"] = answer
@@ -6431,6 +6674,9 @@ class Handler(BaseHTTPRequestHandler):
                 _aout = RUNS_DIR / "process_runs" / sid / _agentic_run_id
                 _aout.mkdir(parents=True, exist_ok=True)
                 _agentic_output_dir = str(_aout)
+            _upc_approval_json = ""
+            if int(lb.get("process_contract_version", 0) or 0) >= 1:
+                _upc_approval_json = json.dumps(s.get("process_approvals") or {}, ensure_ascii=False)
             if isinstance(orch, dict):
                 orch = orch.get("expert_name")
             if orch == "ci_run_pipeline":
@@ -6509,6 +6755,8 @@ class Handler(BaseHTTPRequestHandler):
                         _op["rules_json"] = json.dumps(_rules_payload(s), ensure_ascii=False)
                     if s.get("fields"):
                         _op["fields_json"] = json.dumps(s["fields"], ensure_ascii=False)
+                if _upc_approval_json:
+                    _op["approval_json"] = _upc_approval_json
                 res, _att = _run_expert_resilient(orch, _op, wait=600)
                 ok = isinstance(res, dict) and str(res.get("status", "")) in ("success", "partial")
                 digest = ((res or {}).get("digest_md") or (res or {}).get("digest") or "") if isinstance(res, dict) else ""
@@ -6572,6 +6820,8 @@ class Handler(BaseHTTPRequestHandler):
                         _fp["rules_json"] = json.dumps(_rules_payload(s), ensure_ascii=False)
                     if s.get("fields"):
                         _fp["fields_json"] = json.dumps(s["fields"], ensure_ascii=False)
+                if _upc_approval_json:
+                    _fp["approval_json"] = _upc_approval_json
                 res, _att = _run_expert_resilient(orch, _fp, wait=900)
             else:
                 _drift = {"drift": False}
@@ -6593,6 +6843,8 @@ class Handler(BaseHTTPRequestHandler):
                         _fp2["rules_json"] = json.dumps(_rules_payload(s), ensure_ascii=False)
                     if s.get("fields"):
                         _fp2["fields_json"] = json.dumps(s["fields"], ensure_ascii=False)
+                if _upc_approval_json:
+                    _fp2["approval_json"] = _upc_approval_json
                 res, _att = _run_expert_resilient(orch, _fp2, wait=900)
             # WZ-10 (ТЗ v2 §25): финал прогона честный — success без сводки и счётчиков не бывает
             if isinstance(res, dict) and res.get("status") == "success" \
@@ -7828,7 +8080,20 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(2)
             if isinstance(res, dict):
                 res["missing_human"] = [_human_missing(m) for m in (res.get("missing") or [])]
-            self._send(res if isinstance(res, dict) else {"status": "error", "message": str(res)[:200]})
+            legacy = res if isinstance(res, dict) else {"status": "error", "message": str(res)[:200]}
+            try:
+                upc = _composer_process_contract(task, legacy)
+                response = dict(legacy)
+                if response.get("status") != "success":
+                    response["composer_warning"] = response.get("message") or "legacy composition unavailable"
+                    response["status"] = "success"
+                response["process_contract"] = upc
+                response["session_id"] = upc["session_id"]
+                response["execution_source"] = "upc/1.0"
+                self._send(response)
+            except Exception as exc:
+                self._send({"status": "error", "message": "не удалось сохранить единый процесс: " +
+                            _scrub(str(exc)[:300]), "composer": legacy}, 500)
 
         elif self.path == "/x/compose_chat":
             # Полный чат по сборке: пользователь доводит flow словами → пересборка с накопленным контекстом.
@@ -8638,6 +8903,55 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/x/chat":
             user_input = str(body.get("input", ""))[:8000]
             sid = str(body.get("session_id", "") or "")
+            process_note = ""
+            process_graph = None
+            process_path = SESS_DIR / (sid + "_process.json")
+            if SAFE_ID.match(sid or "") and process_path.exists():
+                try:
+                    process_graph = json.loads(process_path.read_text(encoding="utf-8"))
+                    rows = [{"id": step.get("id"), "title": step.get("title"),
+                             "status": step.get("status"), "version": step.get("version"),
+                             "mode": (step.get("implementation") or {}).get("mode"),
+                             "error": step.get("error"),
+                             "question": (step.get("human_gate") or {}).get("question")}
+                            for step in process_graph.get("steps") or []]
+                    process_note = ("[ЕДИНЫЙ PROCESS CONTRACT: объясняй состояние только по этим фактам; "
+                                    "не называй transport completed успехом шага. Если нужен ремонт, назови точный "
+                                    "step id и версию.]\n" + json.dumps({
+                                        "process_id": process_graph.get("process_id"),
+                                        "version": process_graph.get("version"),
+                                        "status": universal_process_status(process_graph), "steps": rows,
+                                    }, ensure_ascii=False, default=str) + "\n[Конец Process Contract]\n\n")
+                except Exception:
+                    process_graph = None
+            # A clear owner command in Chat repairs only the named step through the same mutation
+            # seam as the Wizard button. Fuzzy free-form discussion still goes to Qwen below.
+            repair_match = re.match(r"^\s*(?:почини|исправь|повтори|retry|repair)\s+(?:шаг\s+)?(.+?)\s*$",
+                                    user_input, flags=re.I)
+            if repair_match and process_graph:
+                needle = repair_match.group(1).strip().casefold()
+                matches = [step for step in process_graph.get("steps") or []
+                           if needle == str(step.get("id") or "").casefold() or
+                           needle == str(step.get("title") or "").casefold()]
+                if len(matches) == 1:
+                    step = matches[0]
+                    try:
+                        outcome = process_repair_step(process_graph, step["id"], "owner requested repair in Chat")
+                        process_checkpoint(process_graph, process_path,
+                                           SESS_DIR / (sid + "_process_events.jsonl"), {
+                                               "type": "step_repair_requested", "surface": "chat",
+                                               "step_id": step["id"], "outcome": outcome})
+                        build_id = _start_build_job(sid)
+                        text = ("Точечный ремонт запущен: шаг «%s» → версия %s. Уже принятые независимые "
+                                "шаги повторяться не будут." % (step.get("title"), outcome.get("version")))
+                        _chat_add_exchange(sid, user_input, text)
+                        self._send({"status": "success", "text": text, "process_action": "repair",
+                                    "step_id": step["id"], "build_id": build_id,
+                                    "process_version": process_graph.get("version")})
+                        return
+                    except Exception as exc:
+                        self._send({"status": "error", "message": _scrub(str(exc)[:300])}, 409)
+                        return
             # RAG: enrich the wizard agent with account knowledge concepts
             enriched = user_input
             try:
@@ -8689,7 +9003,7 @@ class Handler(BaseHTTPRequestHandler):
                 return 0
             _ac0 = _ans_count()   # #17: answers_count ДО хода агента — UI сверит, реально ли сработал автосейв
             payload = {"agent_id": CONFIG["agent_id"],
-                       "input": surface_note + history_block + enriched,
+                       "input": surface_note + process_note + history_block + enriched,
                        "run_timeout": 180, "store": True}
             res, text, _chat_attempts = _run_chat_agent(payload)
             if not text:

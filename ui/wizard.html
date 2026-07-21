@@ -3504,6 +3504,20 @@ async function continueBuildFromAnswer(buildId){
   S.waitingBuild=null; S.buildId=r.build_id; S.buildDone=false;
   await reloadSession(); renderTest();
 }
+async function repairProcessStep(stepId){
+  if(!S.sessionId||!stepId) return;
+  const host=el("stBuild")||el("stTest");
+  if(host) host.innerHTML="<span class='spin'></span>точечно ремонтирую шаг…";
+  let r; try{ r=await jpost("/x/process_action",{session_id:S.sessionId,action:"repair",step_id:stepId,
+                                                  reason:"owner requested repair in Wizard",surface:"wizard"}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    if(host) host.textContent="ошибка: "+((r&&r.message)||"не удалось запустить ремонт"); return;
+  }
+  S.buildId=r.build_id; S.buildDone=false; S.waitingBuild=null;
+  if(host) host.innerHTML="<span class='spin'></span>ремонт запущен; готовые независимые шаги сохранены";
+  pollBuild();
+}
 function buildStageRow(s){
   // Пять состояний: blocked = шаг даже не запускался после корневого сбоя (это не ещё одна ошибка).
   const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>`
@@ -3517,6 +3531,49 @@ function buildStageRow(s){
     ${s.detail?`<div style="font-size:12.5px;color:${s.status==='error'?'var(--bad)':s.status==='warn'?'#a9701a':'var(--silver)'};padding:3px 0 0 22px">${esc(s.detail)}${s.status==='warn'&&s.needs_review?' — поправьте словами в кабинете процесса.':''}</div>`:""}
     ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
   </div>`;
+}
+function universalProcessHTML(p){
+  const pc=p&&p.process_contract, steps=(pc&&pc.steps)||[];
+  if(!steps.length) return "";
+  const names={pending:'ожидает',ready:'готов',running:'выполняется',succeeded:'принят',failed:'ошибка',
+    repairing:'ремонтируется',blocked_human:'нужен человек',skipped:'пропущен',stale:'устарел',cancelled:'отменён'};
+  const icons={pending:'·',ready:'→',running:'…',succeeded:'✓',failed:'✕',repairing:'↻',
+    blocked_human:'🙋',skipped:'—',stale:'⚠',cancelled:'×'};
+  const colors={succeeded:'var(--ok)',failed:'var(--bad)',repairing:'#a9701a',blocked_human:'#a9701a',
+    stale:'#a9701a',running:'var(--gold)',ready:'var(--nav)',pending:'var(--silver)',skipped:'var(--silver)',cancelled:'var(--silver)'};
+  const accepted=steps.filter(x=>x.status==='succeeded').length;
+  const blocked=steps.filter(x=>x.status==='blocked_human').length;
+  const active=steps.filter(x=>x.status==='running'||x.status==='repairing').length;
+  const rows=steps.map((s,i)=>{
+    const impl=s.implementation||{}, gate=s.human_gate||{}, err=s.error||{};
+    const attempts=(s.attempts||[]).length, deps=(s.dependencies||[]);
+    const detail=gate.question||err.message||s.status_reason||'';
+    return `<details style="border-top:1px dashed var(--cream-dark);padding:7px 0" ${s.status==='running'||s.status==='repairing'||s.status==='blocked_human'||s.status==='failed'?'open':''}>
+      <summary style="cursor:pointer;list-style:none;display:flex;gap:8px;align-items:flex-start">
+        <span style="width:22px;color:${colors[s.status]||'var(--silver)'}">${s.status==='running'?'<span class="spin"></span>':(icons[s.status]||'·')}</span>
+        <span style="min-width:0;flex:1"><b>${i+1}. ${esc(s.title||s.id||'Шаг')}</b>
+          <span class="badge" style="margin-left:6px">${esc(impl.mode||'generate')}</span>
+          <span style="font-size:11.5px;color:${colors[s.status]||'var(--silver)'};margin-left:6px">${esc(names[s.status]||s.status||'')}</span>
+        </span><span style="font-size:11px;color:var(--silver)">v${esc(s.version||1)} · попыток ${attempts}</span>
+      </summary>
+      <div style="font-size:12px;color:var(--ink-soft);padding:6px 4px 2px 30px">
+        ${s.purpose?`<div>${esc(s.purpose)}</div>`:''}
+        ${deps.length?`<div style="margin-top:3px;color:var(--silver)">После: ${deps.map(esc).join(', ')}</div>`:''}
+        ${impl.capability_ref?`<div style="margin-top:3px;color:var(--silver)">Capability: <code>${esc(impl.capability_ref)}</code></div>`:''}
+        ${impl.expert_ref?`<div style="margin-top:3px;color:var(--silver)">Эксперт: <code>${esc(impl.expert_ref)}</code></div>`:''}
+        ${s.input_contract?`<details style="margin-top:5px"><summary style="cursor:pointer">Вход и выход шага</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(JSON.stringify({input:s.input_contract,output:s.output_contract},null,2).slice(0,5000))}</pre></details>`:''}
+        ${detail?`<div style="margin-top:5px;color:${s.status==='failed'?'var(--bad)':'#8a671f'}"><b>${s.status==='blocked_human'?'Вопрос:':'Причина:'}</b> ${esc(detail)}</div>`:''}
+        ${(s.evidence||[]).length?`<div style="margin-top:4px;color:var(--ok)">Доказательств: ${(s.evidence||[]).length}</div>`:''}
+        ${(s.artifact_refs||[]).length?`<div style="margin-top:4px;color:var(--ok)">Артефактов: ${(s.artifact_refs||[]).length}</div>`:''}
+        ${(s.status==='failed'||s.status==='repairing'||s.status==='stale')?`<button class="btn small" style="margin-top:7px" onclick="repairProcessStep('${esc(s.id)}')">↻ Починить только этот шаг</button>`:''}
+      </div>
+    </details>`;
+  }).join('');
+  return `<div style="margin:10px 0 12px;padding:11px 13px;border:1px solid var(--cream-dark);border-radius:10px;background:rgba(255,255,255,.55)">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:4px">
+      <b style="font-size:13.5px">Шаги процесса · Universal Contract v1</b>
+      <span style="font-size:11.5px;color:var(--silver)">${accepted}/${steps.length} принято${active?' · '+active+' выполняется':''}${blocked?' · '+blocked+' ждёт человека':''}</span>
+    </div>${rows}</div>`;
 }
 function buildActivityHTML(p){
   const stamp=Date.parse(p.updated_at||"");
@@ -3548,7 +3605,7 @@ function buildMemoryHTML(p){
   </details>`;
 }
 function renderBuildProgress(p){
-  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildMemoryHTML(p)}${buildEventHistoryHTML(p)}</div>`;
+  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${universalProcessHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildMemoryHTML(p)}${buildEventHistoryHTML(p)}</div>`;
 }
 function renderBuildResult(lb){
   const aud = lb.audit||{}; const experts = lb.experts||[];

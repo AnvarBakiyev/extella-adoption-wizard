@@ -7,6 +7,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+branch="$(git branch --show-current)"
+if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  echo "РЕЛИЗ ОТМЕНЁН: production-hardening нельзя отправлять из $branch."
+  exit 1
+fi
+
+echo "── ПОЛНЫЙ PREFLIGHT ──"
+if ! bash scripts/preflight_ui.sh; then
+  echo
+  echo "РЕЛИЗ ОТМЕНЁН: preflight красный. Ничего не закоммичено и не отправлено."
+  exit 1
+fi
+
 echo "── СМОУК ФУНДАМЕНТА ──"
 if ! python3 scripts/smoke_e2e.py; then
   echo
@@ -24,5 +37,5 @@ else
   echo; echo "закоммичено: $(git log --oneline -1)"
 fi
 
-git push origin "$(git branch --show-current)" -q
+git push origin "$branch" -q
 echo "отправлено: $(git log --oneline -1)"

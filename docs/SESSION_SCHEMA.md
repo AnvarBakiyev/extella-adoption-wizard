@@ -62,6 +62,7 @@
 | `published` | dict | /x/publish | `{pack_id, repo_url, at}` |
 | `goal` | str | flow_save / доводка | описание для карточек |
 | `demo_runs` | list | демо-раннер | исторический артефакт |
+| `process_contract` | dict | UPC planner/runtime | Добавочный указатель на единый процесс `{schema:"upc/1.0", path, process_id, active_version, active_run_id, status, updated_at}`. Отсутствие означает legacy-процесс; читатели обязаны мигрировать его только при явной новой стройке. Сам граф и checkpoint лежат в `<sid>_process.json`; события — в `<sid>_process_events.jsonl`. |
 
 
 ## Run-record v1 (F3 — единая история исполнения)
@@ -73,4 +74,6 @@
 
 ## Сайдкары (та же папка, тот же sid)
 `<sid>_blueprint.json` `{session_id, generated_at, blueprint{process_name, archetype, goal, stages[], …}}` ·
-`<sid>_build_plan.json` · `<sid>_chat.json` (стенограмма Помощника) · `sessions_archive/` (удалённые — архив, не hard-delete).
+`<sid>_build_plan.json` · `<sid>_process.json` (UPC v1: версионируемый граф + checkpoint) ·
+`<sid>_process_events.jsonl` (append-only журнал переходов/приёмки/полномочий) ·
+`<sid>_chat.json` (стенограмма Помощника) · `sessions_archive/` (удалённые — архив, не hard-delete).

@@ -89,11 +89,15 @@ def wz_build_plan(
         "suitability": bp.get("suitability")}, ensure_ascii=False)[:14000]
     cand_payload = json.dumps(candidates, ensure_ascii=False)[:12000]
 
-    SYSTEM = f"""Ты — технический планировщик стройки процессов на платформе Extella. По Process Blueprint составь Build Plan: какие исполняемые эксперты создать или переиспользовать, в каком порядке, и как проверить каждый.
+    SYSTEM = f"""Ты — технический планировщик Universal Process Runtime платформы Extella. По Process Blueprint составь исполняемый версионируемый граф: какие шаги выполнить, в каком порядке, каким режимом, с какими полномочиями и как доказать каждый результат.
 
 ЖЁСТКИЕ ПРАВИЛА:
 1. Имена экспертов: snake_case, ОБЯЗАТЕЛЬНО начинаются с "{namespace}_".
-2. Переиспользование: action="reuse" или "parameterize" допустимы ТОЛЬКО если reuse_of — точное имя из переданных КАНДИДАТОВ БИБЛИОТЕКИ; иначе action="build", reuse_of=null. Активно переиспользуй: библиотека проверена в бою.
+2. Библиотека — инвентарь, не граница. implementation_mode="reuse" и action="reuse|parameterize"
+допустимы ТОЛЬКО если reuse_of — точное имя из КАНДИДАТОВ. Если совпадения нет, шаг остаётся в плане:
+generate — создать CSPL/fython-эксперта; llm_worker — Qwen сама исполняет смысловой шаг; acquire — нужна
+внешняя модель/репозиторий/инструмент; human — нужен доступ/решение/опасное действие человека; delegate —
+ограниченный дочерний граф. Неизвестная задача никогда не превращается в пустой план.
 3. cspl строго из: fython (обычная логика, по умолчанию) | nohup (оркестраторы, длинные фоновые) | parallel_task (параллельные воркеры для массовой/многоисточниковой обработки) | shell_runner (CLI-обёртки).
 4. acceptance_test каждой задачи должен быть прогоняем БЕЗ доступа к системам клиента: на синтетике или файле-образце; example_params — конкретные значения. Если задача требует клиентского доступа (например, живая 1С) — тест на мок-данных + отметь это в risks.
 5. Каждый эксперт: клиентская специфика (адреса баз, колонки, пороги) — параметрами, не в теле. Никакой записи во внешние системы, если blueprint явно не разрешил.
@@ -103,15 +107,26 @@ def wz_build_plan(
 9. В tasks включай только бизнес-стадии обработки данных и оркестратор. НЕ создавай watcher папки, daemon,
    cron, launchd/systemd, autostart, установщики и отдельные задачи расписания/доставки: источник, триггер,
    расписание и режим 24/7 Extella настраивает после сборки через кабинет процесса.
+10. Максимум 40 статических tasks. Большие участки оформляй одним delegate-шагом с subgraph_goal.
+11. Для КАЖДОГО шага явно заполни permissions: read/create/move/modify/delete/install/send/external_write.
+Опасные действия не скрывай внутри generate: они будут остановлены human approval gate.
+12. Acceptance раздели на deterministic_checks (файлы, хэши, schema, counts, side-effect journal) и
+semantic_criteria (только смысл, который проверит независимая Qwen). Transport completed не является успехом.
 
 ФОРМАТ (строго):
 {{
   "process_name": "...", "namespace": "{namespace}",
   "tasks": [
     {{"id": "t1", "stage_id": "s1", "expert_name": "{namespace}_...", "action": "build|reuse|parameterize",
-      "reuse_of": null, "purpose": "что делает и зачем",
+      "implementation_mode": "reuse|generate|llm_worker|acquire|human|delegate",
+      "reuse_of": null, "capability_ref": null, "subgraph_goal": null, "purpose": "что делает и зачем",
       "cspl": "fython", "params_spec": [{{"name": "...", "type": "str", "purpose": "..."}}],
       "acceptance_test": {{"description": "...", "example_params": {{}}, "expected": "что считается успехом"}},
+      "input_contract": {{"artifacts":[],"data_schema":{{}},"required":true}},
+      "output_contract": {{"artifacts":[],"data_schema":{{}},"postconditions":[]}},
+      "permissions": {{"read":[],"create":[],"move":[],"modify":[],"delete":[],"install":[],"send":[],"external_write":[]}},
+      "acceptance": {{"deterministic_checks":[],"semantic_criteria":[],"required_artifacts":[],"minimum_confidence":0.7}},
+      "retry_policy": {{"max_attempts":4,"repair_on":["expert_error","contract_violation","acceptance_failed"],"human_on":["permission_required","ambiguous_owner_decision"]}},
       "depends_on": []}}
   ],
   "orchestrator": {{"expert_name": "{namespace}_run_pipeline", "task_order": ["t1", "..."]}},
@@ -174,9 +189,16 @@ def wz_build_plan(
     # -- Guardrails ------------------------------------------------------
     warnings = []
     ALLOWED_CSPL = {"fython", "nohup", "parallel_task", "shell_runner"}
+    IMPLEMENTATION_MODES = {"reuse", "generate", "llm_worker", "acquire", "human", "delegate"}
+    PERMISSIONS = ("read", "create", "move", "modify", "delete", "install", "send", "external_write")
     name_re = re.compile("^" + namespace + r"_[a-z0-9_]+$")
     task_ids = set()
-    for t in plan["tasks"]:
+    plan["tasks"] = [t for t in plan["tasks"][:40] if isinstance(t, dict)]
+    if not plan["tasks"]:
+        return {"status": "error", "message": "Build Plan has no valid tasks"}
+    for index, t in enumerate(plan["tasks"], 1):
+        if not t.get("id"):
+            t["id"] = "t" + str(index)
         nm = str(t.get("expert_name", ""))
         if not name_re.match(nm):
             fixed = namespace + "_" + re.sub(r"[^a-z0-9_]", "_", nm.lower()).strip("_")
@@ -190,6 +212,36 @@ def wz_build_plan(
                 warnings.append("task " + str(t.get("id")) + ": reuse_of '" + str(t.get("reuse_of")) + "' not in candidates -> action=build")
                 t["action"] = "build"
                 t["reuse_of"] = None
+        mode = str(t.get("implementation_mode") or "").lower()
+        if mode not in IMPLEMENTATION_MODES:
+            mode = "reuse" if t.get("action") in ("reuse", "parameterize") and t.get("reuse_of") else "generate"
+        if mode == "reuse" and t.get("reuse_of") not in all_candidate_names:
+            warnings.append("task " + str(t.get("id")) + ": implementation reuse has no exact candidate -> generate")
+            mode = "generate"
+            t["action"] = "build"
+            t["reuse_of"] = None
+        t["implementation_mode"] = mode
+        t["capability_ref"] = t.get("reuse_of") if mode == "reuse" else None
+        perms = t.get("permissions") if isinstance(t.get("permissions"), dict) else {}
+        t["permissions"] = {kind: ([str(x) for x in perms.get(kind) if str(x)]
+                                   if isinstance(perms.get(kind), list) else []) for kind in PERMISSIONS}
+        acceptance = t.get("acceptance") if isinstance(t.get("acceptance"), dict) else {}
+        t["acceptance"] = {
+            "deterministic_checks": [str(x) for x in (acceptance.get("deterministic_checks") or []) if str(x)],
+            "semantic_criteria": [str(x) for x in (acceptance.get("semantic_criteria") or []) if str(x)],
+            "required_artifacts": [str(x) for x in (acceptance.get("required_artifacts") or []) if str(x)],
+            "minimum_confidence": acceptance.get("minimum_confidence", 0.7),
+        }
+        retry = t.get("retry_policy") if isinstance(t.get("retry_policy"), dict) else {}
+        try:
+            max_attempts = max(1, min(int(retry.get("max_attempts") or 4), 10))
+        except Exception:
+            max_attempts = 4
+        t["retry_policy"] = {
+            "max_attempts": max_attempts,
+            "repair_on": retry.get("repair_on") or ["expert_error", "contract_violation", "acceptance_failed"],
+            "human_on": retry.get("human_on") or ["permission_required", "ambiguous_owner_decision"],
+        }
         task_ids.add(t.get("id"))
     for t in plan["tasks"]:
         bad = [d for d in (t.get("depends_on") or []) if d not in task_ids]

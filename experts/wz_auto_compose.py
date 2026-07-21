@@ -1,5 +1,5 @@
 # expert: wz_auto_compose
-# description: Композитор: задача словами -> Qwen подбирает блоки из каталога способностей (composer:catalog), собирает декларативный план, ставит недостающие локальные модели, пишет flow:<id> в KV и карточку в _mkt_automations. Только вет-проверенные блоки (whitelist) — чего нет, честно возвращает в missing. Возвращает {flow_id, plan, card, missing}.
+# description: Композитор: задача словами -> Qwen подбирает готовые блоки из Capability Registry, а неизвестные шаги передаёт Universal Process Runtime как generate/acquire. Установка требует подтверждения человека.
 
 def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.extella.ai", reuse_flow_id="") -> dict:
     import json, re, urllib.request
@@ -49,7 +49,7 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
         with urllib.request.urlopen(req, timeout=t) as r:
             return json.loads(r.read().decode("utf-8"))
 
-    # --- каталог блоков (вет-проверенный whitelist) ---
+    # --- каталог готовых блоков (inventory, не граница возможностей Extella) ---
     try:
         catalog_val = _post("/api/kv/get", {"key": "composer:catalog", "global": True}, t=60).get("value")
     except Exception as ex:
@@ -77,7 +77,8 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
         for b in catalog)
     lm_txt = ", ".join(local_models) or "none installed"
     prompt = (
-        "You are the Extella Composer. Compose an automation ONLY from the block catalog below. Do NOT invent block ids.\n"
+        "You are the Extella Composer. The block catalog is an inventory of reusable implementations, not a limit. "
+        "Use only real ids for reuse; describe missing implementation needs in missing so Universal Process Runtime can generate them.\n"
         "USER TASK:\n" + str(task) + "\n\nBLOCK CATALOG:\n" + cat_txt + "\n\n"
         "INSTALLED LOCAL MODELS on the user's device (use for any block that takes a `model` param): " + lm_txt + "\n\n"
         "Return EXACTLY one JSON object, nothing else (no prose, no fences):\n"
@@ -179,32 +180,19 @@ def wz_auto_compose(task="", agent_id="", api_token="", api_base="https://api.ex
                 missing.append("шаг %s ссылается на {{%s}} — нет среди предыдущих шагов" % (sp["expert"], mo.group(1)))
         seen.add(sp["save_as"])
 
-    # --- автоустановка моделей, которые реально выбраны в шагах (штатно: ollama -> видно в Models/Мои) ---
+    # --- модели только ПРЕДЛАГАЕМ: install is a dangerous permission and needs owner approval ---
     installed = []
     need_models = set()
     for s in steps:
         mv = (s.get("params") or {}).get("model")
         if mv and not str(mv).startswith("{{"):
             need_models.add(mv)
-    _OK = ("success", "already", "ok", "done", "installed", "present")
     for mdl in sorted(need_models):
-        try:
-            r = _post("/api/expert/run", {"expert_name": "cap_localmodel_install",
-                                          "params": {"model": mdl}, "global": True})
-            out = r.get("result", r)
-            if isinstance(out, str):
-                try:
-                    out = json.loads(out)
-                except Exception:
-                    out = {}
-            installed.append({"model": mdl, "status": (out or {}).get("status", "?")})
-        except Exception as ex:
-            installed.append({"model": mdl, "status": "error", "err": str(ex)[:80]})
-    # честный флаг готовности: все нужные модели встали (или уже были)
-    install_ok = all(str(i.get("status", "")).lower() in _OK for i in installed) if installed else True
-    for i in installed:
-        if str(i.get("status", "")).lower() not in _OK:
-            missing.append("локальная модель не установилась: %s (%s)" % (i.get("model"), i.get("status")))
+        already = mdl in local_models
+        installed.append({"model": mdl, "status": "present" if already else "approval_required"})
+        if not already:
+            missing.append("требуется подтверждение установки локальной модели: " + str(mdl))
+    install_ok = all(i.get("status") == "present" for i in installed) if installed else True
 
     # --- flow в KV + карточка в витрине ---
     import hashlib

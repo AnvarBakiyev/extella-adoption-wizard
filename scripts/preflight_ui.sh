@@ -77,10 +77,23 @@ python3 scripts/check_agentic_universal.py \
   && echo "   ✓ 15 классов задач, legacy 4/4 и отрицательные stop-сценарии доказаны синтетически" \
   || { echo "   ✗ универсальный агентный механизм или repair budget сломан"; fail=1; }
 
+echo "→ Universal Process Contract v1"
+python3 scripts/check_universal_process_runtime.py \
+  && python3 scripts/check_universal_process_matrix.py \
+  && python3 scripts/check_upc_orchestrator_runtime.py \
+  && python3 scripts/check_universal_process_vertical.py \
+  && echo "   ✓ 10/10 сценариев, DAG/checkpoint/resume/HITL, generated orchestrator и вертикальный repair доказаны" \
+  || { echo "   ✗ пошаговый runtime, локальный repair или checkpoint сломан"; fail=1; }
+
 echo "→ диалог владельца внутри стройки"
 python3 scripts/check_build_owner_dialogue.py \
   && echo "   ✓ технические ссылки чинятся без человека, бизнес-вопрос продолжает ту же сессию" \
   || { echo "   ✗ need_human снова превратился в тупик или отдельный чат"; fail=1; }
+
+echo "→ единый процесс во всех четырёх поверхностях"
+python3 scripts/check_process_surfaces.py \
+  && echo "   ✓ Wizard, Chat, Composer и Workspace читают/чинят один UPC sidecar" \
+  || { echo "   ✗ одна из поверхностей завела отдельное состояние процесса"; fail=1; }
 
 echo "→ длинный и медленный мозг агента"
 python3 scripts/check_brain_modal.py \
@@ -130,6 +143,7 @@ python3 scripts/check_blueprint_atomicity.py \
 
 echo "→ runtime эксперта плана"
 python3 scripts/check_blueprint_expert_runtime.py \
+  && python3 scripts/check_build_plan_upc.py \
   && echo "   ✓ prompt строится и blueprint действительно записывается" \
   || { echo "   ✗ эксперт плана компилируется, но падает до сохранения результата"; fail=1; }
 
@@ -149,6 +163,23 @@ if command -v node >/dev/null 2>&1; then
   node --check /tmp/_wz_inline.js && echo "   ✓ wizard.html (JS)" || { echo "   ✗ wizard.html — СИНТАКСИС JS"; fail=1; }
 else
   echo "   ⚠ node не найден — JS не проверен (поставьте node или проверьте в браузере: консоль без ошибок)"
+fi
+
+echo "→ интерфейс Workspace"
+python3 - <<'PY' > /tmp/_workspace_inline.js
+import re
+html = open('dist/workspace/index.html', encoding='utf-8').read()
+parts = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', html, re.S)
+print("\n;\n".join(parts))
+PY
+python3 -m py_compile dist/workspace/server.py \
+  || { echo "   ✗ Workspace server.py — СИНТАКСИС"; fail=1; }
+if command -v node >/dev/null 2>&1; then
+  node --check /tmp/_workspace_inline.js \
+    && echo "   ✓ Workspace server.py + index.html" \
+    || { echo "   ✗ Workspace index.html — СИНТАКСИС JS"; fail=1; }
+else
+  echo "   ⚠ node не найден — Workspace JS не проверен"
 fi
 
 echo "→ эксперты (fython: срезаем \$extens)"
