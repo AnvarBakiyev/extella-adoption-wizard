@@ -5,8 +5,9 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.02"
+EXPECTED_VERSION="5.03"
 APP_DIR="$HOME/extella_wizard/app"
+CAT_DIR="$HOME/extella_wizard/catalog"
 PY="$(command -v python3.12 || command -v python3 || true)"
 
 [ -n "$PY" ] || { echo "Нет Python 3.12/3 — обновление остановлено."; exit 1; }
@@ -53,12 +54,15 @@ else
 fi
 
 BACKUP="$HOME/extella_wizard/backups/qa-${EXPECTED_VERSION}-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP" "$APP_DIR"
+mkdir -p "$BACKUP" "$APP_DIR" "$CAT_DIR"
 for name in server.py wz_agentic.py wz_build.py wizard.html; do
   [ ! -f "$APP_DIR/$name" ] || cp "$APP_DIR/$name" "$BACKUP/$name"
   cp "$SRC/ui/$name" "$APP_DIR/$name"
 done
-echo "  ✓ четыре файла обновлены; backup: $BACKUP"
+[ ! -f "$CAT_DIR/catalog.json" ] || cp "$CAT_DIR/catalog.json" "$BACKUP/catalog.json"
+cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
+cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
+echo "  ✓ четыре файла и каталог возможностей обновлены; backup: $BACKUP"
 echo "  ✓ эксперты, концепты и правила не переустанавливались"
 
 echo "→ Перезапускаю только мост Wizard"

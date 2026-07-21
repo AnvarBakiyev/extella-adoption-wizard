@@ -118,6 +118,11 @@ bash -n scripts/qa_delta_update.sh \
   && echo "   ✓ короткий QA-апдейтер синтаксически цел и защищает живую стройку" \
   || { echo "   ✗ короткий QA-апдейтер сломан или обходит защиту стройки"; fail=1; }
 
+echo "→ каталог возможностей на чистом Mac"
+python3 scripts/check_catalog_install.py \
+  && echo "   ✓ полная/дельта-установка кладут каталог, мост восстанавливает резерв" \
+  || { echo "   ✗ новый Mac снова остановится на шаге «План»"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re

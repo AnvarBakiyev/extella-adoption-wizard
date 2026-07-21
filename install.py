@@ -3,7 +3,7 @@
 Запускать ИЗ КАТАЛОГА репозитория:  python3 install.py
 Читает токен из ~/extella_wizard/app/config.json (тот же, что у моста), сохраняет все эксперты
 (global, cspl=fython), правила и концепты, и создаёт запись плагина в тулбаре. Секреты не печатает."""
-import json, os, re, sys, glob, urllib.request
+import json, os, re, sys, glob, shutil, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.expanduser("~/extella_wizard/app/config.json")
@@ -16,6 +16,20 @@ HDR = {"X-Auth-Token": TOKEN, "Content-Type": "application/json",
        "X-Profile-Id": "default", "X-Agent-Id": cfg.get("agent_id", "agent_extella_default")}
 if not TOKEN:
     print("В config.json нет auth_token."); sys.exit(1)
+
+# ---- 0. ЛОКАЛЬНЫЙ КАТАЛОГ ВОЗМОЖНОСТЕЙ ----
+# План строится по этому файлу до начала стройки. Чистая установка раньше копировала только ui/*,
+# поэтому новый Mac падал на шаге «План». Держим canonical-копию и резерв рядом с server.py:
+# мост сможет сам восстановить первую из второй.
+cat_src = os.path.join(HERE, "catalog", "catalog.json")
+cat_dir = os.path.expanduser("~/extella_wizard/catalog")
+app_dir = os.path.expanduser("~/extella_wizard/app")
+if not os.path.isfile(cat_src):
+    print("НЕТ catalog/catalog.json в пакете — установка остановлена."); sys.exit(1)
+os.makedirs(cat_dir, exist_ok=True); os.makedirs(app_dir, exist_ok=True)
+shutil.copy2(cat_src, os.path.join(cat_dir, "catalog.json"))
+shutil.copy2(cat_src, os.path.join(app_dir, "catalog.json"))
+print("== Каталог возможностей ==\n  ✅ canonical + резерв в app")
 
 # QA-дельта: без переменной ставим полный пакет как раньше; с ней — только перечисленные
 # repo-relative файлы (experts/..., concepts/..., rules/...). UI копирует быстрый shell-обновлятор.

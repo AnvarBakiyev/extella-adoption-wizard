@@ -38,7 +38,34 @@ from wz_llm import run_llm_expert, _gen_identity, design_agent
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
 _CAT_DIR = Path.home() / "extella_wizard" / "catalog"
-CATALOG_PATH = (_CAT_DIR / "catalog.json") if (_CAT_DIR / "catalog.json").exists() else (_CAT_DIR / "catalog_v1.json")
+
+
+def _ensure_catalog_path():
+    """Найти каталог возможностей и восстановить canonical-копию из app bundle.
+
+    Чистые Mac раньше получали только ui/*.py: план падал с catalog_v1.json not found.
+    Установщик теперь кладёт две локальные копии; app/catalog.json служит резервом, если
+    пользователь случайно удалил ~/extella_wizard/catalog/catalog.json.
+    """
+    canonical = _CAT_DIR / "catalog.json"
+    legacy = _CAT_DIR / "catalog_v1.json"
+    if canonical.exists():
+        return canonical
+    if legacy.exists():
+        return legacy
+    bundled = APP_DIR / "catalog.json"
+    if bundled.exists():
+        try:
+            import shutil as _shutil
+            _CAT_DIR.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(bundled, canonical)
+            return canonical
+        except Exception:
+            return bundled
+    return canonical
+
+
+CATALOG_PATH = _ensure_catalog_path()
 # Industry libraries seeded by the synthetic-seed process (matrix "processes x industries").
 # library/manifest.json lists industries; each available one has checklist/taxonomy/regulatory.
 LIB_DIR = Path.home() / "extella_wizard" / "library"
@@ -87,7 +114,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "5.02"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "5.03"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -4403,7 +4430,12 @@ class Handler(BaseHTTPRequestHandler):
                 out.append({"connector": "tourvisor", "external": "config", "expires": _tvexp})
             self._send({"status": "success", "client": client, "secrets": out})
         elif path == "/x/catalog":
-            self._send(json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
+            cp = _ensure_catalog_path()
+            if not cp.exists():
+                self._send({"status": "error", "code": "catalog_missing",
+                            "message": "Каталог возможностей не установлен. Обновите Wizard и повторите действие."}, 503)
+                return
+            self._send(json.loads(cp.read_text(encoding="utf-8")))
         elif path == "/x/registry":
             # Capability Registry v0 (ТЗ v2 §8.9, версия «MD+KV» по решению Анвара): единый реестр
             # возможностей для четырёх поверхностей. Пишет scripts/capability_registry.py в KV
@@ -5885,6 +5917,13 @@ class Handler(BaseHTTPRequestHandler):
                 params.setdefault("base_url", CONFIG.get("llm_base_url", ""))
                 params.setdefault("model", CONFIG.get("llm_model", ""))
                 params.setdefault("api_token", CONFIG.get("auth_token", ""))            # платформенная модель, если api_key пуст (клиенту OpenAI-ключ не нужен)
+                if expert == "wz_generate_blueprint":
+                    _cp = _ensure_catalog_path()
+                    if not _cp.exists():
+                        self._send({"status": "error", "code": "catalog_missing",
+                                    "message": "Каталог возможностей не установлен. Обновите Wizard и снова нажмите «Собрать план»."}, 503)
+                        return
+                    params.setdefault("catalog_path", str(_cp))
                 # #12: язык blueprint следует за языком фактуры интервью (как gen_questions) — иначе всегда русский (US-демо ломался)
                 if expert == "wz_generate_blueprint" and not params.get("language"):
                     _sidL = str(params.get("session_id", "")); _txtL = ""
