@@ -686,6 +686,8 @@ def _source_model_prompt(package, previous_error=""):
             "для раздела — section_id, а operations.inputs заполняй ТОЛЬКО этими ID. Не объединяй "
             "несколько файлов под придуманным логическим именем и не создавай новые имена входов. "
             "Если несколько трактовок меняют бизнес-результат, status=need_human и ОДИН конкретный вопрос. "
+            "VERIFIED PROCESS MEMORY и owner_answer_for_step уже подтверждены владельцем: применяй их "
+            "как обязательные правила и не задавай тот же вопрос повторно. "
             "Нормализацию идентификаторов предлагай только с доказательством; сомнительную помечай "
             "requires_owner=true. reuse/compose допустимы только для явно подходящей capability из списка. "
             "acquire означает лишь предложение недостающей способности, не установку.\n\n"
@@ -960,6 +962,10 @@ def _apply_upc_step(package, step_contract):
     contract["upc_step_id"] = step_contract.get("id")
     contract["upc_step_version"] = step_contract.get("version")
     contract["permissions"] = step_contract.get("permissions") or {}
+    contract["verified_process_memory"] = step_contract.get("process_memory") or []
+    human_gate = step_contract.get("human_gate") if isinstance(step_contract.get("human_gate"), dict) else {}
+    if human_gate.get("answer"):
+        contract["owner_answer_for_step"] = human_gate.get("answer")
     package["runtime_input_contract"] = {
         "source_file": "file or dependency bundle selected by the UPC runtime",
         "output_dir": "isolated directory for this step version; inputs are immutable",

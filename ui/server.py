@@ -40,6 +40,8 @@ from wz_process import (answer_human as process_answer_human,
                         checkpoint as process_checkpoint,
                         memory_entry as process_memory_entry,
                         add_memory as process_add_memory,
+                        grant_step_budget as process_grant_step_budget,
+                        is_budget_gate as process_is_budget_gate,
                         process_status as universal_process_status,
                         process_from_blueprint,
                         record_approval as process_record_approval,
@@ -159,7 +161,7 @@ FILE_CHUNK = 8000            # размер чанка base64 в KV (крупн�
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz) — куда пиннить процессы 24/7
 SCHED_INDEX_KEY = "sched:__index__"  # индекс активных расписаний (список sid) — тик читает его вместо прохода по всему KV
 INBOUND_INDEX_KEY = "inbound:__index__"  # индекс процессов с включённым приёмом входящих (B2) — тик читает его
-BRIDGE_VERSION = "5.09"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
+BRIDGE_VERSION = "5.10"       # версия моста; /x/health отдаёт её, single-instance по ней решает «свежий/старый»
 _MON_CACHE = {"at": None, "resp": None}   # короткий TTL-кэш /x/monitor (частые обновления панели — мгновенно)
 CLIENT_ID = str(CONFIG.get("client_id", "default"))  # арендатор (клиент) — namespace секретов/данных для мультитенантности
 REL_PREFIX = "rel:bridge"    # канал релизов моста в KV (наш код моста, не секрет; для авто-обновления устройств)
@@ -6219,6 +6221,8 @@ class Handler(BaseHTTPRequestHandler):
                     answer = str(body.get("answer") or "").strip()[:6000]
                     if not answer:
                         raise ValueError("answer is empty")
+                    budget_grant = (process_grant_step_budget(graph, step_id)
+                                    if process_is_budget_gate(step) else None)
                     process_answer_human(graph, step_id, answer, by="owner")
                     rule = process_memory_entry(
                         "rule", answer, status="verified", scope="process",
@@ -6226,7 +6230,8 @@ class Handler(BaseHTTPRequestHandler):
                         evidence_refs=["human_answer:" + step_id], confidence=1.0,
                         step_id=step_id, step_version=step.get("version"), attempt=0)
                     process_add_memory(graph, [rule], accepted=True)
-                    event.update({"type": "human_answered", "answer_ref": rule.get("id")})
+                    event.update({"type": "human_answered", "answer_ref": rule.get("id"),
+                                  "budget_grant": budget_grant})
                     resume = True
                 elif action == "approve":
                     permission = str(body.get("permission") or "")
@@ -6309,7 +6314,7 @@ class Handler(BaseHTTPRequestHandler):
 
             _update_session(sid, save_answer)
             waiting_phase = str(progress.get("waiting_phase") or "")
-            if waiting_phase.startswith("upc_step:"):
+            if waiting_phase.startswith(("upc_step:", "upc_budget:")):
                 step_id = waiting_phase.split(":", 1)[1]
                 process_path = SESS_DIR / (sid + "_process.json")
                 events_path = SESS_DIR / (sid + "_process_events.jsonl")
@@ -6318,6 +6323,8 @@ class Handler(BaseHTTPRequestHandler):
                     step = universal_step_map(graph).get(step_id)
                     if not step or step.get("status") != "blocked_human":
                         raise ValueError("step is no longer waiting for an answer")
+                    budget_grant = (process_grant_step_budget(graph, step_id)
+                                    if process_is_budget_gate(step) else None)
                     process_answer_human(graph, step_id, answer, by="owner")
                     rule = process_memory_entry(
                         "rule", answer, status="verified", scope="process",
@@ -6328,6 +6335,7 @@ class Handler(BaseHTTPRequestHandler):
                     process_checkpoint(graph, process_path, events_path, {
                         "type": "human_answered", "step_id": step_id,
                         "step_version": step.get("version"), "answer_ref": rule.get("id"),
+                        "budget_grant": budget_grant,
                     })
                     def update_process_pointer(s):
                         pointer = s.get("process_contract") if isinstance(s.get("process_contract"), dict) else {}

@@ -865,6 +865,65 @@ def answer_human(graph, step_id, answer, approved=None, by="owner"):
     return transition_step(graph, step_id, "ready", "human answered")
 
 
+def is_budget_gate(step):
+    """Recognize current and legacy runtime-budget pauses without mistaking business budgets."""
+    step = step if isinstance(step, dict) else {}
+    gate = step.get("human_gate") if isinstance(step.get("human_gate"), dict) else {}
+    request = gate.get("permission_request") if isinstance(gate.get("permission_request"), dict) else {}
+    if request.get("kind") == "runtime_budget":
+        return True
+    question = str(gate.get("question") or "").casefold()
+    return any(marker in question for marker in (
+        "лимит процесса исчерпан", "process budget exhausted",
+        "недостаточно бюджета хотя бы для build/run/verify"))
+
+
+def grant_step_budget(graph, step_id):
+    """Grant one bounded build/repair cycle after an explicit owner answer.
+
+    The grant is derived from the checkpointed reserve, never from arbitrary user text. This keeps
+    long processes resumable without turning resource limits into an unbounded automatic retry.
+    """
+    step = step_map(graph).get(str(step_id))
+    if not step or step.get("status") != "blocked_human" or not is_budget_gate(step):
+        raise ValueError("step is not waiting for runtime budget")
+    gate = step.get("human_gate") if isinstance(step.get("human_gate"), dict) else {}
+    request = gate.get("permission_request") if isinstance(gate.get("permission_request"), dict) else {}
+    raw = request.get("reserve") if isinstance(request.get("reserve"), dict) else {}
+    defaults = {"attempts": 4, "llm_calls": 9, "tokens": 96000,
+                "cost_usd": 1.0, "generated_experts": 1}
+    caps = {"attempts": 10, "llm_calls": 25, "tokens": 300000,
+            "cost_usd": 5.0, "generated_experts": 2}
+    reserve = {}
+    for key, default in defaults.items():
+        try:
+            amount = float(raw.get(key, default)) if key == "cost_usd" else int(raw.get(key, default))
+        except (TypeError, ValueError):
+            amount = default
+        reserve[key] = max(0, min(amount, caps[key]))
+    budgets = graph.setdefault("budgets", default_budgets())
+    run = graph.setdefault("run", {})
+    mapping = {
+        "attempts": ("attempts_used", "max_total_attempts"),
+        "llm_calls": ("llm_calls_used", "max_llm_calls"),
+        "tokens": ("tokens_used", "max_total_tokens"),
+        "cost_usd": ("estimated_cost_usd", "max_cost_usd"),
+        "generated_experts": ("generated_experts_used", "max_generated_experts"),
+    }
+    changed = {}
+    for public, (used_key, limit_key) in mapping.items():
+        cast = float if public == "cost_usd" else int
+        used = cast(run.get(used_key) or 0)
+        old = cast(budgets.get(limit_key) or 0)
+        new = max(old, used) + cast(reserve[public])
+        budgets[limit_key] = new
+        changed[limit_key] = {"before": old, "after": new}
+    gate["budget_grant"] = {"reserve": reserve, "granted_at": now_iso(), "limits": changed}
+    step["human_gate"] = gate
+    graph["updated_at"] = now_iso()
+    return {"reserve": reserve, "limits": changed}
+
+
 def recover_after_restart(graph):
     """Never guess that an interrupted external effect succeeded."""
     events = []

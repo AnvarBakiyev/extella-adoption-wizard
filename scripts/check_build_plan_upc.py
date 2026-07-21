@@ -34,8 +34,11 @@ class Requests:
                            "permissions": {"read": ["Downloads"], "move": ["quarantine"]},
                            "acceptance": {"deterministic_checks": ["manifest exists"],
                                           "semantic_criteria": [], "required_artifacts": ["manifest.json"]},
-                           "retry_policy": {"max_attempts": 99}}],
-                "orchestrator": {"expert_name": "qa_run_pipeline", "task_order": ["scan"]},
+                           "retry_policy": {"max_attempts": 99}},
+                          {"id": "run_all", "expert_name": "qa_run_pipeline", "action": "build",
+                           "implementation_mode": "generate", "purpose": "Оркестратор процесса",
+                           "cspl": "nohup", "depends_on": ["scan"]}],
+                "orchestrator": {"expert_name": "qa_run_pipeline", "task_order": ["scan", "run_all"]},
                 "human_gates": [], "risks": []}
         return Response({"choices": [{"message": {"content": json.dumps(plan)}}]})
 
@@ -70,7 +73,11 @@ def main():
             else:
                 sys.modules["requests"] = old
         assert result["status"] == "success", result
-        task = json.loads(out.read_text(encoding="utf-8"))["plan"]["tasks"][0]
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        task = saved["plan"]["tasks"][0]
+        assert len(saved["plan"]["tasks"]) == 1, saved["plan"]["tasks"]
+        assert saved["plan"]["orchestrator"]["task_order"] == ["scan"]
+        assert any("runtime orchestrator removed" in warning for warning in saved["warnings"])
         assert task["implementation_mode"] == "generate" and task["action"] == "build", task
         assert task["reuse_of"] is None and task["capability_ref"] is None
         assert task["expert_name"].startswith("qa_") and task["cspl"] == "fython"

@@ -20,6 +20,7 @@ from wz_process import (accept_step as universal_accept_step, atomic_write_json,
                         block_for_human as universal_block_for_human,
                         checkpoint as process_checkpoint, memory_entry as universal_memory_entry,
                         expand_subgraph as universal_expand_subgraph,
+                        is_budget_gate as universal_is_budget_gate,
                         normalize_step_result, process_from_blueprint,
                         record_usage as universal_record_usage,
                         recover_after_restart as universal_recover_after_restart,
@@ -1829,6 +1830,18 @@ def _run_build(session_id, build_id):
                 prog["agentic_events"] = prog["agentic_events"][-100:]
                 stage(event_id, title, status, **extra)
 
+            def pause_for_blocked_step(step):
+                gate = step.get("human_gate") if isinstance(step.get("human_gate"), dict) else {}
+                question = str(gate.get("question") or
+                               ("Нужен ответ для шага: " + str(step.get("title") or step.get("id"))))
+                budget_wait = universal_is_budget_gate(step)
+                phase = ("upc_budget:" if budget_wait else "upc_step:") + str(step.get("id"))
+                detail = ("Подтвердите один дополнительный ограниченный цикл build/run/verify."
+                          if budget_wait else "Ответ сохранится как проверенное правило процесса.")
+                step_progress(step, "human", "Нужен человек · " + str(step.get("title") or step.get("id")),
+                              "warn", question)
+                _wait_owner(question, phase, detail)
+
             def input_files_for(step):
                 deps = [str(x) for x in step.get("dependencies") or []]
                 if not deps:
@@ -1859,8 +1872,21 @@ def _run_build(session_id, build_id):
                 status_now = universal_process_status(process_graph)
                 if status_now == "succeeded":
                     break
+                # A generic retry/reload must never skip an unresolved owner question and spend
+                # budget on later roots. The answer endpoint changes this step back to ready first.
+                blocked_now = [row for row in (process_graph.get("steps") or [])
+                               if row.get("status") == "blocked_human"]
+                if blocked_now:
+                    pause_for_blocked_step(blocked_now[0])
+                    return
                 ready = list(universal_ready_steps(process_graph))
                 if not ready:
+                    if status_now == "blocked_human":
+                        blocked = [row for row in (process_graph.get("steps") or [])
+                                   if row.get("status") == "blocked_human"]
+                        if blocked:
+                            pause_for_blocked_step(blocked[0])
+                            return
                     detail = "нет готовых шагов; состояние графа: " + status_now
                     prog["status"] = "error"; prog["build_mode"] = "universal_process"
                     prog["error_struct"] = _build_error("agentic_build_failed", detail,
@@ -1909,14 +1935,16 @@ def _run_build(session_id, build_id):
                     generated_reserve = 1 if mode in ("generate", "llm_worker", "delegate") else 0
                     reserve = {"attempts": max(3, step_limit), "llm_calls": 1 + 2 * max(3, step_limit),
                                "tokens": 24000 * max(3, step_limit),
+                               "cost_usd": 24 * rate * max(3, step_limit),
                                "generated_experts": generated_reserve}
                     gate = universal_budget_preflight(process_graph, reserve=reserve)
                     if step_limit < 3 or not gate.get("ok"):
                         detail = gate.get("message") or "недостаточно бюджета хотя бы для build/run/verify"
                         question = ("Лимит процесса исчерпан перед шагом «%s»: %s. "
-                                    "Увеличьте ограничение или отмените шаг." %
+                                    "Подтвердите один дополнительный ограниченный цикл или отмените шаг." %
                                     (step.get("title") or step_id, detail))
-                        universal_block_for_human(process_graph, step_id, question)
+                        universal_block_for_human(process_graph, step_id, question, {
+                            "kind": "runtime_budget", "reserve": reserve, "gate": gate})
                         sync_process({"type": "process_budget_exhausted", "step_id": step_id,
                                       "budget": gate, "question": question})
                         _wait_owner(question, "upc_budget:" + step_id, detail)
@@ -1935,9 +1963,15 @@ def _run_build(session_id, build_id):
                         step_progress(_step, "source", "Проверяю входы шага · попытка %d/%d" %
                                       (attempt, total), "running" if state == "running" else state, detail)
 
+                    step_contract = dict(step)
+                    step_contract["process_memory"] = [
+                        {k: row.get(k) for k in ("id", "kind", "text", "scope", "confidence",
+                                                "step_id", "step_version")}
+                        for row in (process_graph.get("memory") or [])
+                        if isinstance(row, dict) and row.get("status") == "verified"]
                     step_context = prepare_task_context(
                         session_id, step_files, SESS_DIR, llm, progress=source_progress,
-                        step_contract=step)
+                        step_contract=step_contract)
                     if not step_context.get("ok"):
                         source = step_context.get("source_model") or {}
                         question = str(source.get("question") or "")
@@ -1974,7 +2008,7 @@ def _run_build(session_id, build_id):
                         max_run_repairs=2, max_acceptance_repairs=2,
                         max_total_attempts=step_limit,
                         max_elapsed_seconds=3600, prepared_context=step_context,
-                        step_contract=step, expert_name_override=stable_expert)
+                        step_contract=step_contract, expert_name_override=stable_expert)
                     attempt_count = len(solution.get("attempts") or [])
                     judged_count = sum(1 for row in (solution.get("attempts") or [])
                                        if isinstance(row, dict) and (row.get("validation") or {}).get("ok"))

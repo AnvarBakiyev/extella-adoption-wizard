@@ -17,6 +17,12 @@ def main():
     assert "apply_owner_clarification(s, question, answer, previous_build_id)" in SERVER
     assert '"source": "builder_checkpoint"' in AGENTIC
     assert 'jpost("/x/build_answer"' in WIZARD
+    assert 'jpost("/x/process_action"' in WIZARD and 'action:"answer"' in WIZARD
+    assert "Дать ещё один ограниченный цикл" in WIZARD
+    assert "process_grant_step_budget(graph, step_id)" in SERVER
+    assert 'blocked_now = [row for row in (process_graph.get("steps") or [])' in BUILD
+    assert 'step_contract["process_memory"]' in BUILD
+    assert 'contract["verified_process_memory"]' in AGENTIC
     assert "Сохранить ответ и продолжить" in WIZARD
     assert 'S.buildDone=true; S.buildId=null; S.waitingBuild=null' in WIZARD
     assert 'el("buildBtn").textContent="↻ Повторить сборку"' in WIZARD

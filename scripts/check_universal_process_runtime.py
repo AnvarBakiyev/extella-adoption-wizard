@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT / "ui"))
 
 from wz_process import (  # noqa: E402
     STEP_RESULT_SCHEMA, accept_step, answer_human, block_for_human, checkpoint,
-    budget_preflight, memory_entry, normalize_step_result, permission_preflight, process_from_blueprint,
+    budget_preflight, grant_step_budget, is_budget_gate, memory_entry, normalize_step_result,
+    permission_preflight, process_from_blueprint,
     process_status, ready_steps, record_approval, recover_after_restart, repair_step,
     record_usage, step_map, transition_step, validate_process,
 )
@@ -63,6 +64,16 @@ def test_resource_budgets_survive_and_fail_closed():
     stopped = budget_preflight(graph, {"attempts": 1})
     assert not stopped["ok"] and stopped["code"] == "budget_exhausted"
     assert stopped["exceeded"][0]["resource"] == "attempts"
+
+    step = graph["steps"][0]
+    block_for_human(graph, step["id"], "Лимит процесса исчерпан", {
+        "kind": "runtime_budget", "reserve": {"attempts": 4, "llm_calls": 9,
+        "tokens": 96000, "cost_usd": 1.0, "generated_experts": 1}})
+    assert is_budget_gate(step)
+    grant = grant_step_budget(graph, step["id"])
+    answer_human(graph, step["id"], "Подтверждаю ещё один ограниченный цикл")
+    assert grant["reserve"]["attempts"] == 4
+    assert budget_preflight(graph, grant["reserve"])["ok"]
 
 
 def test_parallel_merge_and_local_repair():

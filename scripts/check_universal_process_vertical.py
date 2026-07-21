@@ -54,7 +54,7 @@ def load_build(saved):
 def main():
     saved = []
     mod = load_build(saved)
-    from wz_process import checkpoint, repair_step, step_map
+    from wz_process import answer_human, block_for_human, checkpoint, process_from_blueprint, repair_step, step_map
 
     with tempfile.TemporaryDirectory(prefix="upc_vertical_") as td:
         root = Path(td)
@@ -117,6 +117,9 @@ def main():
             step = kwargs["step_contract"]
             step_id = str(step["id"])
             assert kwargs["max_total_attempts"] == 4, kwargs["max_total_attempts"]
+            if step_id == "collect":
+                assert (step.get("human_gate") or {}).get("answer") == \
+                       "Оставлять исходный файл и писать skipped в журнал", step
             calls.append((step_id, int(step["version"])))
             if step_id == "transform" and fail_transform["value"]:
                 fail_transform["value"] = False
@@ -143,8 +146,27 @@ def main():
 
         mod.build_agentic_solution = build_solution
 
-        mod._run_build(sid, "build_first")
+        # A checkpointed owner question is a resumable pause, never a final build failure and never
+        # permission to spend budget on later ready roots.
+        waiting_graph = process_from_blueprint(sid, blueprint, {"tasks": tasks})
+        block_for_human(waiting_graph, "collect", "Как поступать с дублями?")
         process_path = sessions / (sid + "_process.json")
+        checkpoint(waiting_graph, process_path, sessions / (sid + "_process_events.jsonl"), {
+            "type": "step_blocked_human", "step_id": "collect"})
+        mod._run_build(sid, "build_wait")
+        waiting_progress = json.loads((runs / "build_wait" / "build_progress.json").read_text(encoding="utf-8"))
+        assert waiting_progress["status"] == "waiting_for_owner", waiting_progress
+        assert waiting_progress["waiting_phase"] == "upc_step:collect"
+        assert calls == [], calls
+        waiting_graph = json.loads(process_path.read_text(encoding="utf-8"))
+        answer_human(waiting_graph, "collect", "Оставлять исходный файл и писать skipped в журнал")
+        checkpoint(waiting_graph, process_path, sessions / (sid + "_process_events.jsonl"), {
+            "type": "human_answered", "step_id": "collect"})
+        session_doc = json.loads(session_path.read_text(encoding="utf-8"))
+        session_doc.pop("waiting_build", None)
+        session_path.write_text(json.dumps(session_doc, ensure_ascii=False), encoding="utf-8")
+
+        mod._run_build(sid, "build_first")
         first = json.loads(process_path.read_text(encoding="utf-8"))
         first_steps = step_map(first)
         assert first_steps["collect"]["status"] == "succeeded", first_steps

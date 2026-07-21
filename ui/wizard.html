@@ -3518,6 +3518,22 @@ async function repairProcessStep(stepId){
   if(host) host.innerHTML="<span class='spin'></span>ремонт запущен; готовые независимые шаги сохранены";
   pollBuild();
 }
+async function answerProcessStep(stepId,inputId){
+  if(!S.sessionId||!stepId) return;
+  const input=el(inputId), answer=(input&&input.value||"").trim();
+  if(!answer){ toast("Напишите ответ или подтверждение","err"); return; }
+  if(input) input.disabled=true;
+  let r; try{ r=await jpost("/x/process_action",{session_id:S.sessionId,action:"answer",step_id:stepId,
+                                                  answer:answer,surface:"wizard"}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    if(input) input.disabled=false;
+    toast("Не удалось продолжить шаг: "+((r&&r.message)||"ошибка"),"err"); return;
+  }
+  S.buildId=r.build_id; S.buildDone=false; S.waitingBuild=null;
+  toast("Ответ сохранён как правило процесса — продолжаю с checkpoint","ok");
+  await reloadSession(); renderTest(); pollBuild();
+}
 function buildStageRow(s){
   // Пять состояний: blocked = шаг даже не запускался после корневого сбоя (это не ещё одна ошибка).
   const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>`
@@ -3548,6 +3564,9 @@ function universalProcessHTML(p){
     const impl=s.implementation||{}, gate=s.human_gate||{}, err=s.error||{};
     const attempts=(s.attempts||[]).length, deps=(s.dependencies||[]);
     const detail=gate.question||err.message||s.status_reason||'';
+    const request=(gate.permission_request&&typeof gate.permission_request==='object')?gate.permission_request:{};
+    const budgetGate=request.kind==='runtime_budget'||/лимит процесса исчерпан|process budget exhausted|недостаточно бюджета хотя бы/i.test(detail);
+    const answerId='processAnswer_'+i;
     return `<details style="border-top:1px dashed var(--cream-dark);padding:7px 0" ${s.status==='running'||s.status==='repairing'||s.status==='blocked_human'||s.status==='failed'?'open':''}>
       <summary style="cursor:pointer;list-style:none;display:flex;gap:8px;align-items:flex-start">
         <span style="width:22px;color:${colors[s.status]||'var(--silver)'}">${s.status==='running'?'<span class="spin"></span>':(icons[s.status]||'·')}</span>
@@ -3563,6 +3582,10 @@ function universalProcessHTML(p){
         ${impl.expert_ref?`<div style="margin-top:3px;color:var(--silver)">Эксперт: <code>${esc(impl.expert_ref)}</code></div>`:''}
         ${s.input_contract?`<details style="margin-top:5px"><summary style="cursor:pointer">Вход и выход шага</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(JSON.stringify({input:s.input_contract,output:s.output_contract},null,2).slice(0,5000))}</pre></details>`:''}
         ${detail?`<div style="margin-top:5px;color:${s.status==='failed'?'var(--bad)':'#8a671f'}"><b>${s.status==='blocked_human'?'Вопрос:':'Причина:'}</b> ${esc(detail)}</div>`:''}
+        ${s.status==='blocked_human'?`<div style="margin-top:8px;padding:9px;background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px">
+          <textarea id="${answerId}" rows="3" style="width:100%;box-sizing:border-box" placeholder="${budgetGate?'Например: подтверждаю ещё один ограниченный цикл':'Ответьте своими словами — это станет правилом для следующих шагов'}"></textarea>
+          <button class="btn small gold" style="margin-top:7px" onclick="answerProcessStep('${esc(s.id)}','${answerId}')">${budgetGate?'Дать ещё один ограниченный цикл →':'Сохранить ответ и продолжить →'}</button>
+        </div>`:''}
         ${(s.evidence||[]).length?`<div style="margin-top:4px;color:var(--ok)">Доказательств: ${(s.evidence||[]).length}</div>`:''}
         ${(s.artifact_refs||[]).length?`<div style="margin-top:4px;color:var(--ok)">Артефактов: ${(s.artifact_refs||[]).length}</div>`:''}
         ${(s.status==='failed'||s.status==='repairing'||s.status==='stale')?`<button class="btn small" style="margin-top:7px" onclick="repairProcessStep('${esc(s.id)}')">↻ Починить только этот шаг</button>`:''}

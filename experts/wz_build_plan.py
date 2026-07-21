@@ -102,9 +102,10 @@ generate — создать CSPL/fython-эксперта; llm_worker — Qwen с
 4. acceptance_test каждой задачи должен быть прогоняем БЕЗ доступа к системам клиента: на синтетике или файле-образце; example_params — конкретные значения. Если задача требует клиентского доступа (например, живая 1С) — тест на мок-данных + отметь это в risks.
 5. Каждый эксперт: клиентская специфика (адреса баз, колонки, пороги) — параметрами, не в теле. Никакой записи во внешние системы, если blueprint явно не разрешил.
 6. Порядок: depends_on по зависимостям данных; независимые задачи не связывай. Первым в human_gates всегда «план утверждён владельцем», последним — «деплой продового агента подтверждён».
-7. Оркестратор — отдельная задача с cspl=nohup или fython (по образцу пайплайн-оркестраторов: стадии через REST, манифест, deferred→ожидание артефакта).
+7. Оркестратор укажи ТОЛЬКО в отдельном объекте orchestrator после tasks. НЕ добавляй его как задачу:
+Universal Process Runtime сам скомпилирует оркестратор из графа бизнес-шагов, иначе один процесс исполнится дважды.
 8. Тексты полей purpose/описания — {language}. Верни ТОЛЬКО JSON.
-9. В tasks включай только бизнес-стадии обработки данных и оркестратор. НЕ создавай watcher папки, daemon,
+9. В tasks включай только бизнес-стадии обработки данных. НЕ создавай оркестратор, watcher папки, daemon,
    cron, launchd/systemd, autostart, установщики и отдельные задачи расписания/доставки: источник, триггер,
    расписание и режим 24/7 Extella настраивает после сборки через кабинет процесса.
 10. Максимум 40 статических tasks. Большие участки оформляй одним delegate-шагом с subgraph_goal.
@@ -194,6 +195,19 @@ semantic_criteria (только смысл, который проверит не
     name_re = re.compile("^" + namespace + r"_[a-z0-9_]+$")
     task_ids = set()
     plan["tasks"] = [t for t in plan["tasks"][:40] if isinstance(t, dict)]
+    orchestrator_name = str((plan.get("orchestrator") or {}).get("expert_name") or "")
+    business_tasks = []
+    for task in plan["tasks"]:
+        blob = " ".join(str(task.get(k) or "") for k in ("title", "purpose", "id", "expert_name")).casefold()
+        runtime_only = (bool(orchestrator_name) and str(task.get("expert_name") or "") == orchestrator_name)
+        runtime_only = runtime_only or (len(plan["tasks"]) > 1 and any(marker in blob for marker in (
+            "оркестратор процесса", "process orchestrator", "последовательно запускает стадии")))
+        if runtime_only:
+            warnings.append("task " + str(task.get("id") or "?") +
+                            ": runtime orchestrator removed; UPC compiles it from the graph")
+        else:
+            business_tasks.append(task)
+    plan["tasks"] = business_tasks
     if not plan["tasks"]:
         return {"status": "error", "message": "Build Plan has no valid tasks"}
     for index, t in enumerate(plan["tasks"], 1):
@@ -248,6 +262,9 @@ semantic_criteria (только смысл, который проверит не
         if bad:
             warnings.append("task " + str(t.get("id")) + ": unknown depends_on " + str(bad) + " removed")
             t["depends_on"] = [d for d in t["depends_on"] if d in task_ids]
+    if isinstance(plan.get("orchestrator"), dict):
+        plan["orchestrator"]["task_order"] = [
+            str(x) for x in (plan["orchestrator"].get("task_order") or []) if str(x) in task_ids]
 
     # -- Write + attach --------------------------------------------------
     out = Path(output_path) if output_path else sp.parent / (session.get("session_id", sp.stem) + "_build_plan.json")
