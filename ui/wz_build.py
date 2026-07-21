@@ -1526,7 +1526,8 @@ def _run_build(session_id, build_id):
         try:
             _sp = SESS_DIR / (session_id + ".json")
             _s = json.loads(_sp.read_text(encoding="utf-8"))
-            if _s.pop("building", None) is not None:
+            if str(_s.get("building") or "") == build_id:
+                _s.pop("building", None)
                 _s["updated_at"] = now()
                 _sp.write_text(json.dumps(_s, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -1543,6 +1544,8 @@ def _run_build(session_id, build_id):
         try:
             sp = SESS_DIR / (session_id + ".json")
             s = json.loads(sp.read_text(encoding="utf-8"))
+            if str(s.get("building") or "") not in ("", build_id):
+                return
             s.pop("building", None)
             s["waiting_build"] = {"build_id": build_id, "question": prog["owner_question"],
                                   "phase": prog["waiting_phase"], "detail": prog.get("waiting_detail", ""),
@@ -2168,7 +2171,8 @@ def _run_build(session_id, build_id):
                 fcntl.flock(lock_handle, fcntl.LOCK_EX)
                 session = json.loads(sp.read_text(encoding="utf-8"))
                 session["stage"] = "built"
-                session.pop("building", None)
+                if str(session.get("building") or "") == build_id:
+                    session.pop("building", None)
                 session.pop("waiting_build", None)
                 session.setdefault("builds", []).append({
                     "build_id": build_id, "at": now(), "build_mode": "universal_process",
@@ -2395,7 +2399,8 @@ def _run_build(session_id, build_id):
             sp = SESS_DIR / (session_id + ".json")
             s = json.loads(sp.read_text(encoding="utf-8"))
             s["stage"] = "built"
-            s.pop("building", None)
+            if str(s.get("building") or "") == build_id:
+                s.pop("building", None)
             s.setdefault("builds", []).append({
                 "build_id": build_id, "at": now(), "build_mode": "agentic",
                 "experts": [expert], "components_human": ["Целостное решение Qwen"],
@@ -2676,7 +2681,8 @@ def _run_build(session_id, build_id):
             sp = SESS_DIR / (session_id + ".json")
             s = json.loads(sp.read_text(encoding="utf-8"))
             s["stage"] = "built"
-            s.pop("building", None)   # стройка успешно завершилась — снять указатель идущей стройки
+            if str(s.get("building") or "") == build_id:
+                s.pop("building", None)   # только свой указатель; не снимать более новую стройку
             s.setdefault("builds", []).append({"build_id": build_id, "at": now(),
                                                "experts": prog["built_experts"], "audit": aud,
                                                "report_contract": 1,   # оформитель PDF по спеке вида

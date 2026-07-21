@@ -3446,15 +3446,16 @@ async function pollBuild(){
   if(d && d.status==="success"){
     const p = d.progress;
     renderBuildProgress(p);
-    if(p.status==="built"){ S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
+    if(p.status==="built"){ PROCESS_REPAIR_PENDING.clear(); S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
     if(p.status==="waiting_for_owner"){
+      PROCESS_REPAIR_PENDING.clear();
       S.buildId=null; S.buildDone=false; S.waitingBuild=p;
       await reloadSession(); renderTest(); return;
     }
     if(p.status==="error"){
       // AC-06: сбой отвечает на три вопроса — что не получилось, из-за чего и ЧТО ДЕЛАТЬ.
       // Раньше владелец видел одну строку и не понимал, его это проблема или наша.
-      S.buildDone=true; S.buildId=null; S.waitingBuild=null;
+      PROCESS_REPAIR_PENDING.clear(); S.buildDone=true; S.buildId=null; S.waitingBuild=null;
       if(S.session) delete S.session.building;
       var es=p.error_struct||{};
       el("buildProgress").innerHTML += '<div class="card gap-card">'+
@@ -3504,19 +3505,40 @@ async function continueBuildFromAnswer(buildId){
   S.waitingBuild=null; S.buildId=r.build_id; S.buildDone=false;
   await reloadSession(); renderTest();
 }
+const PROCESS_REPAIR_PENDING=new Set();
+function markProcessRepairPending(stepId,pending){
+  const key=String(stepId||"");
+  if(pending) PROCESS_REPAIR_PENDING.add(key); else PROCESS_REPAIR_PENDING.delete(key);
+  document.querySelectorAll("[data-process-repair]").forEach(btn=>{
+    if(btn.dataset.processRepair!==key) return;
+    btn.disabled=!!pending;
+    btn.innerHTML=pending?'<span class="spin"></span> Ремонт запускается…':'↻ Починить только этот шаг';
+  });
+}
 async function repairProcessStep(stepId){
   if(!S.sessionId||!stepId) return;
+  if(PROCESS_REPAIR_PENDING.has(String(stepId))){
+    toast("Ремонт этого шага уже запускается — повторно нажимать не нужно","ok"); return;
+  }
+  markProcessRepairPending(stepId,true);
   const host=el("stBuild")||el("stTest");
-  if(host) host.innerHTML="<span class='spin'></span>точечно ремонтирую шаг…";
+  if(host) host.innerHTML="<span class='spin'></span>запрос принят · запускаю точечный ремонт…";
   let r; try{ r=await jpost("/x/process_action",{session_id:S.sessionId,action:"repair",step_id:stepId,
                                                   reason:"owner requested repair in Wizard",surface:"wizard"}); }
   catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
   if(!r||r.status!=="success"){
+    markProcessRepairPending(stepId,false);
     if(host) host.textContent="ошибка: "+((r&&r.message)||"не удалось запустить ремонт"); return;
   }
-  S.buildId=r.build_id; S.buildDone=false; S.waitingBuild=null;
-  if(host) host.innerHTML="<span class='spin'></span>ремонт запущен; готовые независимые шаги сохранены";
-  pollBuild();
+  if(r.build_id) S.buildId=r.build_id;
+  S.buildDone=false; S.waitingBuild=null;
+  if(host) host.innerHTML="<span class='spin'></span>"+
+    (r.already_started?"ремонт уже выполняется; повторный запуск не создан":"ремонт запущен; готовые независимые шаги сохранены");
+  if(S.buildId) pollBuild();
+  else setTimeout(async()=>{
+    await reloadSession();
+    if(S.session&&S.session.building){ S.buildId=S.session.building; pollBuild(); }
+  },1200);
 }
 async function answerProcessStep(stepId,inputId){
   if(!S.sessionId||!stepId) return;
@@ -3588,7 +3610,7 @@ function universalProcessHTML(p){
         </div>`:''}
         ${(s.evidence||[]).length?`<div style="margin-top:4px;color:var(--ok)">Доказательств: ${(s.evidence||[]).length}</div>`:''}
         ${(s.artifact_refs||[]).length?`<div style="margin-top:4px;color:var(--ok)">Артефактов: ${(s.artifact_refs||[]).length}</div>`:''}
-        ${(s.status==='failed'||s.status==='repairing'||s.status==='stale')?`<button class="btn small" style="margin-top:7px" onclick="repairProcessStep('${esc(s.id)}')">↻ Починить только этот шаг</button>`:''}
+        ${(s.status==='failed'||s.status==='repairing'||s.status==='stale')?`<button class="btn small" data-process-repair="${esc(s.id)}" style="margin-top:7px" ${PROCESS_REPAIR_PENDING.has(String(s.id))?'disabled':''} onclick="repairProcessStep('${esc(s.id)}')">${PROCESS_REPAIR_PENDING.has(String(s.id))?'<span class="spin"></span> Ремонт запускается…':'↻ Починить только этот шаг'}</button>`:''}
       </div>
     </details>`;
   }).join('');

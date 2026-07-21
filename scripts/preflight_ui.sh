@@ -90,6 +90,11 @@ python3 scripts/check_build_owner_dialogue.py \
   && echo "   ✓ технические ссылки чинятся без человека, бизнес-вопрос продолжает ту же сессию" \
   || { echo "   ✗ need_human снова превратился в тупик или отдельный чат"; fail=1; }
 
+echo "→ защита точечного ремонта от повторного клика"
+python3 scripts/check_build_start_idempotency.py \
+  && echo "   ✓ кнопка отвечает сразу, одна сессия запускает только одного worker" \
+  || { echo "   ✗ повторный клик снова может запустить конкурирующие стройки"; fail=1; }
+
 echo "→ единый процесс во всех четырёх поверхностях"
 python3 scripts/check_process_surfaces.py \
   && echo "   ✓ Wizard, Chat, Composer и Workspace читают/чинят один UPC sidecar" \
