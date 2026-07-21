@@ -77,6 +77,11 @@ python3 scripts/check_agentic_universal.py \
   && echo "   ✓ 15 классов задач, legacy 4/4 и отрицательные stop-сценарии доказаны синтетически" \
   || { echo "   ✗ универсальный агентный механизм или repair budget сломан"; fail=1; }
 
+echo "→ диалог владельца внутри стройки"
+python3 scripts/check_build_owner_dialogue.py \
+  && echo "   ✓ технические ссылки чинятся без человека, бизнес-вопрос продолжает ту же сессию" \
+  || { echo "   ✗ need_human снова превратился в тупик или отдельный чат"; fail=1; }
+
 echo "→ безопасная граница экспериментального Контура"
 python3 scripts/check_goal_loop_safety.py \
   && echo "   ✓ fail-closed; нет fake expert/install и записи недоказанной памяти" \

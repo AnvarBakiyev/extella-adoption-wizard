@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,19 @@ MEMORY_STATUSES = ("candidate", "verified", "rejected")
 def _clip(value, limit=400):
     s = str(value if value is not None else "").replace("\x00", "").strip()
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _nfc(value):
+    """Одинаковое представление Unicode для macOS NFD и обычных NFC-строк."""
+    return unicodedata.normalize("NFC", str(value or ""))
+
+
+def _ref_key(value, basename=False):
+    """Ключ ссылки Source Model: Unicode NFC + casefold; при необходимости только basename."""
+    text = _nfc(value).strip()
+    if basename:
+        text = Path(text).name
+    return text.casefold()
 
 
 def _compact(value, depth=0):
@@ -107,8 +121,12 @@ def _pdf_text(path):
 def profile_file(path):
     """Фактический, ограниченный профиль входа для рассуждения Qwen и независимой приёмки."""
     p = Path(path)
-    out = {"name": p.name, "extension": p.suffix.lower(), "bytes": p.stat().st_size,
+    display_name = _nfc(p.name)
+    out = {"name": display_name, "extension": p.suffix.lower(), "bytes": p.stat().st_size,
            "sha256": _sha256(p)}
+    if display_name != p.name:
+        # Физическое имя нужно только харнессу; Qwen и Source Model работают со stable source_id.
+        out["filesystem_name"] = p.name
     ext = p.suffix.lower()
     try:
         if ext in (".xlsx", ".xlsm"):
@@ -130,9 +148,9 @@ def profile_file(path):
                     score = filled + textual
                     if score > best:
                         best, header_row = score, index
-                sheets.append({"title": ws.title, "max_row": ws.max_row, "max_column": ws.max_column,
+                sheets.append({"title": _nfc(ws.title), "max_row": ws.max_row, "max_column": ws.max_column,
                                "header_row": header_row + 1,
-                               "columns": [str(v) for v in (rows[header_row] if rows else []) if str(v).strip()],
+                               "columns": [_nfc(v) for v in (rows[header_row] if rows else []) if str(v).strip()],
                                "sample_rows": rows})
             wb.close()
             out["workbook"] = sheets
@@ -145,7 +163,7 @@ def profile_file(path):
                     if i >= 29:
                         break
             out["sample_rows"] = rows
-            out["columns"] = rows[0] if rows else []
+            out["columns"] = [_nfc(v) for v in rows[0]] if rows else []
         elif ext == ".pdf":
             text, source = _pdf_text(p)
             out["text_sample"], out["text_source"] = text, source
@@ -182,6 +200,28 @@ def _answer_rows(answers):
         if answer:
             out.append({"id": str(qid), "question": question, "answer": answer})
     return out
+
+
+def apply_owner_clarification(session, question, answer, build_id="", answered_at=""):
+    """Записать один checkpoint-ответ как авторитетный факт следующего Task Contract."""
+    session = session if isinstance(session, dict) else {}
+    question = str(question or "").strip()[:1000]
+    answer = str(answer or "").strip()[:6000]
+    if not question or not answer:
+        return ""
+    stamp = answered_at or datetime.now(timezone.utc).isoformat()
+    answer_id = "builder_clarification_" + hashlib.sha256(question.encode("utf-8")).hexdigest()[:12]
+    session.setdefault("answers", {})[answer_id] = {
+        "question": question, "answer": answer, "source": "builder_checkpoint", "answered_at": stamp}
+    decisions = [x for x in (session.get("decisions") or []) if not (
+        isinstance(x, dict) and x.get("type") == "builder_clarification" and
+        str(x.get("question") or "") == question)]
+    decisions.append({"type": "builder_clarification", "question": question, "answer": answer,
+                      "build_id": str(build_id or ""), "at": stamp})
+    session["decisions"] = decisions[-120:]
+    session.pop("waiting_build", None)
+    session.pop("building", None)
+    return answer_id
 
 
 def _as_text_list(value, limit=30):
@@ -236,8 +276,10 @@ def make_task_contract(session, blueprint, spec, profiles):
                               if x.get("output") or x.get("outputs")],
             "required_artifacts": ["report.md", "report.xlsx"],
         },
-        "inputs": [{"name": p.get("name"), "format": p.get("extension"), "bytes": p.get("bytes"),
-                    "sha256": p.get("sha256"), "profile": _contract_profile(p)} for p in (profiles or [])],
+        "inputs": [{"source_id": "source_%03d" % index,
+                    "name": _nfc(p.get("name")), "format": p.get("extension"), "bytes": p.get("bytes"),
+                    "sha256": p.get("sha256"), "profile": _contract_profile(p)}
+                   for index, p in enumerate((profiles or []), 1)],
         "source_configuration": source,
         "interview": _answer_rows(session.get("answers") or {}),
         "owner_comments": session.get("comments") or [],
@@ -602,21 +644,25 @@ def _builder_brief(task_package):
 def _source_inventory(profiles):
     """Детерминированная фактура источников. Семантику поверх неё определяет Qwen, не порядок листов."""
     out = []
-    for profile in profiles or []:
-        item = {"name": profile.get("name"), "format": profile.get("extension"),
+    for source_index, profile in enumerate(profiles or [], 1):
+        source_id = "source_%03d" % source_index
+        item = {"id": source_id, "name": _nfc(profile.get("name")), "format": profile.get("extension"),
                 "bytes": profile.get("bytes"), "sha256": profile.get("sha256")}
         if profile.get("workbook"):
-            item["sections"] = [{"name": sh.get("title"), "rows": sh.get("max_row"),
+            item["sections"] = [{"id": "%s_section_%03d" % (source_id, section_index),
+                                 "name": _nfc(sh.get("title")), "rows": sh.get("max_row"),
                                  "columns_count": sh.get("max_column"),
                                  "header_row": sh.get("header_row"),
                                  "columns": sh.get("columns") or [],
                                  "sample_rows": (sh.get("sample_rows") or [])[:12]}
-                                for sh in profile.get("workbook") or []]
+                                for section_index, sh in enumerate(profile.get("workbook") or [], 1)]
         elif profile.get("columns") or profile.get("sample_rows"):
-            item["sections"] = [{"name": "data", "columns": profile.get("columns") or [],
+            item["sections"] = [{"id": source_id + "_section_001", "name": "data",
+                                 "columns": profile.get("columns") or [],
                                  "sample_rows": (profile.get("sample_rows") or [])[:12]}]
         elif profile.get("text_sample"):
-            item["sections"] = [{"name": "document", "text_sample": _clip(profile.get("text_sample"), 6000),
+            item["sections"] = [{"id": source_id + "_section_001", "name": "document",
+                                 "text_sample": _clip(profile.get("text_sample"), 6000),
                                  "text_source": profile.get("text_source")}]
         if profile.get("profile_error"):
             item["profile_error"] = profile.get("profile_error")
@@ -633,17 +679,20 @@ def _source_model_prompt(package, previous_error=""):
     return ("Ты — архитектор источников универсального Builder Extella. До написания кода построй "
             "явную модель фактических входов и выбери стратегию. Не угадывай роль файла/листа по позиции "
             "или одному названию: опирайся на колонки, выборку, Task Contract и приводи evidence. "
+            "Идентичность задаёт харнесс: для КАЖДОГО физического входа верни ровно его source_id, "
+            "для раздела — section_id, а operations.inputs заполняй ТОЛЬКО этими ID. Не объединяй "
+            "несколько файлов под придуманным логическим именем и не создавай новые имена входов. "
             "Если несколько трактовок меняют бизнес-результат, status=need_human и ОДИН конкретный вопрос. "
             "Нормализацию идентификаторов предлагай только с доказательством; сомнительную помечай "
             "requires_owner=true. reuse/compose допустимы только для явно подходящей capability из списка. "
             "acquire означает лишь предложение недостающей способности, не установку.\n\n"
             "Верни ТОЛЬКО JSON:\n"
             '{"status":"ready|need_human|acquire","strategy":"reuse|compose|build|holistic_build|acquire|need_human",'
-            '"reason":"...","sources":[{"name":"точное имя входа","role":"...","entities":["..."],'
-            '"sections":[{"name":"точное имя листа/раздела","role":"...","entities":["..."],'
+            '"reason":"...","sources":[{"source_id":"source_001","name":"точное имя входа","role":"...","entities":["..."],'
+            '"sections":[{"section_id":"source_001_section_001","name":"точное имя листа/раздела","role":"...","entities":["..."],'
             '"identifier_fields":["..."],"date_fields":["..."],"numeric_fields":["..."],'
             '"evidence":["колонка/фрагмент"]}],"limitations":["..."],"evidence":["..."]}],'
-            '"operations":[{"name":"...","inputs":["имя источника/раздела"],"join_keys":["..."],'
+            '"operations":[{"name":"...","inputs":["source_001","source_002_section_001"],"join_keys":["..."],'
             '"normalizations":[{"field":"...","method":"...","evidence":"...","requires_owner":false}],'
             '"evidence":["..."]}],"acceptance_criteria":["наблюдаемый критерий"],'
             '"selected_capabilities":["expert id"],"missing_capability":"","question":""}.\n\n'
@@ -677,25 +726,38 @@ def _normalize_source_model(raw, package):
         return {"ok": False, "why": "acquire без названия способности и вопроса владельцу"}
 
     inventory = _source_inventory(package.get("inputs") or [])
-    actual = {str(x.get("name") or "").casefold(): x for x in inventory if x.get("name")}
+    actual_by_id = {_ref_key(x.get("id")): x for x in inventory if x.get("id")}
+    actual_by_name = {_ref_key(x.get("name"), basename=True): x for x in inventory if x.get("name")}
     clean_sources, covered = [], set()
     for source in raw.get("sources") if isinstance(raw.get("sources"), list) else []:
         if not isinstance(source, dict):
             continue
-        key = Path(str(source.get("name") or "")).name.casefold()
-        fact = actual.get(key)
+        source_ref = source.get("source_id") or source.get("id")
+        fact = actual_by_id.get(_ref_key(source_ref)) if source_ref else None
         if not fact:
-            return {"ok": False, "why": "Source Model ссылается на неизвестный вход: " + str(source.get("name"))}
-        covered.add(key)
-        section_names = {str(x.get("name") or "").casefold() for x in fact.get("sections") or []}
+            fact = actual_by_name.get(_ref_key(source.get("name"), basename=True))
+        if not fact:
+            bad_ref = source_ref or source.get("name")
+            return {"ok": False, "why": "Source Model ссылается на неизвестный вход: " + str(bad_ref)}
+        source_id = str(fact.get("id") or "")
+        covered.add(source_id)
+        actual_sections = fact.get("sections") or []
+        sections_by_id = {_ref_key(x.get("id")): x for x in actual_sections if x.get("id")}
+        sections_by_name = {_ref_key(x.get("name")): x for x in actual_sections if x.get("name")}
         sections = []
         for section in source.get("sections") if isinstance(source.get("sections"), list) else []:
             if not isinstance(section, dict):
                 continue
-            sname = str(section.get("name") or "").strip()
-            if sname and section_names and sname.casefold() not in section_names:
-                return {"ok": False, "why": "Source Model ссылается на неизвестный лист/раздел: " + sname}
+            section_ref = section.get("section_id") or section.get("id")
+            section_fact = sections_by_id.get(_ref_key(section_ref)) if section_ref else None
+            if not section_fact:
+                section_fact = sections_by_name.get(_ref_key(section.get("name")))
+            if actual_sections and not section_fact:
+                bad_ref = section_ref or section.get("name")
+                return {"ok": False, "why": "Source Model ссылается на неизвестный лист/раздел: " + str(bad_ref)}
+            sname = _nfc((section_fact or {}).get("name") or section.get("name")).strip()
             sections.append({
+                "section_id": str((section_fact or {}).get("id") or section_ref or ""),
                 "name": sname,
                 "role": _clip(section.get("role"), 300),
                 "entities": _as_text_list(section.get("entities"), 20),
@@ -707,33 +769,46 @@ def _normalize_source_model(raw, package):
         evidence = _as_text_list(source.get("evidence"), 20)
         if status == "ready" and not str(source.get("role") or "").strip():
             return {"ok": False, "why": "для входа %s не определена роль" % fact.get("name")}
-        covered_sections = {str(x.get("name") or "").casefold() for x in sections if x.get("name")}
-        if status == "ready" and section_names - covered_sections:
+        covered_sections = {str(x.get("section_id") or "") for x in sections if x.get("section_id")}
+        required_sections = {str(x.get("id") or "") for x in actual_sections if x.get("id")}
+        if status == "ready" and required_sections - covered_sections:
             return {"ok": False, "why": "для входа %s не описаны разделы: %s" %
-                    (fact.get("name"), ", ".join(sorted(section_names - covered_sections)))}
+                    (fact.get("name"), ", ".join(
+                        str(x.get("name")) for x in actual_sections if x.get("id") in required_sections - covered_sections))}
         if status == "ready" and not evidence and not any(x.get("evidence") for x in sections):
             return {"ok": False, "why": "для входа %s нет evidence роли" % fact.get("name")}
         source_entities = _as_text_list(source.get("entities"), 30)
         if status == "ready" and not source_entities and not any(x.get("entities") for x in sections):
             return {"ok": False, "why": "для входа %s не определены бизнес-сущности" % fact.get("name")}
-        clean_sources.append({"name": fact.get("name"), "role": _clip(source.get("role"), 300),
+        clean_sources.append({"source_id": source_id, "name": _nfc(fact.get("name")),
+                              "role": _clip(source.get("role"), 300),
                               "entities": source_entities,
                               "sections": sections, "limitations": _as_text_list(source.get("limitations"), 20),
                               "evidence": evidence})
-    if status == "ready" and set(actual) - covered:
+    if status == "ready" and {str(x.get("id")) for x in inventory} - covered:
         return {"ok": False, "why": "Source Model не описала обязательные входы: " +
-                ", ".join(actual[k].get("name") for k in sorted(set(actual) - covered))}
+                ", ".join(str(x.get("name")) for x in inventory if x.get("id") not in covered)}
 
-    known_refs = set()
-    ref_owner = {}
+    ref_targets = {}
+
+    def add_ref(ref, canonical_id, owner_id):
+        key = _ref_key(ref)
+        if key:
+            ref_targets.setdefault(key, []).append((canonical_id, owner_id))
+
     for source in clean_sources:
-        sname = str(source.get("name") or "").casefold()
-        known_refs.add(sname); ref_owner[sname] = sname
+        source_id = str(source.get("source_id") or "")
+        source_name = str(source.get("name") or "")
+        add_ref(source_id, source_id, source_id)
+        add_ref(source_name, source_id, source_id)
         for section in source.get("sections") or []:
-            sec = str(section.get("name") or "").casefold()
-            for ref in (sec, sname + "/" + sec, sname + ":" + sec):
-                if ref:
-                    known_refs.add(ref); ref_owner[ref] = sname
+            section_id = str(section.get("section_id") or "")
+            section_name = str(section.get("name") or "")
+            add_ref(section_id, section_id, source_id)
+            add_ref(section_name, section_id, source_id)
+            add_ref(source_id + "/" + section_id, section_id, source_id)
+            add_ref(source_name + "/" + section_name, section_id, source_id)
+            add_ref(source_name + ":" + section_name, section_id, source_id)
     operations, operation_sources = [], set()
     for operation in raw.get("operations") if isinstance(raw.get("operations"), list) else []:
         if not isinstance(operation, dict) or not str(operation.get("name") or "").strip():
@@ -750,13 +825,24 @@ def _normalize_source_model(raw, package):
                                        not normalized["evidence"]):
                 return {"ok": False, "why": "нормализация без field/method/evidence"}
             normalizations.append(normalized)
-        op_inputs = _as_text_list(operation.get("inputs"), 30)
-        unknown_refs = [x for x in op_inputs if str(x).casefold() not in known_refs]
+        raw_inputs = _as_text_list(operation.get("inputs"), 30)
+        op_inputs, unknown_refs, ambiguous_refs = [], [], []
+        for item in raw_inputs:
+            candidates = list(dict.fromkeys(ref_targets.get(_ref_key(item), [])))
+            if not candidates:
+                unknown_refs.append(item)
+            elif len(candidates) > 1:
+                ambiguous_refs.append(item)
+            else:
+                canonical_id, owner_id = candidates[0]
+                op_inputs.append(canonical_id)
+                operation_sources.add(owner_id)
         if status == "ready" and unknown_refs:
             return {"ok": False, "why": "операция ссылается на неизвестные входы/разделы: " +
                     ", ".join(str(x) for x in unknown_refs)}
-        operation_sources.update(ref_owner.get(str(x).casefold(), "") for x in op_inputs)
-        operation_sources.discard("")
+        if status == "ready" and ambiguous_refs:
+            return {"ok": False, "why": "операция использует неоднозначное имя раздела; укажите section_id: " +
+                    ", ".join(str(x) for x in ambiguous_refs)}
         operations.append({"name": _clip(operation.get("name"), 300),
                            "inputs": op_inputs,
                            "join_keys": _as_text_list(operation.get("join_keys"), 30),
@@ -764,7 +850,7 @@ def _normalize_source_model(raw, package):
                            "evidence": _as_text_list(operation.get("evidence"), 20)})
     if status == "ready" and not operations:
         return {"ok": False, "why": "Source Model ready, но не описала ни одной операции"}
-    if status == "ready" and {str(x.get("name") or "").casefold() for x in clean_sources} - operation_sources:
+    if status == "ready" and {str(x.get("source_id") or "") for x in clean_sources} - operation_sources:
         return {"ok": False, "why": "операции Source Model используют не все обязательные источники"}
     if status == "ready" and any(not x.get("evidence") for x in operations):
         return {"ok": False, "why": "операция Source Model не имеет evidence из Task Contract/данных"}
@@ -794,15 +880,22 @@ def _normalize_source_model(raw, package):
     return {"ok": True, "model": model}
 
 
-def build_source_model(package, llm, max_tries=2):
+def build_source_model(package, llm, max_tries=2, progress=None):
     """Qwen строит Source Model, детерминированный валидатор не позволяет ей выдумать вход/лист."""
     last_error = ""
-    for _ in range(max(1, min(int(max_tries or 1), 3))):
+    tries = max(1, min(int(max_tries or 1), 3))
+    for attempt in range(1, tries + 1):
+        if progress:
+            progress(attempt, tries, "running", last_error)
         raw = _llm_json(llm, _source_model_prompt(package, last_error), max_tokens=3800, timeout=260)
         checked = _normalize_source_model(raw, package)
         if checked.get("ok"):
+            if progress:
+                progress(attempt, tries, "success", "")
             return checked
         last_error = checked.get("why") or "невалидная Source Model"
+        if progress:
+            progress(attempt, tries, "retry" if attempt < tries else "failed", last_error)
     return {"ok": False, "why": last_error or "Source Model не построена"}
 
 
@@ -837,10 +930,11 @@ def _source_memory(model):
     return [x for x in additions if x]
 
 
-def prepare_task_context(session_id, sample_files, sess_dir, llm):
+def prepare_task_context(session_id, sample_files, sess_dir, llm, progress=None):
     """Общий Task Contract + Source Model для линейного и агентного Builder до любого кодогена."""
     package = _attach_capabilities(make_task_package(session_id, sample_files, sess_dir, llm=llm))
-    checked = build_source_model(package, llm, max_tries=2)
+    checked = (build_source_model(package, llm, max_tries=2, progress=progress) if progress else
+               build_source_model(package, llm, max_tries=2))
     if not checked.get("ok"):
         return {"ok": False, "why": checked.get("why") or "Source Model не построена",
                 "package": package, "source_model": {"status": "error",
@@ -1257,9 +1351,10 @@ def validate_result(result, sample_files, task_package=None):
         issues.append("нет содержательной summary")
     evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
     used = evidence.get("files_used") or result.get("files_used") or []
-    used = {Path(str(x)).name.casefold() for x in used if str(x).strip()}
-    expected = {Path(str(x)).name.casefold() for x in sample_files}
-    missing = sorted(expected - used)
+    used = {_ref_key(Path(str(x)).name) for x in used if str(x).strip()}
+    expected_names = {_ref_key(Path(str(x)).name): _nfc(Path(str(x)).name) for x in sample_files}
+    expected = set(expected_names)
+    missing = [expected_names[key] for key in sorted(expected - used)]
     if missing:
         issues.append("нет доказательства обработки файлов: " + ", ".join(missing))
     processed = (summary or {}).get("processed_files") if isinstance(summary, dict) else None

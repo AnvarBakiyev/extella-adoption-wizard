@@ -1281,6 +1281,26 @@ def _run_build(session_id, build_id):
         except Exception:
             pass
 
+    def _wait_owner(question, phase, detail=""):
+        """Терминальная пауза без ложной ошибки: сохранить checkpoint и освободить build lock."""
+        prog["status"] = "waiting_for_owner"
+        prog["owner_question"] = str(question or "")[:1000]
+        prog["waiting_phase"] = str(phase or "source_model")[:80]
+        if detail:
+            prog["waiting_detail"] = str(detail)[:1200]
+        save()
+        try:
+            sp = SESS_DIR / (session_id + ".json")
+            s = json.loads(sp.read_text(encoding="utf-8"))
+            s.pop("building", None)
+            s["waiting_build"] = {"build_id": build_id, "question": prog["owner_question"],
+                                  "phase": prog["waiting_phase"], "detail": prog.get("waiting_detail", ""),
+                                  "at": now()}
+            s["updated_at"] = now()
+            sp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     def stage(sid, title, status="running", **extra):
         stamp = now()
         for s in prog["stages"]:
@@ -1363,7 +1383,15 @@ def _run_build(session_id, build_id):
         # остаётся на месте, но больше не кодогенит стадии из одного schema_hint в обход интервью/ТЗ.
         stage("task_contract", "Собираю единый Task Contract", "running")
         stage("source_model", "Qwen сопоставляет роли источников и операций", "running")
-        prepared = prepare_task_context(session_id, sample_files, SESS_DIR, llm)
+        def _source_progress(attempt, total, state, detail):
+            suffix = "попытка %d/%d" % (attempt, total)
+            message = ("Qwen исправляет ссылочную модель после проверки: " + str(detail)[:500]
+                       if state == "running" and detail else
+                       "проверяю физические входы, разделы и бизнес-сущности")
+            stage("source_model", "Qwen сопоставляет источники · " + suffix, "running", detail=message)
+
+        prepared = prepare_task_context(session_id, sample_files, SESS_DIR, llm,
+                                        progress=_source_progress)
         task_package = prepared.get("package") or {}
         source_model = prepared.get("source_model") or {}
         prog["task_contract"] = task_package.get("task_contract") or {}
@@ -1392,11 +1420,16 @@ def _run_build(session_id, build_id):
             error_code = "needs_owner_input" if source_model["status"] == "need_human" else "capability_missing"
             detail = str(source_model.get("reason") or source_model.get("missing_capability") or "")
             question = str(source_model.get("question") or "")
-            prog["status"] = "error"; prog["build_mode"] = "agentic"
+            prog["build_mode"] = "agentic"
             prog["error_struct"] = _build_error(error_code, detail, owner_question=question,
                                                  failure_kind=source_model["status"],
                                                  draft_created=False, expert_ran=False)
             prog["error"] = prog["error_struct"]["message"]
+            if source_model["status"] == "need_human":
+                stage("source_model", "Нужно подтвердить бизнес-смысл источников", "warn", detail=detail)
+                _wait_owner(question, "source_model", detail)
+                return
+            prog["status"] = "error"
             save(); _unlock(); return
         # Линейный кодоген получает ту же авторитетную фактуру; agentic path получает готовый
         # context и не делает второй, потенциально расходящийся вызов Source Model.
@@ -1473,6 +1506,11 @@ def _run_build(session_id, build_id):
                     last_applied_lesson=solution.get("last_applied_lesson") or "",
                     last_unapplied_lesson=solution.get("last_unapplied_lesson") or "")
                 prog["error"] = prog["error_struct"]["message"]
+                if error_code == "needs_owner_input":
+                    stage("agentic_accept", "Нужен один ответ для продолжения приёмки", "warn",
+                          detail=solution.get("owner_question") or detail)
+                    _wait_owner(solution.get("owner_question") or "", "acceptance", detail)
+                    return
                 save(); _unlock(); return
 
             expert = solution["expert"]

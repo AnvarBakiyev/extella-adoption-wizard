@@ -3339,6 +3339,7 @@ function lastBuild(){ const b = S.session.builds||[]; return b.length? b[b.lengt
 function renderTest(){
   const bp = S.blueprint && S.blueprint.blueprint;
   const lb = lastBuild();
+  const waiting = S.waitingBuild || (S.session&&S.session.waiting_build) || null;
   // Переподключение к идущей стройке после ухода с экрана/перезагрузки визарда.
   // session.building — авторитетный указатель (ставит /x/build, снимает мост по завершении);
   // если стройка ещё идёт, а состояние в памяти потеряно — восстановим и продолжим поллинг,
@@ -3347,16 +3348,17 @@ function renderTest(){
      && !(lb && lb.build_id === S.session.building)){
     S.buildId = S.session.building; S.buildDone = false;
   }
-  const running = !!S.buildId && !S.buildDone;
+  const running = !!S.buildId && !S.buildDone && !waiting;
   const noFiles = !((S.session&&S.session.files)||[]).length;
   el("buildRunner").innerHTML = `
     <div class="kicker">Сборка процесса</div>
     <div style="font-size:14px;margin-bottom:10px">${bp? "Процесс: <b>"+esc(bp.process_name)+"</b>" : "Сначала соберите план процесса (шаг «План»)."}</div>
-    <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running)?"disabled":""}>${running?"Идёт сборка…":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
+    <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running||waiting)?"disabled":""}>${running?"Идёт сборка…":waiting?"Ждёт вашего ответа ↓":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
     ${noFiles&&bp?`<button class="btn ghost" style="margin-left:8px" onclick="genSample()">⚗️ Сгенерировать пример данных</button>`:""}
     <span class="statusline" id="stBuild" style="margin-left:10px"></span>
     <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, создаст чернового эксперта, запустит его на образцах и опубликует только после приёмки. Одна попытка может занять до 15 минут, всего возможно четыре; экран можно закрыть — прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
-  if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
+  if(waiting){ renderOwnerWait(waiting); el("buildFoot").style.display="none"; }
+  else if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
   else if(running){ pollBuild(); }
   else el("buildProgress").innerHTML = "";
 }
@@ -3375,7 +3377,7 @@ async function startBuild(){
     } else toast("Не удалось запустить сборку: "+(r.message||""),"err");
     el("buildBtn").disabled=false; return;
   }
-  S.buildId = r.build_id; S.buildDone = false; setStatus("stBuild","");
+  S.buildId = r.build_id; S.buildDone = false; S.waitingBuild=null; setStatus("stBuild","");
   el("buildFoot").style.display="none";
   renderTest(); pollBuild();
 }
@@ -3397,11 +3399,16 @@ async function pollBuild(){
   if(d && d.status==="success"){
     const p = d.progress;
     renderBuildProgress(p);
-    if(p.status==="built"){ S.buildDone=true; await reloadSession(); renderTest(); return; }
+    if(p.status==="built"){ S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
+    if(p.status==="waiting_for_owner"){
+      S.buildId=null; S.buildDone=false; S.waitingBuild=p;
+      await reloadSession(); renderTest(); return;
+    }
     if(p.status==="error"){
       // AC-06: сбой отвечает на три вопроса — что не получилось, из-за чего и ЧТО ДЕЛАТЬ.
       // Раньше владелец видел одну строку и не понимал, его это проблема или наша.
-      S.buildDone=true;
+      S.buildDone=true; S.buildId=null; S.waitingBuild=null;
+      if(S.session) delete S.session.building;
       var es=p.error_struct||{};
       el("buildProgress").innerHTML += '<div class="card gap-card">'+
         '<b>Сборка прервалась: '+esc(es.message||p.error||"см. лог")+'</b>'+
@@ -3412,9 +3419,43 @@ async function pollBuild(){
         ((es.draft_created!==undefined||es.expert_ran!==undefined)?'<div style="font-size:12px;color:var(--silver);margin-top:8px">Draft создан: <b>'+(es.draft_created?'да':'нет')+'</b> · настоящий эксперт запускался: <b>'+(es.expert_ran?'да':'нет')+'</b>'+(es.last_unapplied_lesson?' · неприменённый урок: '+esc(es.last_unapplied_lesson):'')+'</div>':'')+
         (es.code?'<div style="font-size:11px;color:var(--silver);margin-top:8px">код: '+esc(es.code)+'</div>':'')+
         '</div>';
-      el("buildBtn")&&(el("buildBtn").disabled=false); return; }
+      if(el("buildBtn")){ el("buildBtn").disabled=false; el("buildBtn").textContent="↻ Повторить сборку"; }
+      return; }
   }
   S.buildTimer = setTimeout(pollBuild, 4000);
+}
+function renderOwnerWait(waiting){
+  const p=(waiting&&waiting.status==="waiting_for_owner")?waiting:null;
+  if(p) renderBuildProgress(p); else el("buildProgress").innerHTML="";
+  const question=(waiting&&waiting.owner_question)||(waiting&&waiting.question)||"Уточните бизнес-правило для продолжения";
+  const detail=(waiting&&waiting.waiting_detail)||(waiting&&waiting.detail)||"";
+  const buildId=(waiting&&waiting.build_id)||"";
+  el("buildProgress").innerHTML += `<div class="card gap-card" style="border-color:#dfbd75">
+    <div class="kicker">Нужен один ответ — это не техническая ошибка</div>
+    <div style="font-size:14px;margin-bottom:8px"><b>${esc(question)}</b></div>
+    ${detail?`<div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:9px">Почему спрашиваю: ${esc(detail)}</div>`:""}
+    <textarea id="buildOwnerAnswer" rows="4" style="width:100%;box-sizing:border-box" placeholder="Ответьте своими словами. Ответ войдёт в Task Contract и следующая стройка продолжится с ним."></textarea>
+    <div style="display:flex;gap:9px;align-items:center;margin-top:9px;flex-wrap:wrap">
+      <button class="btn gold" onclick="continueBuildFromAnswer('${esc(buildId)}')">Сохранить ответ и продолжить →</button>
+      <span class="statusline" id="stBuildAnswer"></span>
+    </div>
+    <div style="font-size:11.5px;color:var(--silver);margin-top:8px">Интервью заново проходить не нужно. Ответ сохраняется как решение владельца; технические имена файлов система исправляет сама.</div>
+  </div>`;
+}
+async function continueBuildFromAnswer(buildId){
+  const input=el("buildOwnerAnswer"), answer=(input&&input.value||"").trim();
+  if(!answer){ setStatus("stBuildAnswer","напишите ответ"); return; }
+  const submit=input&&input.nextElementSibling&&input.nextElementSibling.querySelector("button");
+  if(submit) submit.disabled=true;
+  setStatus("stBuildAnswer","<span class='spin'></span>добавляю в Task Contract и продолжаю…");
+  let r; try{ r=await jpost("/x/build_answer",{session_id:S.sessionId,build_id:buildId,answer:answer}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    if(submit) submit.disabled=false;
+    setStatus("stBuildAnswer","ошибка: "+esc((r&&r.message)||"не удалось продолжить")); return;
+  }
+  S.waitingBuild=null; S.buildId=r.build_id; S.buildDone=false;
+  await reloadSession(); renderTest();
 }
 function buildStageRow(s){
   // Пять состояний: blocked = шаг даже не запускался после корневого сбоя (это не ещё одна ошибка).

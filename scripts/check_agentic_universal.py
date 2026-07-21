@@ -102,6 +102,22 @@ def assert_matrix(mod):
     unsafe = source_for(multi, normalizations=[dict(norm[0], requires_owner=True)])
     assert mod._normalize_source_model(unsafe, multi)["ok"] is False
 
+    # macOS NFD и описательное имя Qwen не участвуют в identity: authoritative source/section ID
+    # разрешаются детерминированно, а наружу возвращается человекочитаемый NFC.
+    mac = package([profile("леи\u0306блы.xlsx", [("Данные", ["номер", "расход"], ["00015", 1])])],
+                  "Сопоставить учётные записи")
+    mac_raw = source_for(mac, strategy="build", operation="read source by stable ids")
+    mac_raw["sources"][0].update({"source_id": "source_001", "name": "1C Excel exports (леи_блы)"})
+    mac_raw["sources"][0]["sections"][0].update({
+        "section_id": "source_001_section_001", "name": "описательное имя"})
+    mac_raw["operations"][0]["inputs"] = ["source_001_section_001"]
+    mac_checked = mod._normalize_source_model(mac_raw, mac)
+    assert mac_checked["ok"], mac_checked
+    assert mac_checked["model"]["sources"][0]["name"] == "лейблы.xlsx"
+    assert mac_checked["model"]["operations"][0]["inputs"] == ["source_001_section_001"]
+    legacy_nfd = source_for(mac, strategy="build", operation="legacy exact name")
+    assert mod._normalize_source_model(legacy_nfd, mac)["ok"]
+
     # 3. Excel + PDF и 4. документный поток: роли следуют из схемы/текста, не из порядка.
     excel_pdf = package([profile("numbers.xlsx", [("Data", ["key", "metric"], ["K1", 8])]),
                          {"name": "scan.pdf", "extension": ".pdf", "bytes": 20,
@@ -128,6 +144,14 @@ def assert_matrix(mod):
     assert mod._normalize_source_model(need, one)["model"]["status"] == "need_human"
     missing_question = dict(need, question="")
     assert mod._normalize_source_model(missing_question, one)["ok"] is False
+    owner_session = {"answers": {}, "decisions": [], "waiting_build": {"build_id": "old"}}
+    owner_id = mod.apply_owner_clarification(
+        owner_session, "Использованными считать строки с расходом?", "Да, расход > 0", "build_old",
+        "2026-07-21T00:00:00+00:00")
+    owner_contract = mod.make_task_contract(owner_session, {}, "", one["inputs"])
+    assert owner_id in owner_session["answers"] and not owner_session.get("waiting_build")
+    assert any(x["answer"] == "Да, расход > 0" for x in owner_contract["interview"])
+    assert owner_contract["owner_decisions"][-1]["type"] == "builder_clarification"
     acquire = {"status": "acquire", "strategy": "acquire", "reason": "нужна OCR-модель",
                "sources": [], "operations": [], "acceptance_criteria": [], "selected_capabilities": [],
                "missing_capability": "OCR handwriting model",
