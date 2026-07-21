@@ -17,6 +17,16 @@ PY="$(command -v python3.12 || command -v python3 || true)"
   echo "Сначала нужна обычная полная установка install-all.sh."
   exit 1
 }
+INSTALLED_VERSION="$($PY - "$APP_DIR/server.py" <<'PY' 2>/dev/null || true
+import re, sys
+try:
+    text = open(sys.argv[1], encoding="utf-8").read()
+    hit = re.search(r'BRIDGE_VERSION\s*=\s*"([^"]+)"', text)
+    print(hit.group(1) if hit else "")
+except Exception:
+    print("")
+PY
+)"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -74,10 +84,19 @@ cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
 echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
 
-echo "→ Обновляю только изменённые системные эксперты Universal Process"
-EXTELLA_DELTA_FILES="experts/wz_generate_blueprint.py,experts/wz_build_plan.py,experts/wz_auto_compose.py" \
-  "$PY" "$SRC/install.py"
-echo "  ✓ 3 изменённых эксперта обновлены; остальные эксперты, концепты и правила не переустанавливались"
+if "$PY" - "$INSTALLED_VERSION" <<'PY'
+import re, sys
+parts = tuple(int(x) for x in re.findall(r"\d+", sys.argv[1] or ""))
+raise SystemExit(0 if not parts or parts < (5, 14) else 1)
+PY
+then
+  echo "→ Довожу системные эксперты Universal Process со старой версии $INSTALLED_VERSION"
+  EXTELLA_DELTA_FILES="experts/wz_generate_blueprint.py,experts/wz_build_plan.py,experts/wz_auto_compose.py" \
+    "$PY" "$SRC/install.py"
+  echo "  ✓ 3 требуемых эксперта обновлены; остальные эксперты, концепты и правила не переустанавливались"
+else
+  echo "  ✓ системные эксперты уже актуальны (было v$INSTALLED_VERSION) — не переустанавливались"
+fi
 
 echo "→ Обновляю read/action-адаптер Workspace к тому же Process Contract"
 if [ -d "$WS_DIR" ]; then

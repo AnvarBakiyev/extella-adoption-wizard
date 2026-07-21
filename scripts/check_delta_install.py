@@ -31,6 +31,8 @@ def main():
         assert name in delta, f"QA-дельта не переносит runtime-файл {name}"
     for name in ("wz_generate_blueprint.py", "wz_build_plan.py", "wz_auto_compose.py"):
         assert f"experts/{name}" in delta, f"QA-дельта не обновляет изменённого эксперта {name}"
+    assert 'parts < (5, 14)' in delta
+    assert 'системные эксперты уже актуальны' in delta
     for name in ("dist/workspace/$name", "WS_DIR", "Workspace v1.1.0", "EXTELLA_QA_SHA"):
         assert name in delta, f"QA-дельта не обновляет общий Workspace-адаптер: {name}"
     print("QA-дельта: изменённые артефакты выбраны, полный режим сохранён ✓")
