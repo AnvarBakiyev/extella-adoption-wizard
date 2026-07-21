@@ -200,9 +200,12 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 /* ---------- modal + toasts (замена prompt/alert: работают и внутри Extella) ---------- */
 .mod-back{position:fixed;inset:0;background:rgba(10,10,10,.35);display:none;align-items:center;justify-content:center;z-index:100000}/* #3 выше оверлея кабинета (wz_cab z-index:99998) — иначе диалоги «Привязать источник»/«Входящие» открывались ПОД кабинетом */
 .mod-back.open{display:flex}
-.mod{background:var(--paper);border-radius:14px;padding:24px 26px;width:min(430px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.25)}
-.mod h3{font-size:16px;margin-bottom:6px}
-.mod .mhint{color:var(--silver);font-size:12.5px;margin-bottom:12px}
+.mod{background:var(--paper);border-radius:14px;padding:24px 26px;width:min(430px,92vw);max-height:calc(100vh - 40px);box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden;position:relative}
+.mod h3{font-size:16px;margin-bottom:6px;padding-right:30px;flex:none}
+.mod .mhint{color:var(--silver);font-size:12.5px;margin-bottom:12px;max-height:32vh;min-height:0;overflow-y:auto;overflow-wrap:anywhere}
+.mod-content{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+.mod-close{position:absolute;right:12px;top:10px;z-index:2;border:0;background:transparent;color:var(--silver);font-size:23px;line-height:1;cursor:pointer;padding:4px 7px;border-radius:7px}
+.mod-close:hover{background:var(--cream);color:var(--ink)}
 .mod input:not([type=radio]):not([type=checkbox]){width:100%;border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;background:#fff;margin-bottom:14px}
 .mod input:not([type=radio]):not([type=checkbox]):focus{outline:none;border-color:var(--gold)}
 .mod input[type=radio],.mod input[type=checkbox]{width:auto;margin:0;padding:0;border:0;background:none;accent-color:var(--gold)}
@@ -210,7 +213,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 .mod label.opt input{margin-top:2px;flex:none}
 .mod label.opt span{flex:1}
 .mod label.opt:hover{color:var(--gold)}
-.mod .mrow{display:flex;gap:10px;justify-content:flex-end}
+.mod .mrow{display:flex;gap:10px;justify-content:flex-end;flex:none;padding-top:12px;background:var(--paper)}
 .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;display:flex;flex-direction:column;gap:8px;z-index:100050;align-items:center}/* #3 выше модалок (.mod-back 100000), чтобы тосты не прятались за диалогом */
 .toast{background:var(--ink);color:#fff;border-radius:10px;padding:10px 18px;font-size:13.5px;box-shadow:0 8px 30px rgba(0,0,0,.3);animation:tin .2s ease}
 .toast.err{background:var(--bad)}
@@ -508,11 +511,14 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 </div>
 
 <!-- MODAL + TOASTS -->
-<div class="mod-back" id="modBack">
+<div class="mod-back" id="modBack" onclick="if(event.target===this)modCancel()">
   <div class="mod">
+    <button class="mod-close" type="button" aria-label="Закрыть" title="Закрыть" onclick="modCancel()">×</button>
     <h3 id="modTitle"></h3>
     <div class="mhint" id="modHint"></div>
-    <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
+    <div class="mod-content" id="modContent">
+      <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
+    </div>
     <div class="mrow">
       <button class="btn ghost" onclick="modCancel()">Отмена</button>
       <button class="btn gold" id="modOkBtn" onclick="modOk()">OK</button>
@@ -757,15 +763,29 @@ async function agentUnlink(id){
   if(r.status==="success"){ await refreshAgentBadge(); openAgentManager(); }
 }
 /* ============ Ф3: кабинет-мозг агента (Знания / Правила — читать и править словами) ============ */
-function _brainRender(res){
-  if(!res || res.status!=="success"){ toast(res&&res.message||"Мозг недоступен","err"); return; }
+let _brainOpenSeq=0;
+function _brainRender(res, seq){
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(!res || res.status!=="success"){
+    resetModInput();
+    el("modTitle").textContent="Мозг агента временно недоступен";
+    el("modHint").textContent=(res&&res.message)||"Нет связи с мозгом агента. Wizard продолжает работать.";
+    el("modInput").outerHTML='<input id="modInput" type="hidden"><button class="btn ghost" onclick="openBrain()">↻ Повторить загрузку</button>';
+    var errOk=el("modOkBtn"); if(errOk) errOk.textContent="Закрыть";
+    _modCb=null;
+    return;
+  }
   const cs=res.concepts||[], rs=res.rules||[];
   const sec=(title,hint,items,delOp,addOp)=>
     '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px">'+title+' <span style="color:var(--silver,#889);font-weight:400">'+items.length+'</span></div>'+
     '<div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 6px">'+hint+'</div>'+
     (items.map(function(it){
+      var text=String(it.text||"");
+      var body=text.length>320
+        ? '<details style="min-width:0;flex:1"><summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;word-break:break-word">'+esc(text.slice(0,260))+'… <span style="color:var(--gold)">развернуть</span></summary><div style="font-size:12px;color:var(--ink-soft);white-space:pre-wrap;word-break:break-word;margin-top:6px;max-height:240px;overflow:auto">'+esc(text)+'</div></details>'
+        : '<div style="flex:1;min-width:0;font-size:12px;color:var(--ink-soft);white-space:pre-wrap;word-break:break-word">'+esc(text)+'</div>';
       return '<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:7px;margin-bottom:4px">'+
-        '<div style="flex:1;font-size:12px;color:var(--ink-soft);white-space:pre-wrap">'+esc(it.text)+'</div>'+
+        body+
         '<button class="btn ghost" style="padding:2px 7px;font-size:11px" onclick="brainDel(\''+delOp+'\','+JSON.stringify(it.id)+')">✕</button></div>';
     }).join('') || '<div style="font-size:12px;color:var(--silver,#889);padding:2px 0 4px">пусто</div>')+
     '<button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="brainAdd(\''+addOp+'\')">＋ добавить словами</button></div>';
@@ -802,13 +822,23 @@ function _brainRender(res){
         (ex.length?ex.map(function(e){return '<div style="font-size:11.5px;color:var(--ink-soft);padding:2px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:6px;margin-bottom:3px;display:inline-block;margin-right:4px"><b>'+esc(e.name)+'</b></div>';}).join(''):
           '<div style="font-size:12px;color:var(--silver,#889)">пока нет процессов у этого агента — умения появятся, когда соберёте для него автоматизацию</div>')+'</div>';
     })();
-  el("modBack").classList.add("open");
   const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
   _modCb=null;
 }
 async function openBrain(){
+  const seq=++_brainOpenSeq;
+  resetModInput();
+  el("modTitle").textContent="🧠 Мозг агента";
+  el("modHint").textContent="Загружаю знания, правила, голос и умения. Окно можно закрыть — загрузка не заблокирует Wizard.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden"><div style="padding:18px 4px;font-size:13px;color:var(--ink-soft)"><span class="spin"></span> Читаю мозг агента…</div>';
+  el("modBack").classList.add("open");
+  var loadingOk=el("modOkBtn"); if(loadingOk) loadingOk.textContent="Закрыть";
+  _modCb=null;
   let r; try{ r=await fetch("/x/brain").then(x=>x.json()); }catch(e){ r=null; }
-  if(!r || (r.status==="error" && /не выбран|агент/.test(r.message||""))){
+  // Пользователь закрыл окно или открыл новое — запоздавший сетевой ответ не имеет права
+  // снова раскрывать/перезаписывать модалку.
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r && r.status==="error" && /не выбран|агент/.test(r.message||"")){
     // Объясняем, ЧТО такое мозг и почему он пока пуст, а не выдаём «Мозг недоступен».
     resetModInput();
     el("modTitle").textContent="🧠 Мозг агента";
@@ -822,19 +852,22 @@ async function openBrain(){
     _modCb=null;
     return;
   }
-  _brainRender(r);
+  if(!r) r={status:"error",message:"Мост не ответил на запрос мозга агента. Закройте окно или повторите загрузку."};
+  _brainRender(r,seq);
 }
 async function brainAdd(op){
   const isC=op==="add_concept";
   ask(isC?"Новое знание (концепт)":"Новое правило", isC?"Факт/определение для мозга агента, напр.: «CPL считаем как бюджет ÷ лиды»":"Правило поведения/голоса, напр.: «Всегда отвечать на языке клиента»","",async (t)=>{
     if(!t) return; busy("Записываю в мозг…");
     const r=await jpost("/x/brain_edit",{op:op,text:t}); busyOff();
-    if(r.status==="success"){ toast("✓ Записано","ok"); _brainRender(r); } else toast("Не удалось: "+(r.message||""),"err");
+    if(r.status==="success"){ toast("✓ Записано","ok"); openBrain(); } else toast("Не удалось: "+(r.message||""),"err");
   });
 }
 async function brainDel(op,id){
+  const seq=_brainOpenSeq;
   const r=await jpost("/x/brain_edit",{op:op,id:id});
-  if(r.status==="success"){ _brainRender(r); } else toast("Не удалось удалить","err");
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r.status==="success"){ openBrain(); } else toast("Не удалось удалить","err");
 }
 async function voiceLearn(){
   askBig("🎙 Примеры голоса клиента","Вставьте 2–4 реальных сообщения/письма, как пишет клиент (каждое с новой строки, разделяйте пустой строкой). Агент выучит стиль.","",async (txt)=>{
@@ -865,7 +898,7 @@ async function knowledgeLearn(){
     const res=(r&&r.result)||{};
     if(r.status==="success"){
       toast("✓ Запомнено фактов: "+(res.saved||0),"ok");
-      _brainRender(await fetch("/x/brain").then(x=>x.json()));
+      openBrain();
     } else toast("Не удалось: "+(r.message||res.err||""),"err");
   });
 }
@@ -880,22 +913,26 @@ async function knowledgeFromSource(){
         const res=(r&&r.result)||{};
         if(r.status==="success"){
           toast("✓ Запомнено фактов: "+(res.saved||0)+(res.saved_source?(" · обновление каждые "+res.saved_source.interval_hours+"ч"):""),"ok");
-          _brainRender(await fetch("/x/brain").then(x=>x.json()));
+          openBrain();
         } else toast("Не удалось: "+(r.message||res.err||"источник не отдал данных"),"err");
       });
     });
   });
 }
 async function knowledgeRefresh(gid){
+  const seq=_brainOpenSeq;
   busy("Обновляю знание из источника…");
   const r=await jpost("/x/knowledge_refresh",{gen_id:gid}); busyOff();
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
   const res=(r&&r.result)||{};
-  if(r.status==="success"){ toast("✓ Обновлено фактов: "+(res.saved||0),"ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
+  if(r.status==="success"){ toast("✓ Обновлено фактов: "+(res.saved||0),"ok"); openBrain(); }
   else toast("Не удалось: "+(r.message||res.err||""),"err");
 }
 async function knowledgeSourceRemove(gid){
+  const seq=_brainOpenSeq;
   const r=await jpost("/x/knowledge_source_remove",{gen_id:gid});
-  if(r.status==="success"){ toast("Источник снят с обновления (факты в мозге остались)","ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r.status==="success"){ toast("Источник снят с обновления (факты в мозге остались)","ok"); openBrain(); }
 }
 
 /* ================= modal + toast (замена prompt/alert) ================= */
@@ -903,16 +940,12 @@ let _modCb = null;
 function _modClearExtras(){
   // убрать кастомные поля прошлой модалки (всё между #modHint и .mrow, включая скрытый #modInput
   // и осиротевшие textarea/select/radio, в т.ч. с секретами) и вернуть ЧИСТОЕ видимое текстовое #modInput.
-  const mod = el("modBack") && el("modBack").querySelector(".mod");
-  const hint = el("modHint");
-  if(!mod || !hint) return;
-  const row = mod.querySelector(".mrow");
-  let n = hint.nextElementSibling;
-  while(n && n !== row){ const nx = n.nextElementSibling; n.remove(); n = nx; }
+  const content = el("modContent");
+  if(!content) return;
   const inp = document.createElement("input");
   inp.id = "modInput";
   inp.setAttribute("onkeydown", "if(event.key==='Enter')modOk()");
-  hint.after(inp);
+  content.replaceChildren(inp);
 }
 function resetModInput(){ _modClearExtras(); var ob=el("modOkBtn"); if(ob) ob.textContent="OK"; }   // чистый инпут + дефолтная кнопка
 /* ================= EN/RU (демо на английский) ================= */
@@ -1827,8 +1860,8 @@ function ask(title, hint, def, cb, opts){
   _modCb = cb;
   setTimeout(()=>mi.focus(), 50);
 }
-function modOk(){ const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; if(mi) mi.value=""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
-function modCancel(){ el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
+function modOk(){ _brainOpenSeq++; const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; if(mi) mi.value=""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
+function modCancel(){ _brainOpenSeq++; el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
 function busy(text){ el("busyText").textContent = text; el("busyBack").classList.add("open"); }
 function busyOff(){ el("busyBack").classList.remove("open"); }
 function toast(text, kind){
@@ -2101,7 +2134,7 @@ function closeCompStudio(){
   var st=el('comp_studio'); if(!st||st.style.display==='none') return;
   st.style.display='none'; document.body.style.overflow='';
 }
-document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeCompStudio(); closeCsplStudio(); closeTeam(); } });
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(el('modBack').classList.contains('open')) modCancel(); closeCompStudio(); closeCsplStudio(); closeTeam(); } });
 // ── Команда v0: приглашение = именной токен контура; отзыв в один клик; роли позже ──
 function openTeam(){ var st=el('team_studio'); if(!st) return; st.style.display='block'; document.body.style.overflow='hidden'; renderTeam(); var n=el('teamName'); if(n) n.focus(); }
 function closeTeam(){ var st=el('team_studio'); if(!st||st.style.display==='none') return; st.style.display='none'; document.body.style.overflow=''; }

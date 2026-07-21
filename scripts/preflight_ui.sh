@@ -82,6 +82,11 @@ python3 scripts/check_build_owner_dialogue.py \
   && echo "   ✓ технические ссылки чинятся без человека, бизнес-вопрос продолжает ту же сессию" \
   || { echo "   ✗ need_human снова превратился в тупик или отдельный чат"; fail=1; }
 
+echo "→ длинный и медленный мозг агента"
+python3 scripts/check_brain_modal.py \
+  && echo "   ✓ мозг прокручивается, закрывается и не открывается снова запоздавшим ответом" \
+  || { echo "   ✗ окно мозга снова может заблокировать Wizard"; fail=1; }
+
 echo "→ безопасная граница экспериментального Контура"
 python3 scripts/check_goal_loop_safety.py \
   && echo "   ✓ fail-closed; нет fake expert/install и записи недоказанной памяти" \
