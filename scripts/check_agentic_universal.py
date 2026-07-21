@@ -436,6 +436,96 @@ def profile_variants(mod, root):
     assert "Document request alpha" in mod.profile_file(doc).get("text_sample", "")
 
 
+def adaptive_gulzhan_timeout(mod, root):
+    """13 mixed inputs must split after one measured workload timeout, not run 4×15 minutes."""
+    sid = "wz_gulzhan_adaptive"
+    paths = []
+    inputs = []
+    for index in range(13):
+        suffix = ".pdf" if index < 5 else ".xlsx"
+        path = root / ("input_%02d%s" % (index, suffix))
+        path.write_bytes(("fixture-%d" % index).encode("utf-8"))
+        paths.append(path)
+        inputs.append(profile(path.name, [("Data", ["id", "value"], [str(index), index])], suffix))
+    pkg = package(inputs, "Сопоставить смешанный пакет и сформировать проверенный отчёт")
+    normalized = mod._normalize_source_model(source_for(pkg, operation="reconcile mixed sources"), pkg)
+    assert normalized["ok"]
+    pkg["source_model"] = normalized["model"]
+    mod._refresh_package(pkg)
+    prepared = {"ok": True, "package": pkg, "source_model": normalized["model"],
+                "source_memory_ids": []}
+    (root / (sid + ".json")).write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    created, ran, events = [], [], []
+    mod._create_or_update = lambda *a, **k: (
+        created.append(True) or {"ok": True, "code_sha256": "oversized-v1",
+                                 "strategy_sha256": "strategy-v1"})
+    mod.run_expert = lambda *a, **k: (
+        ran.append(k.get("wait")) or {"status": "error", "message": "task timed out"})
+    mod._delete_draft = lambda *a, **k: None
+    mod.time.sleep = lambda *_: None
+    step_contract = {"id": "reconcile", "version": 1, "title": "Сверить пакет",
+                     "purpose": "Сопоставить все источники", "acceptance": {
+                         "semantic_criteria": ["сверка доказана"], "minimum_confidence": 0.7}}
+    result = mod.build_agentic_solution(
+        sid, "adaptive", "gul", paths, root, root, {"agent_id": "agent_qwen"},
+        progress=lambda *args: events.append(args), max_creation_attempts=2,
+        max_run_repairs=2, max_acceptance_repairs=2, max_total_attempts=6,
+        prepared_context=prepared, step_contract=step_contract,
+        expert_name_override="gul_reconcile_v1")
+    assert not result["ok"] and result["control_action"] == "split_step", result
+    assert result["failure_decision"]["failure_class"] == "workload_timeout"
+    assert len(created) == 1 and len(ran) == 1 and ran[0] == 240
+    assert not result["owner_question"]
+    assert any("дробит" in str(event[1]).casefold() for event in events)
+
+
+def transient_retry_reuses_draft_once(mod, root, inp, good):
+    """A first transport timeout retries the saved expert, without another code generation."""
+    sid = "wz_transient_retry"
+    (root / (sid + ".json")).write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    pkg = package([profile(inp.name, [("Data", ["id", "value"], ["A", 1])], ".csv")],
+                  "Produce a verified report")
+    normalized = mod._normalize_source_model(source_for(pkg, operation="read and report"), pkg)
+    assert normalized["ok"]
+    pkg["source_model"] = normalized["model"]
+    mod._refresh_package(pkg)
+    prepared = {"ok": True, "package": pkg, "source_model": normalized["model"],
+                "source_memory_ids": []}
+    create_calls, run_waits = [], []
+    code = "def transient_retry(source_file='', output_dir='', **kwargs):\n    return {'status':'success'}\n"
+
+    def create(*args, **kwargs):
+        create_calls.append(True)
+        return {"ok": True, "code": code, "code_sha256": "transient-code-v1",
+                "strategy_sha256": "transient-strategy-v1"}
+
+    results = [{"status": "error", "message": "The read operation timed out"}, good]
+    mod._create_or_update = create
+    mod.run_expert = lambda *a, **k: run_waits.append(k.get("wait")) or results.pop(0)
+    mod.judge_result = lambda *a, **k: {
+        "verdict": "pass", "confidence": 1.0, "issues": [], "owner_question": "",
+        "memory": {"concepts": [], "rules": []}, "rejected_hypotheses": []}
+    mod._promote_expert = lambda *a, **k: {"ok": True, "code_sha256": "stable-transient"}
+    mod._delete_draft = lambda *a, **k: None
+    mod.time.sleep = lambda *_: None
+    result = mod.build_agentic_solution(
+        sid, "transient", "transient", [inp], root, root, {"agent_id": "agent_qwen"},
+        max_creation_attempts=1, max_run_repairs=1, max_acceptance_repairs=1,
+        max_total_attempts=3, prepared_context=prepared)
+    assert result["ok"], result
+    assert len(create_calls) == 1 and run_waits == [600, 600]
+    assert any(row.get("action") == "retry_transient" for row in result["controller_history"])
+    assert not result.get("owner_question")
+
+    repair_prompt = mod._build_prompt("repair_envelope", pkg, {
+        "required_next_action": "repair_output_contract",
+        "previous_expert_code": code,
+        "structural_issues": ["missing required artifact: step_result_json"],
+    }, "agent_qwen")
+    assert "РЕМОНТ ТОЛЬКО ВЫХОДНОГО КОНТРАКТА" in repair_prompt
+    assert "не меняй выбор входов" in repair_prompt and code.strip() in repair_prompt
+
+
 def main():
     mod = load_module()
     assert_matrix(mod)
@@ -445,7 +535,9 @@ def main():
         profile_variants(mod, root)
         gulzhan_regression(mod, root)
         repair_and_memory(mod, root, inp, good, bad)
-    print("универсальная матрица: 15 классов (включая legacy 4/4) + repair budget + память + fail-closed stops ✓")
+        adaptive_gulzhan_timeout(mod, root)
+        transient_retry_reuses_draft_once(mod, root, inp, good)
+    print("универсальная матрица: 15 классов + adaptive timeout/split + transient retry + repair budget + память + fail-closed stops ✓")
 
 
 if __name__ == "__main__":

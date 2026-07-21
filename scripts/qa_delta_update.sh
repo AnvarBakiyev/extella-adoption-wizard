@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.16"
+EXPECTED_VERSION="5.17"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"
@@ -57,6 +57,8 @@ fi
 echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" -m py_compile "$SRC"/ui/*.py
 "$PY" "$SRC/scripts/check_blueprint_expert_runtime.py"
+"$PY" "$SRC/scripts/check_universal_process_runtime.py"
+"$PY" "$SRC/scripts/check_upc_orchestrator_runtime.py"
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
 # падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
 # повторяем проверку лишь когда бинарник реально запускается.

@@ -106,6 +106,25 @@ def main():
             calls.clear()
             again = run(str(inp), str(root), "token", run_id="r1")
             assert again["status"] == "success" and calls == [], (again, calls)
+            checkpoint = json.loads((root / "upc_runs" / "r1" / "checkpoint.json").read_text(
+                encoding="utf-8"))
+            assert all(row.get("input_sha256") and row.get("step_contract_sha256") and
+                       row.get("checkpoint_sha256") for row in checkpoint["accepted"].values())
+            # Changing the root input invalidates roots and their merge; no stale success survives.
+            inp.write_text('{"changed":true}', encoding="utf-8")
+            calls.clear()
+            changed = run(str(inp), str(root), "token", run_id="r1")
+            assert changed["status"] == "success"
+            assert calls == ["left_v1", "right_v1", "merge_v1"], calls
+            # Tampering one branch artifact replays only that branch and its dependent merge.
+            checkpoint = json.loads((root / "upc_runs" / "r1" / "checkpoint.json").read_text(
+                encoding="utf-8"))
+            left_artifact = Path(checkpoint["accepted"]["left"]["artifacts"][0]["path"])
+            left_artifact.write_text("tampered", encoding="utf-8")
+            calls.clear()
+            repaired = run(str(inp), str(root), "token", run_id="r1")
+            assert repaired["status"] == "success"
+            assert calls == ["left_v1", "merge_v1"], calls
     finally:
         if old_requests is None:
             sys.modules.pop("requests", None)

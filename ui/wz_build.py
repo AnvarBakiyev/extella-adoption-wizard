@@ -15,15 +15,21 @@ from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest, llm_transient_error
 from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
-from wz_process import (accept_step as universal_accept_step, atomic_write_json,
+from wz_process import (accept_step as universal_accept_step,
+                        assess_reuse_compatibility as universal_assess_reuse,
+                        atomic_write_json,
                         budget_preflight as universal_budget_preflight,
                         block_for_human as universal_block_for_human,
                         checkpoint as process_checkpoint, memory_entry as universal_memory_entry,
                         expand_subgraph as universal_expand_subgraph,
+                        expand_failure_subgraph as universal_expand_failure_subgraph,
+                        file_sha256 as universal_file_sha256,
+                        input_fingerprint as universal_input_fingerprint,
                         is_budget_gate as universal_is_budget_gate,
                         normalize_step_result, process_from_blueprint,
                         record_usage as universal_record_usage,
                         recover_after_restart as universal_recover_after_restart,
+                        reconcile_checkpoints as universal_reconcile_checkpoints,
                         process_status as universal_process_status, ready_steps as universal_ready_steps,
                         step_map as universal_step_map, transition_step as universal_transition_step)
 
@@ -1302,6 +1308,34 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
             text = str(value).casefold()
         return next((marker for marker in ERROR_MARKERS if marker in text), "")
 
+    def stable_hash(value):
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str,
+                         separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def file_hash(path):
+        h = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def path_fingerprint(path):
+        path = Path(path)
+        rows = []
+        if path.is_file():
+            rows.append({"name": path.name, "bytes": path.stat().st_size, "sha256": file_hash(path)})
+        elif path.is_dir():
+            for child in sorted((x for x in path.rglob("*") if x.is_file()), key=lambda x: str(x)):
+                rows.append({"name": str(child.relative_to(path)), "bytes": child.stat().st_size,
+                             "sha256": file_hash(child)})
+        return stable_hash(rows)
+
+    def contract_hash(step):
+        return stable_hash({k: step.get(k) for k in (
+            "id", "version", "purpose", "dependencies", "input_contract", "output_contract",
+            "implementation", "permissions", "acceptance", "retry_policy")})
+
     if not api_token:
         cfg = Path.home() / "extella_wizard" / "app" / "config.json"
         try:
@@ -1344,16 +1378,34 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
         placement = {}
     steps = {str(step.get("id")): step for step in GRAPH.get("steps") or []}
 
-    # A checkpoint is trusted only while its artifact evidence still exists.
-    for sid in list(accepted):
-        row = accepted.get(sid) or {}
-        if int(row.get("step_version") or 0) != int((steps.get(sid) or {}).get("version") or 0):
-            accepted.pop(sid, None)
-            continue
-        artifacts = row.get("artifacts") or []
-        if artifacts and not all(Path(str(item.get("path") if isinstance(item, dict) else item)).exists()
-                                 for item in artifacts):
-            accepted.pop(sid, None)
+    # A checkpoint is trusted only while inputs, contract, code, dependencies and artifact bytes
+    # still match. Removal is iterative so only descendants of an invalid step replay.
+    root_input_sha256 = path_fingerprint(source)
+    changed = True
+    while changed:
+        changed = False
+        for sid in list(accepted):
+            row = accepted.get(sid) or {}
+            step = steps.get(sid) or {}
+            deps = [str(x) for x in step.get("dependencies") or []]
+            dep_hashes = [str((accepted.get(dep) or {}).get("checkpoint_sha256") or "") for dep in deps]
+            invalid = (int(row.get("step_version") or 0) != int(step.get("version") or 0) or
+                       row.get("step_contract_sha256") != contract_hash(step) or
+                       (not deps and row.get("input_sha256") != root_input_sha256) or
+                       list(row.get("dependency_checkpoint_sha256") or []) != dep_hashes or
+                       (row.get("expert_code_sha256") and row.get("expert_code_sha256") !=
+                        str((step.get("implementation") or {}).get("expert_code_sha256") or "")))
+            for item in row.get("artifacts") or []:
+                path = Path(str(item.get("path") if isinstance(item, dict) else item))
+                if (not path.is_file() or (isinstance(item, dict) and item.get("sha256") and
+                                           file_hash(path) != item.get("sha256"))):
+                    invalid = True
+                    break
+            if invalid:
+                accepted.pop(sid, None)
+                checkpoint["events"].append({"at": stamp(), "type": "checkpoint_invalidated",
+                                             "step_id": sid})
+                changed = True
 
     while len(accepted) < len(steps):
         ready = []
@@ -1445,14 +1497,25 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
                 path = Path(str(item.get("path") or ""))
                 if path.exists() and path.is_file() and path.stat().st_size > 0:
                     artifacts.append({"kind": item.get("kind") or "artifact", "path": str(path),
-                                      "bytes": path.stat().st_size})
+                                      "bytes": path.stat().st_size, "sha256": file_hash(path)})
             if not artifacts:
                 return {"status": "error", "run_id": run_id, "failed_step": sid,
                         "detail": "step did not create an observable artifact", "accepted_steps": sorted(accepted),
                         "resumable": True}
-            accepted[sid] = {"step_version": version, "expert_ref": expert,
-                             "output": result.get("output") or result.get("summary"),
-                             "artifacts": artifacts, "evidence": checks, "accepted_at": stamp()}
+            accepted_row = {"step_version": version, "expert_ref": expert,
+                            "step_contract_sha256": contract_hash(step),
+                            "input_sha256": path_fingerprint(step_source),
+                            "dependency_checkpoint_sha256": [str((accepted.get(dep) or {}).get(
+                                "checkpoint_sha256") or "") for dep in deps],
+                            "expert_code_sha256": str((step.get("implementation") or {}).get(
+                                "expert_code_sha256") or ""),
+                            "package_sha256": str((step.get("implementation") or {}).get(
+                                "package_sha256") or ""),
+                            "output": result.get("output") or result.get("summary"),
+                            "artifacts": artifacts, "evidence": checks, "accepted_at": stamp()}
+            accepted_row["checkpoint_sha256"] = stable_hash({
+                k: v for k, v in accepted_row.items() if k != "accepted_at"})
+            accepted[sid] = accepted_row
             checkpoint["events"].append({"at": stamp(), "type": "step_accepted", "step_id": sid,
                                          "step_version": version})
             atomic_json(checkpoint_path, checkpoint)
@@ -1485,8 +1548,10 @@ def _make_upc_orchestrator(ns, graph, work_dir):
     public_graph = {
         "schema": graph.get("schema"), "process_id": graph.get("process_id"),
         "version": graph.get("version"), "title": graph.get("title"),
-        "steps": [{k: step.get(k) for k in ("id", "title", "dependencies", "implementation",
-                                               "permissions", "version")}
+        "steps": [{k: step.get(k) for k in ("id", "title", "purpose", "dependencies",
+                                               "input_contract", "output_contract", "implementation",
+                                               "permissions", "acceptance", "retry_policy", "version")
+                   if step.get(k) is not None}
                   for step in graph.get("steps") or []],
     }
     code = (_UPC_ORCH_TEMPLATE.replace("__NAME__", name)
@@ -1763,6 +1828,15 @@ def _run_build(session_id, build_id):
               (" · точные входы восстановлены харнессом после пустого JSON Qwen"
                if "fallback:deterministic_identity_after_empty_qwen" in
                   (source_model.get("contract_repairs") or []) else ""))
+        root_input_sha256 = universal_input_fingerprint(sample_files)
+        reconciled = universal_reconcile_checkpoints(process_graph, root_input_sha256)
+        if reconciled.get("invalidated"):
+            process_checkpoint(process_graph, process_path, process_events_path, {
+                "type": "checkpoints_invalidated", "steps": reconciled.get("invalidated"),
+                "reasons": reconciled.get("reasons"), "root_input_sha256": root_input_sha256,
+            })
+            stage("process_resume", "Изменившиеся checkpoints точечно сброшены", "warn",
+                  detail="шаги: " + ", ".join(reconciled.get("invalidated") or []))
         if source_model.get("status") in ("need_human", "acquire"):
             error_code = "needs_owner_input" if source_model["status"] == "need_human" else "capability_missing"
             detail = str(source_model.get("reason") or source_model.get("missing_capability") or "")
@@ -1849,6 +1923,12 @@ def _run_build(session_id, build_id):
                 _wait_owner(question, phase, detail)
 
             def input_files_for(step):
+                contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
+                source_refs = [Path(str(x)) for x in (contract.get("source_refs") or []) if str(x)]
+                selected_sources = [x for x in source_refs if x.exists() and x.is_file()]
+                if selected_sources:
+                    # Failure-driven map children must never silently receive the original full set.
+                    return list(dict.fromkeys(selected_sources))
                 deps = [str(x) for x in step.get("dependencies") or []]
                 if not deps:
                     return list(sample_files)
@@ -1904,6 +1984,44 @@ def _run_build(session_id, build_id):
                 for step in ready:
                     step_id = str(step.get("id"))
                     mode = str((step.get("implementation") or {}).get("mode") or "generate")
+                    if mode == "reuse" and not (step.get("implementation") or {}).get("compatibility_checked"):
+                        implementation = step.setdefault("implementation", {})
+                        requested_ref = str(implementation.get("expert_ref") or
+                                            implementation.get("capability_ref") or "")
+                        candidates = [x for x in (task_package.get("available_plugins_and_experts") or [])
+                                      if isinstance(x, dict)]
+                        candidate = next((x for x in candidates if requested_ref in {
+                            str(x.get("expert") or ""), str(x.get("capability_id") or ""),
+                            str(x.get("id") or ""), str(x.get("name") or ""),
+                        }), {})
+                        compatibility = universal_assess_reuse(step, candidate)
+                        implementation["compatibility_checked"] = True
+                        implementation["compatibility"] = compatibility
+                        if not compatibility.get("ok"):
+                            implementation["rejected_reuse_ref"] = requested_ref
+                            implementation["mode"] = "generate"
+                            implementation["expert_ref"] = None
+                            implementation["why"] = "reuse rejected: " + "; ".join(
+                                compatibility.get("reasons") or [])
+                            mode = "generate"
+                            rejected = universal_memory_entry(
+                                "lesson", "Не использовать %s для шага %s: %s" % (
+                                    requested_ref or "<missing>", step_id,
+                                    "; ".join(compatibility.get("reasons") or [])),
+                                status="rejected", scope="step",
+                                source={"type": "reuse_compatibility_gate", "ref": requested_ref},
+                                confidence=1.0, step_id=step_id, step_version=step.get("version"))
+                            process_graph.setdefault("memory", []).append(rejected)
+                            sync_process({"type": "reuse_rejected", "step_id": step_id,
+                                          "requested_ref": requested_ref,
+                                          "compatibility": compatibility,
+                                          "next_action": "generate"})
+                            step_progress(step, "reuse", "Несовместимый reuse заменён генерацией",
+                                          "warn", "; ".join(compatibility.get("reasons") or []))
+                        else:
+                            sync_process({"type": "reuse_accepted", "step_id": step_id,
+                                          "requested_ref": requested_ref,
+                                          "compatibility": compatibility})
                     if mode in ("human", "acquire"):
                         question = (("Подтвердите или предоставьте способность для шага: "
                                      if mode == "acquire" else "Нужен ответ для шага: ") +
@@ -1957,6 +2075,7 @@ def _run_build(session_id, build_id):
                         return
 
                     step_files = input_files_for(step)
+                    step_input_sha256 = universal_input_fingerprint(step_files)
                     universal_transition_step(process_graph, step_id, "running",
                                               "resolving and building step implementation")
                     sync_process({"type": "step_started", "step_id": step_id,
@@ -2015,6 +2134,12 @@ def _run_build(session_id, build_id):
                         max_total_attempts=step_limit,
                         max_elapsed_seconds=3600, prepared_context=step_context,
                         step_contract=step_contract, expert_name_override=stable_expert)
+                    controller_history = [row for row in (solution.get("controller_history") or [])
+                                          if isinstance(row, dict)]
+                    if controller_history:
+                        step["controller_history"] = controller_history
+                        step["controller_decision"] = dict(
+                            solution.get("failure_decision") or controller_history[-1])
                     attempt_count = len(solution.get("attempts") or [])
                     judged_count = sum(
                         1 for row in (solution.get("attempts") or [])
@@ -2034,6 +2159,48 @@ def _run_build(session_id, build_id):
                         step["attempts"] = solution.get("attempts") or []
                         step["error"] = {"code": solution.get("code") or "agentic_acceptance_failed",
                                          "message": detail}
+                        if solution.get("control_action") == "split_step":
+                            decision = solution.get("failure_decision") or {
+                                "failure_class": solution.get("failure_kind") or "no_progress",
+                                "action": "split_step", "evidence": [detail], "owner_question": ""}
+                            source_rows = [{"path": str(path), "name": Path(path).name,
+                                            "format": Path(path).suffix.casefold().lstrip(".") or "unknown",
+                                            "sha256": universal_file_sha256(path)}
+                                           for path in step_files if Path(path).is_file()]
+                            rejected = universal_memory_entry(
+                                "lesson", "Атомарная реализация шага %s отклонена (%s): %s" % (
+                                    step_id, decision.get("failure_class"), detail),
+                                status="rejected", scope="step",
+                                source={"type": "adaptive_failure_controller",
+                                        "ref": solution.get("expert_code_sha256") or ""},
+                                evidence_refs=[solution.get("expert_code_sha256") or ""], confidence=1.0,
+                                step_id=step_id, step_version=step.get("version"),
+                                attempt=len(solution.get("attempts") or []))
+                            process_graph.setdefault("memory", []).append(rejected)
+                            try:
+                                expansion = universal_expand_failure_subgraph(
+                                    process_graph, step_id, sources=source_rows, failure=decision)
+                            except Exception as exc:
+                                detail = "контроллер не смог безопасно раздробить шаг: " + str(exc)
+                                universal_transition_step(process_graph, step_id, "failed", detail,
+                                                          {"error": {"code": "decomposition_failed",
+                                                                     "message": detail}})
+                                sync_process({"type": "decomposition_rejected", "step_id": step_id,
+                                              "detail": detail, "decision": decision})
+                                prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                                prog["error_struct"] = _build_error(
+                                    "agentic_acceptance_failed", detail, failure_kind="decomposition")
+                                prog["error"] = prog["error_struct"]["message"]
+                                save(); _unlock(); return
+                            sync_process({"type": "step_decomposed_after_failure", "step_id": step_id,
+                                          "decision": decision, "expansion": expansion})
+                            step_progress(step, "decompose", "Шаг автоматически раздроблен", "warn",
+                                          "%s · новых шагов: %d" % (
+                                              decision.get("failure_class"), len(expansion.get("added") or [])))
+                            prog["attempts"] = solution.get("attempts") or []
+                            prog["working_memory"] = solution.get("working_memory") or {}
+                            prog["repair_budgets"] = solution.get("budgets") or {}
+                            continue
                         if question:
                             universal_block_for_human(process_graph, step_id, question)
                             event = "step_blocked_human"
@@ -2064,9 +2231,20 @@ def _run_build(session_id, build_id):
                     step["implementation"]["expert_ref"] = solution.get("expert")
                     step["implementation"]["expert_version"] = step.get("version")
                     step["implementation"]["package_sha256"] = solution.get("package_sha256")
+                    step["implementation"]["expert_code_sha256"] = solution.get("expert_code_sha256")
                     step_result = normalize_step_result(
                         solution.get("result") or {}, step_id, step.get("version"),
                         attempt=len(solution.get("attempts") or []) or 1)
+                    by_id_for_provenance = universal_step_map(process_graph)
+                    step_result["provenance"] = {
+                        "input_sha256": step_input_sha256,
+                        "dependency_checkpoint_sha256": [
+                            str(((by_id_for_provenance.get(str(dep)) or {}).get("checkpoint") or {}).get(
+                                "checkpoint_sha256") or "") for dep in (step.get("dependencies") or [])],
+                        "expert_ref": solution.get("expert") or "",
+                        "expert_code_sha256": solution.get("expert_code_sha256") or "",
+                        "package_sha256": solution.get("package_sha256") or "",
+                    }
                     raw_result = solution.get("result") if isinstance(solution.get("result"), dict) else {}
                     proposal = raw_result.get("proposed_steps") if raw_result.get("needs_subprocess") else None
                     expansion = None

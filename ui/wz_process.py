@@ -24,6 +24,15 @@ STEP_STATUSES = (
     "blocked_human", "skipped", "stale", "cancelled",
 )
 IMPLEMENTATION_MODES = ("reuse", "generate", "llm_worker", "acquire", "human", "delegate")
+FAILURE_CLASSES = (
+    "transient_transport", "workload_timeout", "implementation_defect",
+    "output_contract_missing", "semantic_acceptance_failed", "no_progress",
+    "semantic_ambiguity", "capability_mismatch",
+)
+CONTROL_ACTIONS = (
+    "retry_transient", "repair_code", "repair_output_contract", "replace_implementation",
+    "split_step", "ask_owner", "stop_fail_closed",
+)
 MEMORY_KINDS = ("evidence", "lesson", "concept", "rule", "artifact")
 MEMORY_STATUSES = ("candidate", "verified", "rejected", "superseded")
 PERMISSION_KINDS = ("read", "create", "move", "modify", "delete", "install", "send", "external_write")
@@ -71,6 +80,171 @@ def _safe_id(value, prefix="s"):
 def _stable_hash(value):
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def file_sha256(path):
+    path = Path(path)
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def input_fingerprint(paths):
+    """Content fingerprint for a file set; names alone never validate a checkpoint."""
+    rows = []
+    for raw in paths or []:
+        path = Path(str(raw))
+        if path.is_file():
+            rows.append({"name": path.name, "bytes": path.stat().st_size, "sha256": file_sha256(path)})
+        elif path.is_dir():
+            for child in sorted((x for x in path.rglob("*") if x.is_file()), key=lambda x: str(x)):
+                rows.append({"name": str(child.relative_to(path)), "bytes": child.stat().st_size,
+                             "sha256": file_sha256(child)})
+        else:
+            rows.append({"name": path.name or str(path), "missing": True})
+    return _stable_hash(rows)
+
+
+def step_contract_fingerprint(step):
+    """Hash only contract-bearing fields; runtime status/history must not invalidate itself."""
+    step = step if isinstance(step, dict) else {}
+    return _stable_hash({k: step.get(k) for k in (
+        "id", "version", "purpose", "dependencies", "input_contract", "output_contract",
+        "implementation", "permissions", "acceptance", "retry_policy",
+    )})
+
+
+def _words(value):
+    text = _flatten_text(value, limit=20000) if "_flatten_text" in globals() else str(value).casefold()
+    return {x for x in re.findall(r"[a-zа-яё0-9_]{3,}", text) if x not in {
+        "для", "или", "как", "the", "and", "with", "from", "this", "that", "step", "process",
+        "input", "output", "data", "файл", "файлы", "шаг", "процесс",
+    }}
+
+
+def assess_reuse_compatibility(step, capability):
+    """Fail-closed semantic gate before a supposedly reusable expert spends run budget.
+
+    Exact name equality proves identity, not suitability.  The candidate must also describe the
+    requested purpose/I/O and must not require permissions which the step did not declare.
+    """
+    step = step if isinstance(step, dict) else {}
+    capability = capability if isinstance(capability, dict) else {}
+    implementation = step.get("implementation") if isinstance(step.get("implementation"), dict) else {}
+    requested = str(implementation.get("expert_ref") or implementation.get("capability_ref") or "")
+    names = {str(capability.get(k) or "") for k in (
+        "name", "id", "expert", "expert_name", "capability_id", "capability_ref",
+    )}
+    names.discard("")
+    identity_ok = bool(requested and requested in names)
+    if not capability:
+        return {"ok": False, "score": 0.0, "failure_class": "capability_mismatch",
+                "reasons": ["описание reusable-способности отсутствует"], "requested": requested}
+
+    need = _words({"purpose": step.get("purpose"), "input": step.get("input_contract"),
+                   "output": step.get("output_contract"), "acceptance": step.get("acceptance")})
+    offers = _words(capability)
+    overlap = sorted(need & offers)
+    semantic_score = len(overlap) / max(1, min(12, len(need)))
+    explicit_caps = {str(x) for x in (capability.get("capabilities") or []) if str(x)}
+    requested_cap = str(implementation.get("capability_ref") or "")
+    if requested_cap and requested_cap in explicit_caps:
+        semantic_score = max(semantic_score, 0.75)
+
+    required_permissions = capability.get("permissions") if isinstance(capability.get("permissions"), dict) else {}
+    declared_permissions = step.get("permissions") if isinstance(step.get("permissions"), dict) else {}
+    missing_permissions = sorted(kind for kind in DANGEROUS_PERMISSIONS
+                                 if required_permissions.get(kind) and not declared_permissions.get(kind))
+    reasons = []
+    if not identity_ok:
+        reasons.append("ссылка шага не совпадает с id/name найденной способности")
+    if semantic_score < 0.18:
+        reasons.append("назначение и I/O шага не подтверждены описанием способности")
+    if missing_permissions:
+        reasons.append("не объявлены полномочия: " + ", ".join(missing_permissions))
+    return {"ok": not reasons, "score": round(semantic_score, 3),
+            "failure_class": "" if not reasons else "capability_mismatch",
+            "reasons": reasons, "requested": requested, "matched_terms": overlap[:20]}
+
+
+def adaptive_failure_decision(observation):
+    """Classify an observed failure and select the next bounded action.
+
+    This is deliberately deterministic.  Qwen may propose code or a semantic verdict, but it may
+    not silently choose to repeat the same strategy, consume more budget, or ask a person to fix a
+    technical failure.
+    """
+    observation = observation if isinstance(observation, dict) else {}
+    text = _flatten_text({
+        "issues": observation.get("issues"), "message": observation.get("message"),
+        "status": observation.get("status"), "error": observation.get("error"),
+    }, limit=40000)
+    prior = [str(x) for x in (observation.get("previous_classes") or [])]
+    input_count = max(0, int(observation.get("input_count") or 0))
+    formats = {str(x).casefold() for x in (observation.get("input_formats") or []) if str(x)}
+    repeated_code = bool(observation.get("code_seen"))
+    repeated_strategy = bool(observation.get("strategy_seen"))
+    owner_question = _clip(observation.get("owner_question") or "", 1200)
+    semantic_ambiguity = bool(observation.get("semantic_ambiguity") and owner_question)
+    can_split = bool(observation.get("can_split", input_count > 1 or len(formats) > 1))
+
+    def verdict(failure_class, action, evidence, confidence=0.95):
+        if failure_class not in FAILURE_CLASSES or action not in CONTROL_ACTIONS:
+            raise ValueError("invalid failure controller verdict")
+        # A human is only a semantic oracle, never a substitute for retry/repair/decomposition.
+        question = owner_question if action == "ask_owner" and failure_class == "semantic_ambiguity" else ""
+        return {"failure_class": failure_class, "action": action, "confidence": confidence,
+                "duration_seconds": round(float(observation.get("duration_seconds") or 0), 1),
+                "evidence": [_clip(x, 500) for x in evidence if str(x).strip()],
+                "owner_question": question}
+
+    if observation.get("reuse_compatible") is False:
+        return verdict("capability_mismatch", "replace_implementation",
+                       observation.get("reuse_reasons") or ["reusable expert is not compatible"])
+    if semantic_ambiguity:
+        return verdict("semantic_ambiguity", "ask_owner", ["решение зависит от отсутствующего бизнес-правила"])
+    if repeated_code or repeated_strategy:
+        action = "split_step" if can_split else "replace_implementation"
+        return verdict("no_progress", action,
+                       ["повторён уже испытанный code hash" if repeated_code else
+                        "повторена уже испытанная стратегия без нового доказательства"])
+
+    missing_markers = ("missing required artifact", "required artifact is missing", "обязательн", "artifact")
+    if any(x in text for x in missing_markers) and any(x in text for x in ("missing", "отсутств", "empty", "пуст")):
+        return verdict("output_contract_missing", "repair_output_contract",
+                       ["исполнение завершилось, но обязательный выходной артефакт не доказан"])
+
+    timed_out = any(x in text for x in ("timed out", "timeout", "time out", "превышено время", "таймаут"))
+    duration = float(observation.get("duration_seconds") or 0)
+    timeout_limit = float(observation.get("run_timeout_seconds") or 0)
+    repeated_timeout = prior.count("workload_timeout") + prior.count("transient_transport") > 0
+    if timed_out:
+        workload = (input_count >= 6 or len(formats) > 1 or repeated_timeout or
+                    (timeout_limit > 0 and duration >= timeout_limit * 0.8))
+        if workload:
+            return verdict("workload_timeout", "split_step" if can_split else "replace_implementation",
+                           ["таймаут коррелирует с объёмом/смешанными входами или уже повторялся"])
+        return verdict("transient_transport", "retry_transient",
+                       ["первый единичный таймаут без признаков перегруженного шага"], 0.8)
+
+    if any(x in text for x in ("connection", "network", "read operation timed out", "http 429", "http 502",
+                               "http 503", "temporarily unavailable", "eoferror")):
+        if "transient_transport" in prior:
+            return verdict("transient_transport", "replace_implementation",
+                           ["транспортный сбой повторился после одного разрешённого повтора"])
+        return verdict("transient_transport", "retry_transient", ["временный транспортный сбой"], 0.85)
+
+    semantic_failed = bool(observation.get("semantic_failed")) or "semantic acceptance failed" in text
+    if semantic_failed:
+        return verdict("semantic_acceptance_failed", "repair_code",
+                       ["бизнес-приёмка отвергла фактический результат; вопрос владельцу не сформирован"])
+    if any(x in text for x in ("traceback", "nameerror", "typeerror", "valueerror", "syntaxerror",
+                               "execution error", "expert_error", "exception", "contract_violation")):
+        return verdict("implementation_defect", "repair_code", ["наблюдается дефект реализации"])
+    return verdict("implementation_defect", "repair_code",
+                   ["результат не прошёл проверку и не относится к более узкому классу"], 0.65)
 
 
 def atomic_write_json(path, value):
@@ -805,6 +979,99 @@ def add_memory(graph, entries, accepted=False):
     return added
 
 
+def _accepted_checkpoint(step, result, validation, semantic, memory_refs):
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
+    artifacts = copy.deepcopy(validation.get("artifacts") or [])
+    checkpoint = {
+        "schema": "upc-checkpoint/1.0",
+        "step_id": str(step.get("id") or ""),
+        "step_version": int(step.get("version") or 1),
+        "step_contract_sha256": step_contract_fingerprint(step),
+        "input_sha256": str(provenance.get("input_sha256") or ""),
+        "dependency_checkpoint_sha256": [str(x) for x in
+                                         (provenance.get("dependency_checkpoint_sha256") or []) if str(x)],
+        "expert_ref": str(provenance.get("expert_ref") or
+                          (step.get("implementation") or {}).get("expert_ref") or ""),
+        "expert_code_sha256": str(provenance.get("expert_code_sha256") or ""),
+        "package_sha256": str(provenance.get("package_sha256") or
+                              (step.get("implementation") or {}).get("package_sha256") or ""),
+        "result_sha256": str(result.get("raw_sha256") or _stable_hash(result)),
+        "artifact_facts": artifacts,
+        "semantic_verdict": copy.deepcopy(semantic),
+        "memory_refs": [str(x) for x in (memory_refs or []) if str(x)],
+        "accepted_at": now_iso(),
+    }
+    checkpoint["checkpoint_sha256"] = _stable_hash({k: v for k, v in checkpoint.items()
+                                                     if k not in ("accepted_at", "checkpoint_sha256")})
+    return checkpoint
+
+
+def reconcile_checkpoints(graph, root_input_sha256="", expert_code_hashes=None):
+    """Invalidate only accepted steps whose proof no longer matches current inputs/contracts/code.
+
+    Legacy UPC graphs without ``upc-checkpoint/1.0`` remain readable and are not invalidated merely
+    because they predate provenance.  New checkpoints are fail-closed and invalidate descendants.
+    """
+    expert_code_hashes = expert_code_hashes if isinstance(expert_code_hashes, dict) else {}
+    by_id = step_map(graph)
+    invalidated, reasons = [], {}
+    changed = True
+    while changed:
+        changed = False
+        for step in graph.get("steps") or []:
+            if step.get("status") != "succeeded" or step.get("id") in invalidated:
+                continue
+            checkpoint = step.get("checkpoint") if isinstance(step.get("checkpoint"), dict) else {}
+            if checkpoint.get("schema") != "upc-checkpoint/1.0":
+                continue
+            why = []
+            if checkpoint.get("step_contract_sha256") != step_contract_fingerprint(step):
+                why.append("step contract changed")
+            deps = [by_id.get(str(x)) for x in (step.get("dependencies") or [])]
+            if any(dep and dep.get("status") == "stale" for dep in deps):
+                why.append("dependency checkpoint invalidated")
+            expected_dep_hashes = [str((dep.get("checkpoint") or {}).get("checkpoint_sha256") or "")
+                                   for dep in deps if dep]
+            stored_dep_hashes = [str(x) for x in (checkpoint.get("dependency_checkpoint_sha256") or [])]
+            if stored_dep_hashes and stored_dep_hashes != expected_dep_hashes:
+                why.append("dependency checkpoint changed")
+            if not deps and root_input_sha256 and checkpoint.get("input_sha256") and \
+                    str(checkpoint.get("input_sha256")) != str(root_input_sha256):
+                why.append("root input changed")
+            expert_ref = str(checkpoint.get("expert_ref") or "")
+            current_code = str(expert_code_hashes.get(expert_ref) or "")
+            if current_code and checkpoint.get("expert_code_sha256") and \
+                    current_code != checkpoint.get("expert_code_sha256"):
+                why.append("expert code changed")
+            for fact in checkpoint.get("artifact_facts") or []:
+                path = Path(str((fact or {}).get("path") or "")) if isinstance(fact, dict) else Path("")
+                if not path.is_file():
+                    why.append("accepted artifact is missing")
+                    break
+                if fact.get("sha256") and file_sha256(path) != fact.get("sha256"):
+                    why.append("accepted artifact changed")
+                    break
+            if not why:
+                continue
+            step.setdefault("checkpoint_history", []).append(copy.deepcopy(checkpoint))
+            step["status"] = "stale"
+            step["status_reason"] = "; ".join(why)
+            step["output"] = None
+            step["artifact_refs"] = []
+            step["evidence"] = []
+            step["checkpoint"] = None
+            step["updated_at"] = now_iso()
+            invalidated.append(step.get("id"))
+            reasons[str(step.get("id"))] = why
+            changed = True
+    if invalidated:
+        graph["version"] = int(graph.get("version") or 1) + 1
+        graph["parent_version"] = graph["version"] - 1
+        graph["updated_at"] = now_iso()
+        refresh_ready(graph)
+    return {"invalidated": invalidated, "reasons": reasons, "graph_version": graph.get("version")}
+
+
 def accept_step(graph, step_id, result, semantic_verdict=None, memory=None):
     step = step_map(graph).get(str(step_id))
     if not step:
@@ -839,6 +1106,8 @@ def accept_step(graph, step_id, result, semantic_verdict=None, memory=None):
     step["evidence"] = copy.deepcopy(result.get("evidence") or [])
     step["error"] = None
     step["memory_refs"] = add_memory(graph, memory or [], accepted=True)
+    step["checkpoint"] = _accepted_checkpoint(
+        step, result, validation, semantic, step.get("memory_refs") or [])
     event = transition_step(graph, step_id, "succeeded", "accepted")
     refresh_ready(graph)
     return {"ok": True, "validation": validation, "event": event}
@@ -934,6 +1203,138 @@ def expand_subgraph(graph, parent_step_id, proposed_steps, reason="", delegation
     refresh_ready(graph)
     return {"parent_step_id": str(parent_step_id), "added": [x["id"] for x in children],
             "terminal_step_ids": terminals, "graph_version": graph["version"]}
+
+
+def propose_failure_subgraph(parent_step, sources=None, failure=None, max_batch=4):
+    """Produce a bounded, domain-neutral decomposition after measured no-progress/timeout.
+
+    The original business contract is moved to the terminal integration/validation child.  Batch
+    children receive explicit source refs, preventing the repaired graph from feeding all mixed
+    inputs back into the same oversized expert.
+    """
+    parent_step = parent_step if isinstance(parent_step, dict) else {}
+    failure = failure if isinstance(failure, dict) else {}
+    normalized = []
+    for index, raw in enumerate(sources or [], 1):
+        item = dict(raw) if isinstance(raw, dict) else {"path": str(raw)}
+        path = Path(str(item.get("path") or item.get("name") or ""))
+        item.setdefault("name", path.name or ("input_%03d" % index))
+        item.setdefault("format", path.suffix.casefold().lstrip(".") or "unknown")
+        item.setdefault("path", str(path))
+        normalized.append(item)
+    max_batch = max(1, min(int(max_batch or 4), 8))
+    original_acceptance = copy.deepcopy(parent_step.get("acceptance") or {})
+    original_output = copy.deepcopy(parent_step.get("output_contract") or {})
+    permissions = copy.deepcopy(parent_step.get("permissions") or empty_permissions())
+    purpose = str(parent_step.get("purpose") or parent_step.get("title") or "Выполнить исходный шаг")
+
+    groups = []
+    if len(normalized) > 1:
+        by_format = {}
+        for item in normalized:
+            by_format.setdefault(item.get("format") or "unknown", []).append(item)
+        for fmt in sorted(by_format):
+            rows = by_format[fmt]
+            for offset in range(0, len(rows), max_batch):
+                groups.append((fmt, rows[offset:offset + max_batch]))
+
+    if groups:
+        proposed = []
+        map_ids = []
+        for index, (fmt, rows) in enumerate(groups, 1):
+            sid = "batch_%03d" % index
+            map_ids.append(sid)
+            proposed.append({
+                "id": sid,
+                "title": "Обработать ограниченную партию %d (%s)" % (index, fmt),
+                "purpose": purpose + " Только для объявленной партии; не читать остальные входы.",
+                "input_contract": {"required": True, "source_refs": [x.get("path") for x in rows],
+                                   "source_sha256": [x.get("sha256") for x in rows if x.get("sha256")],
+                                   "format": fmt},
+                "output_contract": {"artifacts": ["upc_step_result.json"],
+                                    "data_schema": {"type": "object"},
+                                    "postconditions": ["каждый вход партии имеет доказанный результат"]},
+                "required_artifacts": ["upc_step_result.json"],
+                "semantic_criteria": ["результат относится только к объявленной партии"],
+                "implementation_mode": "generate", "permissions": permissions,
+            })
+        proposed.append({
+            "id": "integrate",
+            "depends_on": map_ids,
+            "title": "Объединить и проверить результат исходного шага",
+            "purpose": purpose + " Объединить только принятые результаты партий и проверить полный бизнес-контракт.",
+            "input_contract": {"required": True, "artifacts": ["accepted dependency outputs"]},
+            "output_contract": original_output,
+            "acceptance": original_acceptance,
+            "implementation_mode": "generate", "permissions": permissions,
+        })
+        return proposed
+
+    # A single logical input cannot be split by files.  Split by epistemic role instead: inspect
+    # facts, execute from the proved model, then independently validate the original contract.
+    source_refs = [x.get("path") for x in normalized]
+    return [
+        {"id": "inspect", "title": "Доказанно понять вход и ограничения",
+         "purpose": "Инспектировать фактическую структуру входа для шага: " + purpose,
+         "input_contract": {"required": bool(source_refs), "source_refs": source_refs},
+         "output_contract": {"artifacts": ["source_facts.json"], "data_schema": {"type": "object"}},
+         "required_artifacts": ["source_facts.json"], "implementation_mode": "generate",
+         "permissions": {**empty_permissions(), "read": list((permissions or {}).get("read") or ["declared_inputs"]),
+                         "create": ["run_output_dir"]}},
+        {"id": "execute", "depends_on": ["inspect"], "title": "Выполнить исходную операцию",
+         "purpose": purpose + " Использовать только доказанные факты предыдущего шага.",
+         "input_contract": {"required": True, "artifacts": ["source_facts.json"]},
+         "output_contract": original_output, "implementation_mode": "generate", "permissions": permissions},
+        {"id": "validate", "depends_on": ["execute"], "title": "Независимо принять бизнес-результат",
+         "purpose": "Проверить выход исходной операции против её Task Contract, не подменяя исполнение.",
+         "input_contract": {"required": True, "artifacts": ["accepted dependency outputs"]},
+         "output_contract": original_output, "acceptance": original_acceptance,
+         "implementation_mode": "generate", "permissions": empty_permissions()},
+    ]
+
+
+def expand_failure_subgraph(graph, parent_step_id, sources=None, failure=None, proposed_steps=None):
+    """Turn a failing atomic step into a delegate and splice its bounded recovery subgraph."""
+    working = copy.deepcopy(graph)
+    parent = step_map(working).get(str(parent_step_id))
+    if not parent:
+        raise KeyError("unknown parent step: " + str(parent_step_id))
+    failure = failure if isinstance(failure, dict) else {}
+    action = str(failure.get("action") or "")
+    if action != "split_step":
+        raise ValueError("failure controller did not authorize split_step")
+    if parent.get("status") not in ("running", "repairing", "failed"):
+        raise ValueError("step cannot be decomposed from " + str(parent.get("status")))
+    depth = int(((parent.get("delegation") or {}).get("depth") or 0)) + 1
+    signature = _stable_hash({"step_id": parent_step_id, "version": parent.get("version"),
+                              "failure_class": failure.get("failure_class"),
+                              "sources": sources})
+    history = parent.setdefault("controller_history", [])
+    if any(str(x.get("signature")) == signature for x in history if isinstance(x, dict)):
+        raise ValueError("identical decomposition already applied")
+    raw = proposed_steps or propose_failure_subgraph(parent, sources, failure)
+    parent.setdefault("implementation", {})["mode"] = "delegate"
+    parent["implementation"]["why"] = "Adaptive Failure Controller: " + str(failure.get("failure_class") or "failure")
+    parent["controller_decision"] = copy.deepcopy(failure)
+    parent["output"] = {"status": "decomposed", "failure_class": failure.get("failure_class")}
+    parent["evidence"] = [{"passed": True, "check": "bounded recovery subgraph authorized",
+                           "signature": signature}]
+    if parent.get("status") == "failed":
+        transition_step(working, parent_step_id, "repairing", "controller selected split_step")
+    if parent.get("status") == "repairing":
+        transition_step(working, parent_step_id, "running", "materializing recovery subgraph")
+    if parent.get("status") == "running":
+        transition_step(working, parent_step_id, "succeeded", "decomposed; business acceptance moved to children")
+    row = {"at": now_iso(), "signature": signature, "failure": copy.deepcopy(failure),
+           "action": "split_step", "depth": depth}
+    history.append(row)
+    result = expand_subgraph(working, parent_step_id, raw,
+                             reason="failure-driven decomposition: " + str(failure.get("failure_class") or ""),
+                             delegation_depth=depth)
+    graph.clear()
+    graph.update(working)
+    result["controller_signature"] = signature
+    return result
 
 
 def repair_step(graph, step_id, reason):

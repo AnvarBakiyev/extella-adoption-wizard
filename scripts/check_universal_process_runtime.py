@@ -9,11 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ui"))
 
 from wz_process import (  # noqa: E402
-    STEP_RESULT_SCHEMA, accept_step, answer_human, block_for_human, checkpoint,
+    STEP_RESULT_SCHEMA, accept_step, adaptive_failure_decision, answer_human,
+    assess_reuse_compatibility, block_for_human, checkpoint,
     budget_preflight, grant_step_budget, is_budget_gate, memory_entry, normalize_step_result,
+    expand_failure_subgraph, input_fingerprint,
     permission_preflight, process_from_blueprint,
     project_runtime_contract,
-    process_status, ready_steps, record_approval, recover_after_restart, repair_step,
+    process_status, ready_steps, reconcile_checkpoints, record_approval, recover_after_restart, repair_step,
     record_usage, step_map, transition_step, validate_process,
 )
 
@@ -226,6 +228,188 @@ def test_cycle_and_step_budget():
     graph = graph_three()
     graph["budgets"]["max_steps"] = 2
     assert not validate_process(graph)["ok"]
+
+
+def test_adaptive_failure_controller_changes_action():
+    first = adaptive_failure_decision({"message": "The read operation timed out", "input_count": 1,
+                                       "run_timeout_seconds": 600, "duration_seconds": 2})
+    assert first["failure_class"] == "transient_transport" and first["action"] == "retry_transient"
+    overloaded = adaptive_failure_decision({"message": "task timed out", "input_count": 13,
+                                            "input_formats": ["pdf", "xlsx"], "can_split": True})
+    assert overloaded == {**overloaded, "failure_class": "workload_timeout", "action": "split_step"}
+    missing = adaptive_failure_decision({"issues": ["missing required artifact: report.xlsx"]})
+    assert missing["action"] == "repair_output_contract"
+    repeated = adaptive_failure_decision({"code_seen": True, "input_count": 13, "can_split": True})
+    assert repeated["failure_class"] == "no_progress" and repeated["action"] == "split_step"
+    technical = adaptive_failure_decision({"message": "NameError: x", "owner_question": "Как исправить код?"})
+    assert technical["action"] == "repair_code" and not technical["owner_question"]
+    owner_question = ("Выберите бизнес-правило: A — учитывать дату создания или B — дату оплаты. "
+                      "Доказательство: обе колонки присутствуют. Предполагаю B, потому что цель — денежный поток. "
+                      "Ответ изменит фильтр периода и итоговый отчёт.")
+    semantic = adaptive_failure_decision({"semantic_ambiguity": True,
+                                          "owner_question": owner_question})
+    assert semantic["action"] == "ask_owner" and semantic["owner_question"] == owner_question
+
+
+def test_failure_driven_decomposition_is_bounded_and_resumable():
+    graph = graph_three()
+    transition_step(graph, "t1", "running")
+    decision = {"failure_class": "workload_timeout", "action": "split_step",
+                "evidence": ["13 mixed inputs timed out"], "owner_question": ""}
+    sources = [{"path": "/tmp/a.pdf", "name": "a.pdf", "format": "pdf"},
+               {"path": "/tmp/b.xlsx", "name": "b.xlsx", "format": "xlsx"}]
+    expanded = expand_failure_subgraph(graph, "t1", sources=sources, failure=decision)
+    assert step_map(graph)["t1"]["status"] == "succeeded"
+    assert len(expanded["added"]) == 3
+    ready = ready_steps(graph)
+    assert len(ready) == 2 and all("source_refs" in (x.get("input_contract") or {}) for x in ready)
+    downstream = step_map(graph)["t2"]["dependencies"]
+    assert "t1" in downstream and expanded["terminal_step_ids"][0] in downstream
+    try:
+        expand_failure_subgraph(graph, "t1", sources=sources, failure=decision)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("same failure split must not loop")
+
+
+def test_mixed_input_failure_recovers_through_children_and_checkpoint_resume():
+    """Reproduce the failure shape, not Gulzhan's domain data: split, repair, resume, merge."""
+    graph = process_from_blueprint("wz_mixed_recovery", {
+        "process_name": "Mixed input recovery", "goal": "Produce one proved result",
+        "stages": [{"id": "root", "title": "Process mixed inputs",
+                    "business_description": "Process every declared source and integrate the results"}],
+    })
+    parent = graph["steps"][0]
+    sources = []
+    with tempfile.TemporaryDirectory(prefix="upc_mixed_recovery_") as td:
+        root = Path(td)
+        for index in range(13):
+            suffix = ".pdf" if index < 5 else ".xlsx"
+            source = root / ("input_%02d%s" % (index, suffix))
+            source.write_bytes(("fixture-%d" % index).encode("utf-8"))
+            sources.append({"path": str(source), "name": source.name,
+                            "format": suffix.lstrip("."), "sha256": input_fingerprint([source])})
+
+        transition_step(graph, parent["id"], "running")
+        failure = adaptive_failure_decision({"message": "task timed out", "duration_seconds": 240,
+                                             "run_timeout_seconds": 240, "input_count": 13,
+                                             "input_formats": ["pdf", "xlsx"], "can_split": True})
+        assert failure["failure_class"] == "workload_timeout" and failure["action"] == "split_step"
+        expanded = expand_failure_subgraph(graph, parent["id"], sources=sources, failure=failure)
+        assert len(expanded["added"]) == 5  # four bounded batches plus deterministic integration
+
+        first_batch = ready_steps(graph)[0]
+        transition_step(graph, first_batch["id"], "running")
+        missing = accept_step(graph, first_batch["id"], success_result(first_batch),
+                              semantic_verdict={"verdict": "pass", "confidence": 1.0})
+        assert not missing["ok"]
+        repair = adaptive_failure_decision({"issues": missing["validation"]["issues"],
+                                            "input_count": len((first_batch.get("input_contract") or {})
+                                                               .get("source_refs") or [])})
+        assert repair["failure_class"] == "output_contract_missing"
+        assert repair["action"] == "repair_output_contract"
+        repair_step(graph, first_batch["id"], "repair only the missing result envelope")
+
+        accepted_ids = []
+        repaired_id = first_batch["id"]
+        while process_status(graph) != "succeeded":
+            runnable = ready_steps(graph)
+            assert runnable, process_status(graph)
+            for step in runnable:
+                transition_step(graph, step["id"], "running")
+                result = success_result(step)
+                required = (step.get("acceptance") or {}).get("required_artifacts") or []
+                if required:
+                    artifact = root / (step["id"] + "_upc_step_result.json")
+                    artifact.write_text(json.dumps({"step_id": step["id"], "ok": True}), encoding="utf-8")
+                    result["artifacts"] = [{"path": str(artifact), "kind": required[0]}]
+                result["provenance"] = {
+                    "input_sha256": input_fingerprint([
+                        Path(x) for x in ((step.get("input_contract") or {}).get("source_refs") or [])]),
+                    "expert_ref": "expert_" + step["id"],
+                    "expert_code_sha256": "code_" + step["id"],
+                    "dependency_checkpoint_sha256": [
+                        (step_map(graph)[dep].get("checkpoint") or {}).get("checkpoint_sha256", "")
+                        for dep in step.get("dependencies") or []],
+                }
+                accepted = accept_step(graph, step["id"], result,
+                                       semantic_verdict={"verdict": "pass", "confidence": 1.0})
+                assert accepted["ok"], accepted
+                accepted_ids.append(step["id"])
+
+            # Persist after the repaired child, then prove restart does not replay it.
+            if repaired_id in accepted_ids and not graph.get("_resume_proved"):
+                checkpoint_path = root / "mixed_process.json"
+                checkpoint(graph, checkpoint_path)
+                graph = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                assert not recover_after_restart(graph)
+                assert step_map(graph)[repaired_id]["status"] == "succeeded"
+                assert repaired_id not in [x["id"] for x in ready_steps(graph)]
+                graph["_resume_proved"] = True
+
+        assert process_status(graph) == "succeeded"
+        assert step_map(graph)[repaired_id]["version"] == 2
+        assert all(step_map(graph)[sid].get("checkpoint") for sid in expanded["added"])
+        assert len(accepted_ids) == len(set(accepted_ids))
+
+
+def test_graph_sizes_1_8_20_40_keep_valid_state_transitions():
+    for size in (1, 8, 20, 40):
+        stages = []
+        tasks = []
+        for index in range(size):
+            sid = "s%03d" % index
+            tid = "t%03d" % index
+            stages.append({"id": sid, "title": "Step %d" % (index + 1)})
+            tasks.append({"id": tid, "stage_id": sid, "title": "Step %d" % (index + 1),
+                          "action": "build", "depends_on": [] if index == 0 else ["t%03d" % (index - 1)]})
+        graph = process_from_blueprint("wz_size_%d" % size,
+                                       {"process_name": "Sized graph", "stages": stages},
+                                       {"tasks": tasks})
+        assert validate_process(graph)["ok"]
+        for index in range(size):
+            ready = ready_steps(graph)
+            assert [x["id"] for x in ready] == ["t%03d" % index]
+            step = ready[0]
+            transition_step(graph, step["id"], "running")
+            assert accept_step(graph, step["id"], success_result(step))["ok"]
+        assert process_status(graph) == "succeeded"
+
+
+def test_reuse_requires_semantic_compatibility():
+    graph = process_from_blueprint("reuse", {"process_name": "Excel", "goal": "Classify Excel",
+        "stages": [{"id": "s1", "title": "Классифицировать Excel", "inputs": ["xlsx"],
+                    "outputs": ["categories"], "capability_ref": "cx_parse_dialogues"}]})
+    step = graph["steps"][0]
+    candidate = {"expert": "cx_parse_dialogues", "purpose": "Parse support chat dialogues and sentiment",
+                 "params": {"input": "transcript", "output": "dialogue tags"}}
+    verdict = assess_reuse_compatibility(step, candidate)
+    assert not verdict["ok"] and verdict["failure_class"] == "capability_mismatch"
+
+
+def test_checkpoint_invalidates_changed_input_and_descendants_only():
+    graph = graph_three()
+    with tempfile.TemporaryDirectory() as td:
+        source = Path(td) / "input.txt"
+        source.write_text("v1", encoding="utf-8")
+        root_sha = input_fingerprint([source])
+        root = step_map(graph)["t1"]
+        transition_step(graph, "t1", "running")
+        result = success_result(root)
+        result["provenance"] = {"input_sha256": root_sha, "expert_ref": "e1",
+                                "expert_code_sha256": "code-v1"}
+        assert accept_step(graph, "t1", result)["ok"]
+        # An unrelated accepted root is intentionally outside t1 descendants.
+        independent = process_from_blueprint("other", {"process_name": "Other", "goal": "Other"})["steps"][0]
+        independent["id"] = "independent"
+        independent["status"] = "running"
+        graph["steps"].append(independent)
+        assert accept_step(graph, "independent", success_result(independent))["ok"]
+        source.write_text("v2", encoding="utf-8")
+        invalidated = reconcile_checkpoints(graph, input_fingerprint([source]))
+        assert "t1" in invalidated["invalidated"]
+        assert step_map(graph)["independent"]["status"] == "succeeded"
 
 
 def main():

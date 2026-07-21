@@ -4,7 +4,9 @@
 и профили всех образцов, создаёт одного исполняемого эксперта, а харнесс независимо запускает его и
 проверяет факты результата. Декомпозиция остаётся оптимизацией после работающего решения.
 """
+import ast
 import hashlib
+import importlib.util
 import base64
 import copy
 import json
@@ -21,6 +23,14 @@ from pathlib import Path
 
 from wz_platform import BASE, CONFIG, api, qwen_agent, run_expert
 from wz_llm import design_agent
+try:
+    from wz_process import adaptive_failure_decision
+except ModuleNotFoundError:  # direct-file QA loaders do not add ui/ to sys.path
+    _process_spec = importlib.util.spec_from_file_location(
+        "wz_process", Path(__file__).with_name("wz_process.py"))
+    _process_module = importlib.util.module_from_spec(_process_spec)
+    _process_spec.loader.exec_module(_process_module)
+    adaptive_failure_decision = _process_module.adaptive_failure_decision
 
 
 EXPERT_KWARGS = {
@@ -1351,9 +1361,21 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
                           json.dumps(required, ensure_ascii=False) + ".")
     repair = ""
     if feedback:
-        repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
-                  "под конкретные строки образца. Обнови и снова сохрани того же эксперта. "
-                  "Диагностика харнесса:\n" + _repair_context(feedback, task_package))
+        action = str(feedback.get("required_next_action") or "") if isinstance(feedback, dict) else ""
+        previous_code = str(feedback.get("previous_expert_code") or "") \
+            if isinstance(feedback, dict) else ""
+        if action == "repair_output_contract" and previous_code:
+            repair = ("\n\nРЕМОНТ ТОЛЬКО ВЫХОДНОГО КОНТРАКТА. Вычислительная логика прошлого эксперта "
+                      "уже отработала: не меняй выбор входов, чтение, нормализацию, сопоставление и расчёты. "
+                      "Сделай минимальное изменение упаковки summary/output/evidence/artifacts и записи "
+                      "обязательных файлов в output_dir. Верни полный код с сохранённой вычислительной частью. "
+                      "Диагностика харнесса:\n" + _repair_context(feedback, task_package) +
+                      "\n\nКОД, ВЫЧИСЛИТЕЛЬНУЮ ЧАСТЬ КОТОРОГО НУЖНО СОХРАНИТЬ:\n" +
+                      _clip(previous_code, 12000))
+        else:
+            repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
+                      "под конкретные строки образца. Обнови и снова сохрани того же эксперта. "
+                      "Диагностика харнесса:\n" + _repair_context(feedback, task_package))
     return f"""Ты — Строитель Extella. Твоя задача — не описать решение, а СОЗДАТЬ ИЛИ ОБНОВИТЬ
 одного реально исполняемого эксперта `{expert_name}` действием платформы.
 
@@ -1468,6 +1490,36 @@ def _validate_code(expert_name, code, task_package=None):
     return issues
 
 
+def _strategy_fingerprint(code):
+    """Hash control/data-flow vocabulary while ignoring superficial literal/name changes."""
+    try:
+        tree = ast.parse(code or "")
+    except Exception:
+        return hashlib.sha256(re.sub(r"\s+", " ", str(code or "")).encode("utf-8")).hexdigest()
+    features = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.With, ast.ListComp,
+                             ast.DictComp, ast.Return, ast.Raise)):
+            features.append(type(node).__name__)
+        elif isinstance(node, ast.Import):
+            features.extend("import:" + x.name.split(".")[0] for x in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            features.append("from:" + str(node.module or "").split(".")[0])
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name):
+                features.append("call:" + fn.id)
+            elif isinstance(fn, ast.Attribute):
+                features.append("call:" + fn.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value.casefold()
+            for marker in ("status", "success", "summary", "evidence", "artifacts", "report_",
+                           "read_excel", "read_csv", "json", "xlsx", "pdf", "csv"):
+                if marker in value:
+                    features.append("str:" + marker)
+    return hashlib.sha256("\n".join(sorted(features)).encode("utf-8")).hexdigest()
+
+
 def _get_scoped_expert(expert_name, agent_id):
     req = urllib.request.Request(BASE.rstrip("/") + "/api/expert/get",
                                  data=json.dumps({"name": expert_name}).encode("utf-8"),
@@ -1538,7 +1590,9 @@ def _create_or_update(expert_name, task_package, feedback, llm):
                                       "kwargs": dict(EXPERT_KWARGS), "cspl": "fython", "global": True}, timeout=180)
     ok = isinstance(saved, dict) and (saved.get("status") == "success" or saved.get("id"))
     return {"ok": bool(ok), "why": "" if ok else "global save: " + _clip(saved, 400),
+            "code": code,
             "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            "strategy_sha256": _strategy_fingerprint(code),
             "generation_path": generation_path,
             "generation_seconds": round(time.monotonic() - started, 1)}
 
@@ -1677,11 +1731,12 @@ def _result_preview(result, validation):
     return _compact(preview)
 
 
-def _repair_feedback(result, validation, judge):
+def _repair_feedback(result, validation, judge, controller=None):
     """Ровно то, что нужно следующей попытке: тип провала и агрегаты, без таблицы правильных ответов."""
     result = result if isinstance(result, dict) else {}
     validation = validation if isinstance(validation, dict) else {}
     judge = judge if isinstance(judge, dict) else {}
+    controller = controller if isinstance(controller, dict) else {}
     return {
         "phase": "acceptance",
         "returned_status": result.get("status"),
@@ -1693,6 +1748,9 @@ def _repair_feedback(result, validation, judge):
         "business_verdict": judge.get("verdict"),
         "business_issues": judge.get("issues") or [],
         "owner_question": judge.get("owner_question") or "",
+        "failure_controller": {k: controller.get(k) for k in
+                               ("failure_class", "action", "evidence", "confidence")},
+        "required_next_action": controller.get("action") or "repair_code",
     }
 
 
@@ -1705,6 +1763,8 @@ def judge_result(task_package, result, validation):
               "Нулевой результат допустим только с наблюдаемым доказательством; если Task Contract связывает "
               "источники, неожиданное отсутствие любых совпадений требует диагностики Source Model и ключей. "
               "Если в ТЗ не хватает критического бизнес-выбора, FAIL и сформулируй один точный вопрос владельцу. "
+              "Такой вопрос обязан назвать найденные варианты, наблюдаемое доказательство, предполагаемый "
+              "вариант и то, на какой результат повлияет ответ. Техническую ошибку человеку не задавай. "
               "Извлеки только переносимые знания: concept — доказанный факт о структуре/семантике процесса; "
               "rule — доказанное обобщаемое правило обработки. Не записывай конкретные строки контрольного набора. "
               "В rejected_hypotheses перечисли ошибочные подходы, которые следующая попытка не должна повторять. "
@@ -1834,6 +1894,12 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
     creation_calls = run_repairs = acceptance_repairs = total_calls = 0
     runnable_attempts = 0
     previous_code_sha = ""
+    seen_code_shas = set()
+    strategy_failures = set()
+    controller_history = []
+    last_controller = {}
+    retry_existing = False
+    last_built = {}
     has_runnable = draft_created = expert_ran = False
     failure_class = "creation"
     last_applied_lesson = ""
@@ -1859,15 +1925,23 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         if not has_runnable:
             creation_calls += 1
         remaining = total_budget - total_calls
-        phase_name = "Qwen создаёт code-artifact draft-эксперта" if not has_runnable else \
-                     "Qwen создаёт исправленный code-artifact"
+        phase_name = ("Повторяю тот же draft после временного сбоя" if retry_existing else
+                      ("Qwen создаёт code-artifact draft-эксперта" if not has_runnable else
+                       "Qwen создаёт исправленный code-artifact"))
         progress("agentic_reason", "%s · попытка текущего шага %d/%d" %
                  (phase_name, total_calls, total_budget),
                  "running", "draft: %s · осталось попыток: %d · repair run/accept: %d/%d, %d/%d" %
                  (draft_name, remaining, run_repairs, run_budget, acceptance_repairs, accept_budget))
         package["working_memory"] = package.get("working_memory") or {"version": 1, "entries": []}
         _refresh_package(package)
-        built = _create_or_update(draft_name, package, feedback, llm)
+        reused_for_transient = retry_existing
+        if retry_existing:
+            built = dict(last_built)
+            built.update({"ok": True, "generation_path": "transient_retry_same_expert",
+                          "generation_seconds": 0.0})
+            retry_existing = False
+        else:
+            built = _create_or_update(draft_name, package, feedback, llm)
         if not built.get("ok"):
             issues = [built.get("why") or "эксперт не создан"]
             rec = {"attempt": total_calls, "phase": "create" if not has_runnable else "repair_generate",
@@ -1893,10 +1967,27 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
 
         draft_created = True
         code_sha = str(built.get("code_sha256") or "")
+        strategy_sha = str(built.get("strategy_sha256") or "")
         code_changed = not previous_code_sha or code_sha != previous_code_sha
-        if has_runnable and not code_changed:
-            issues = ["Qwen вернула тот же код после той же диагностики"]
-            rec = {"attempt": total_calls, "phase": "no_progress", "failure_class": failure_class,
+        duplicate_code = bool(has_runnable and not reused_for_transient and code_sha in seen_code_shas)
+        output_contract_only = last_controller.get("action") == "repair_output_contract"
+        duplicate_strategy = bool(has_runnable and not reused_for_transient and not output_contract_only and
+                                  strategy_sha and
+                                  (strategy_sha, str(last_controller.get("failure_class") or failure_class))
+                                  in strategy_failures)
+        if duplicate_code or duplicate_strategy:
+            issues = ["Qwen повторила уже испытанный code hash" if duplicate_code else
+                      "Qwen повторила ту же стратегию после того же класса сбоя"]
+            controller = adaptive_failure_decision({
+                "issues": issues, "code_seen": duplicate_code, "strategy_seen": duplicate_strategy,
+                "input_count": len(sample_files),
+                "input_formats": sorted({Path(x).suffix.casefold() for x in sample_files}),
+                "can_split": bool(step_contract),
+            })
+            controller_history.append(controller)
+            last_controller = controller
+            rec = {"attempt": total_calls, "phase": "no_progress",
+                   "failure_class": controller["failure_class"], "controller": controller,
                    "issues": issues, "code_sha256": code_sha, "code_changed": False,
                    "budgets": {"creation": creation_calls, "run_repair": run_repairs,
                                "acceptance_repair": acceptance_repairs, "total": total_calls}}
@@ -1914,11 +2005,16 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                      "rejected-урок передан следующей попытке" if can_continue() else
                      "общий лимит исчерпан; ложного продолжения нет")
             final_code, final_failure_kind = "agentic_stalled", "no_progress"
+            if controller.get("action") == "split_step":
+                progress("agentic_control", "Контроллер меняет гранулярность шага", "warn",
+                         "no_progress → split_step; повторный code/strategy запуск запрещён")
+                break
             if can_continue():
+                feedback["required_next_action"] = controller.get("action")
                 continue
             break
 
-        if has_runnable:
+        if has_runnable and not reused_for_transient:
             if failure_class == "run":
                 run_repairs += 1
             else:
@@ -1928,6 +2024,8 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         has_runnable = True
         runnable_attempts += 1
         previous_code_sha = code_sha
+        seen_code_shas.add(code_sha)
+        last_built = dict(built)
         progress("agentic_reason", "Draft-эксперт сохранён и независимо прочитан", "success",
                  "%s · код %s · путь: %s · %.1f сек · изменился: %s" %
                  (draft_name, code_sha[:10], built.get("generation_path") or "unknown",
@@ -1941,7 +2039,11 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                   "api_token": CONFIG.get("auth_token", ""), "api_base": BASE,
                   "rules_json": json.dumps(package.get("rules") or [], ensure_ascii=False),
                   "fields_json": json.dumps(package.get("fields") or {}, ensure_ascii=False)}
-        result = run_expert(draft_name, params, wait=900, glob=True)
+        input_formats = sorted({Path(x).suffix.casefold() or "<none>" for x in sample_files})
+        run_timeout = 240 if len(sample_files) >= 6 or len(input_formats) > 1 else 600
+        run_started = time.monotonic()
+        result = run_expert(draft_name, params, wait=run_timeout, glob=True)
+        run_seconds = round(time.monotonic() - run_started, 1)
         expert_ran = True
         validation = validate_result(result, sample_files, package)
         if validation["ok"]:
@@ -1968,6 +2070,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             failure_class = "run"
         rec = {"attempt": total_calls, "runnable_attempt": runnable_attempts, "phase": "accept",
                "failure_class": failure_class, "code_sha256": code_sha, "code_changed": code_changed,
+               "strategy_sha256": strategy_sha, "run_seconds": run_seconds,
                "validation": validation, "judge": judge, "result": _compact(result),
                "budgets": {"creation": creation_calls, "run_repair": run_repairs,
                            "acceptance_repair": acceptance_repairs, "total": total_calls}}
@@ -2010,26 +2113,65 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                     "verified_memory": verified_memory, "draft_created": True, "expert_ran": True,
                     "last_applied_lesson": last_applied_lesson, "last_unapplied_lesson": "",
                     "package_sha256": package.get("package_sha256"),
+                    "expert_code_sha256": promoted.get("code_sha256") or code_sha,
+                    "failure_decision": last_controller,
+                    "controller_history": controller_history,
                     "source_files": [Path(p).name for p in sample_files]}
 
         issues = judge.get("issues") or validation.get("issues") or ["бизнес-цель не доказана"]
+        owner_question = str(judge.get("owner_question") or "").strip()
+        controller = adaptive_failure_decision({
+            "issues": issues, "message": result, "status": result.get("status") if isinstance(result, dict) else "",
+            "duration_seconds": run_seconds, "run_timeout_seconds": run_timeout,
+            "input_count": len(sample_files), "input_formats": input_formats,
+            "previous_classes": [x.get("failure_class") for x in controller_history if isinstance(x, dict)],
+            "owner_question": owner_question,
+            "semantic_ambiguity": bool(validation.get("ok") and owner_question),
+            "semantic_failed": bool(validation.get("ok") and judge.get("verdict") == "fail"),
+            "can_split": bool(step_contract),
+        })
+        controller_history.append(controller)
+        last_controller = controller
+        rec["controller"] = controller
+        rec["failure_class"] = controller.get("failure_class")
+        if strategy_sha:
+            strategy_failures.add((strategy_sha, str(controller.get("failure_class") or "")))
         learned = _memory_from_judge(judge, total_calls, passed=False)
         lesson = _failure_lesson(total_calls, issues, code_sha, source="acceptance_gate")
         package["working_memory"] = _merge_memory(package.get("working_memory"), learned + [lesson])
         last_unapplied_lesson = lesson.get("text") if lesson else "; ".join(issues)
-        feedback = _repair_feedback(result, validation, judge)
+        feedback = _repair_feedback(result, validation, judge, controller)
         feedback.update({"previous_code_sha256": code_sha, "last_unapplied_lesson": last_unapplied_lesson,
                          "working_memory": package.get("working_memory"),
                          "remaining": {"run_repairs": max(0, run_budget - run_repairs),
                                        "acceptance_repairs": max(0, accept_budget - acceptance_repairs),
                                        "total": max(0, total_budget - total_calls)}})
+        if controller.get("action") == "repair_output_contract":
+            feedback["previous_expert_code"] = str(last_built.get("code") or "")
         _refresh_package(package)
-        owner_question = str(judge.get("owner_question") or "").strip()
-        if owner_question:
+        if controller.get("action") == "ask_owner" and controller.get("owner_question"):
             final_code, final_failure_kind = "needs_owner_input", "need_human"
             _persist_agentic_state(sess_dir, session_id, bdir, package, source_model, "need_human", build_id)
-            progress("agentic_accept", "Приёмка остановила процесс: нужен ответ владельца", "warn", owner_question)
+            progress("agentic_accept", "Нужен бизнес-выбор владельца", "warn",
+                     controller.get("owner_question"))
             break
+        if controller.get("action") == "split_step":
+            final_code, final_failure_kind = "agentic_needs_decomposition", controller.get("failure_class")
+            _persist_agentic_state(sess_dir, session_id, bdir, package, source_model, "decompose", build_id)
+            progress("agentic_control", "Контроллер дробит перегруженный шаг", "warn",
+                     "%s → split_step; принятые checkpoints других шагов сохраняются" %
+                     controller.get("failure_class"))
+            break
+        if controller.get("action") == "retry_transient":
+            retry_existing = True
+            progress("agentic_control", "Временный сбой: повторяю тот же эксперт один раз", "warn",
+                     "без повторной генерации кода")
+        elif controller.get("action") == "repair_output_contract":
+            progress("agentic_control", "Ремонтирую только выходной контракт", "warn",
+                     "; ".join(str(x) for x in issues)[:420])
+        elif controller.get("action") == "replace_implementation":
+            progress("agentic_control", "Меняю стратегию реализации", "warn",
+                     "повтор прежнего code/strategy hash запрещён")
         _persist_agentic_state(sess_dir, session_id, bdir, package, source_model,
                                "repairing" if can_continue() else "failed", build_id)
         if can_continue():
@@ -2057,9 +2199,14 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
     _persist_agentic_state(sess_dir, session_id, bdir, package, source_model,
                            "need_human" if final_code == "needs_owner_input" else "failed", build_id)
     _delete_draft(draft_name, llm.get("agent_id") or qwen_agent())
+    control_action = str(last_controller.get("action") or "stop_fail_closed")
+    safe_owner_question = (last_controller.get("owner_question") or "") \
+        if control_action == "ask_owner" else ""
     return {"ok": False, "code": final_code, "failure_kind": final_failure_kind,
             "expert": expert_name, "draft_expert": draft_name, "detail": "; ".join(str(x) for x in issues)[:800],
-            "owner_question": judge.get("owner_question") or "", "attempts": attempts,
+            "owner_question": safe_owner_question, "attempts": attempts,
+            "control_action": control_action, "failure_decision": last_controller,
+            "controller_history": controller_history,
             "task_contract": package.get("task_contract"), "source_model": source_model,
             "strategy": source_model.get("strategy"), "working_memory": package.get("working_memory"),
             "verified_memory": [], "draft_created": draft_created, "expert_ran": expert_ran,
@@ -2067,6 +2214,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             "last_applied_lesson": last_applied_lesson,
             "last_unapplied_lesson": last_unapplied_lesson,
             "package_sha256": package.get("package_sha256"),
+            "expert_code_sha256": previous_code_sha,
             "budgets": {"creation": {"used": creation_calls, "limit": create_budget},
                         "run_repair": {"used": run_repairs, "limit": run_budget},
                         "acceptance_repair": {"used": acceptance_repairs, "limit": accept_budget},
