@@ -104,6 +104,7 @@ python3 scripts/check_delta_install.py \
 bash -n scripts/qa_delta_update.sh \
   && grep -q 'check_builds_busy.py' scripts/qa_delta_update.sh \
   && grep -q 'codex/prod-hardening' scripts/qa_delta_update.sh \
+  && grep -q 'node --version >/dev/null 2>&1' scripts/qa_delta_update.sh \
   && echo "   ✓ короткий QA-апдейтер синтаксически цел и защищает живую стройку" \
   || { echo "   ✗ короткий QA-апдейтер сломан или обходит защиту стройки"; fail=1; }
 

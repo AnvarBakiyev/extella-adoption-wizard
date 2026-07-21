@@ -36,7 +36,10 @@ fi
 
 echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" -m py_compile "$SRC/ui/server.py" "$SRC/ui/wz_agentic.py" "$SRC/ui/wz_build.py"
-if command -v node >/dev/null 2>&1; then
+# `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
+# падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
+# повторяем проверку лишь когда бинарник реально запускается.
+if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
   "$PY" - "$SRC/ui/wizard.html" "$TMP/wizard-inline.js" <<'PY'
 import re, sys
 html = open(sys.argv[1], encoding="utf-8").read()
@@ -44,6 +47,9 @@ parts = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', html, re.S)
 open(sys.argv[2], "w", encoding="utf-8").write("\n;\n".join(parts))
 PY
   node --check "$TMP/wizard-inline.js"
+else
+  echo "  ! локальный Node отсутствует или сломан — повторная JS-проверка пропущена"
+  echo "    релизный wizard.html уже проверен серверным preflight"
 fi
 
 BACKUP="$HOME/extella_wizard/backups/qa-${EXPECTED_VERSION}-$(date +%Y%m%d-%H%M%S)"
