@@ -316,6 +316,136 @@ def process_from_blueprint(session_id, blueprint, build_plan=None, origin="wizar
     return graph
 
 
+def project_runtime_contract(graph=None, session=None, build=None, blueprint=None, recipients=None):
+    """Project the user-facing runtime I/O from the canonical process facts.
+
+    The cabinet used to infer ``no connector == uploaded file`` and rendered delivery/finance
+    controls for every process.  That is false for local folders, device applications, pure
+    reasoning tasks and processes without delivery.  Keep this projection deterministic so all
+    surfaces can show the same facts without asking an LLM or inventing business fields.
+    """
+    graph = graph if isinstance(graph, dict) else {}
+    session = session if isinstance(session, dict) else {}
+    build = build if isinstance(build, dict) else {}
+    blueprint = blueprint if isinstance(blueprint, dict) else {}
+    steps = [x for x in (graph.get("steps") or []) if isinstance(x, dict)]
+    by_id = {str(x.get("id") or ""): x for x in steps}
+    entry = [by_id[x] for x in (graph.get("entry_step_ids") or []) if x in by_id]
+    terminal = [by_id[x] for x in (graph.get("terminal_step_ids") or []) if x in by_id]
+    if not entry:
+        entry = [x for x in steps if not x.get("dependencies")]
+    if not terminal:
+        depended_on = {str(d) for x in steps for d in (x.get("dependencies") or [])}
+        terminal = [x for x in steps if str(x.get("id") or "") not in depended_on]
+
+    task_contract = build.get("task_contract") if isinstance(build.get("task_contract"), dict) else {}
+    operation = task_contract.get("operation") if isinstance(task_contract.get("operation"), dict) else {}
+    source = session.get("source") if isinstance(session.get("source"), dict) else {}
+    inbound = session.get("inbound") if isinstance(session.get("inbound"), dict) else {}
+
+    context = {
+        "goal": blueprint.get("goal") or session.get("goal") or session.get("questionnaire_task"),
+        "answers": session.get("answers"),
+        # Permissions contain technical keys such as ``read``.  They are intentionally excluded
+        # from input classification: otherwise "create a PDF" + the default read permission looks
+        # like "read/upload a PDF" and invents a manual file input.
+        "entry_steps": [{k: x.get(k) for k in ("title", "purpose", "input_contract")}
+                        for x in entry],
+        "source_configuration": task_contract.get("source_configuration"),
+    }
+    try:
+        raw_input_text = json.dumps(context, ensure_ascii=False, default=str)[:30000]
+    except Exception:
+        raw_input_text = str(context)[:30000]
+    input_text = raw_input_text.casefold()
+
+    def _real_source(path):
+        value = str(path or "").strip()
+        folded = value.replace("\\", "/").casefold()
+        if not value or "/build_fixture/" in folded:
+            return ""
+        if Path(value).name.casefold() in ("task_input.json", "synthetic_input.json"):
+            return ""
+        return value
+
+    source_files = []
+    for raw in list(build.get("source_files") or []) + [build.get("source_file")]:
+        value = _real_source(raw)
+        if value and value not in source_files:
+            source_files.append(value)
+
+    if source.get("kind"):
+        runtime_input = {"kind": "connector", "label": str(source.get("label") or source.get("kind")),
+                         "manual_upload": False, "connectable": True}
+    elif inbound and str(inbound.get("mode") or "off") != "off":
+        channel = str(inbound.get("channel") or "").strip()
+        runtime_input = {"kind": "inbound", "label": "Входящие сообщения" +
+                         ((" · " + channel) if channel else ""),
+                         "manual_upload": False, "connectable": True}
+    else:
+        # Prefer an explicit path.  A folder/path in the task is a live local resource, not the
+        # synthetic task_input.json fixture created solely to test a non-file process.
+        path_match = re.search(r"(?:~|/(?:Users|home)/[^\s/]+)/(?:[^\s,;:)\"'{}\[\]]+)", raw_input_text,
+                               flags=re.IGNORECASE)
+        local_words = ("папк", "директори", "folder", "directory", "downloads", "рабочем стол")
+        has_local_folder = bool(path_match) or any(word in input_text for word in local_words)
+        if has_local_folder:
+            raw_path = path_match.group(0) if path_match else ""
+            if "downloads" in input_text and not raw_path:
+                raw_path = "~/Downloads"
+            label = ("Папка %s на этом устройстве" % raw_path) if raw_path else "Локальная папка на этом устройстве"
+            runtime_input = {"kind": "local_folder", "label": label,
+                             "path": raw_path, "manual_upload": False, "connectable": False}
+        elif source_files:
+            runtime_input = {"kind": "manual_file", "label": "Файл при запуске",
+                             "manual_upload": True, "connectable": True}
+        else:
+            entry_input_text = _flatten_text([x.get("input_contract") for x in entry])
+            file_kinds = ("xlsx", "excel", "csv", "pdf", "документ", "файл", "изображен", "видео")
+            input_actions = ("прилож", "загруз", "на вход", "прочит", "обработ", "анализ", "parse", "read", "upload")
+            looks_like_file_input = (any(word in entry_input_text for word in file_kinds) or
+                                     (any(word in input_text for word in file_kinds) and
+                                      any(word in input_text for word in input_actions)))
+            if looks_like_file_input:
+                runtime_input = {"kind": "manual_file", "label": "Файл при запуске",
+                                 "manual_upload": True, "connectable": True}
+            else:
+                runtime_input = {"kind": "none", "label": "Отдельный источник не требуется",
+                                 "manual_upload": False, "connectable": False}
+
+    resolved_recipients = [str(x) for x in (recipients if isinstance(recipients, list)
+                                             else (session.get("recipients") or [])) if str(x)]
+    send_targets = []
+    for step in steps:
+        permissions = step.get("permissions") if isinstance(step.get("permissions"), dict) else {}
+        send_targets.extend(str(x) for x in (permissions.get("send") or []) if str(x))
+    explicit_delivery = operation.get("delivery")
+    if isinstance(explicit_delivery, dict):
+        explicit_delivery_enabled = str(explicit_delivery.get("mode") or "").casefold() not in ("", "off", "none") or bool(
+            explicit_delivery.get("channel") or explicit_delivery.get("target"))
+    else:
+        explicit_delivery_enabled = str(explicit_delivery or "").strip().casefold() not in ("", "off", "none", "нет", "no")
+    delivery_enabled = bool(resolved_recipients or send_targets or explicit_delivery_enabled)
+
+    output_context = {
+        "terminal_steps": [{k: x.get(k) for k in ("title", "purpose", "output_contract")}
+                           for x in terminal],
+        "delivery": explicit_delivery,
+    }
+    output_text = _flatten_text(output_context)
+    supports_sum = any(word in output_text for word in
+                       ("total_sum", "amount", "currency", "сумм", "стоимост", "тенге", "₸"))
+    supports_count = any(word in output_text for word in
+                         ("total_count", "count", "колич", "число", "сколько", "items", "records", "files"))
+    return {
+        "schema": "runtime-cabinet/1.0",
+        "input": runtime_input,
+        "delivery": {"enabled": delivery_enabled,
+                     "channels": resolved_recipients or send_targets},
+        "output": {"supports_count": supports_count, "supports_sum": supports_sum},
+    }
+
+
 def validate_process(graph):
     errors = []
     if not isinstance(graph, dict) or graph.get("schema") != SCHEMA:

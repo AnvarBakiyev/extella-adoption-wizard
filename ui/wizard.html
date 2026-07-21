@@ -4505,6 +4505,17 @@ async function cabApply(){
 }
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
+function _wzRuntime(a){
+  var c=(a&&a.runtime_contract)||{};
+  return {
+    input:c.input||((a&&a.source&&a.source.kind)?{kind:'connector',label:_srcName(a.source.kind),manual_upload:false,connectable:true}:
+                    ((a&&a.panel_url)?{kind:'inbound',label:'Входящие каналы',manual_upload:false,connectable:true}:
+                    {kind:'manual_file',label:'Файл при запуске',manual_upload:true,connectable:true})),
+    delivery:c.delivery||{enabled:!!((a&&a.recipients)||[]).length,channels:(a&&a.recipients)||[]},
+    output:c.output||{supports_count:false,supports_sum:false}
+  };
+}
+function _wzDeliveryEnabled(a){ return !!_wzRuntime(a).delivery.enabled; }
 // Карточка доводки: сомнительные по смыслу шаги, найденные при сборке. Ведёт к чату кабинета
 // («Скажи, что поменять» внизу) — там доводка словами и есть. Идея Анвара: доделать процесс тут.
 function _wzCabReviewCard(a){
@@ -4537,8 +4548,9 @@ function _wzCabBody(a){
       '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
       '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
   if(_wzCabTab==='compose' && a.flow_id) return _wzCabComposeTab(a);
-  // Слой 1 честный статус: если живого источника нет — предупреждающий баннер на ЛЮБОЙ содержательной вкладке
-  var _sb = ((a.source&&a.source.kind)||a.panel_url) ? "" : _wzSourceBanner(a, _wzCabI);
+  // Плашка нужна только для реального ручного файла. Локальная папка/приложение — уже живой
+  // runtime-вход; отсутствие OAuth-коннектора не превращает их в «приложенный файл».
+  var _sb = _wzSourceBanner(a, _wzCabI);
   // старые адреса вкладок ведут в новые места — внешние ссылки и наш же код не ломаются
   if(_wzCabTab==='process') _wzCabTab='overview';
   if(_wzCabTab==='rules'||_wzCabTab==='template') _wzCabTab='settings';
@@ -4709,12 +4721,8 @@ async function _wzDigestLoad(sid){
     '<button class="btn ghost sm" style="margin-top:8px" onclick="showBrief(window._wzLastDigest,{kicker:\'Extella · Отчёт прогона\',title:(AUTOS[_wzCabI]&&(AUTOS[_wzCabI].process_name||AUTOS[_wzCabI].client_name))||\'Отчёт прогона\'})">📄 Открыть бриф целиком</button></div>';
 }
 function _wzSourceBanner(a, i){
-  // Слой 1, честный статус: процесс НЕ выдаётся за автономный, если данные грузятся руками файлом.
-  var hasLive = (a.source && a.source.kind) || a.panel_url;
-  if(hasLive){
-    var nm = (a.source&&a.source.kind) ? _srcName(a.source.kind) : 'входящие каналы';
-    return '<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.35);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#237a44">✓ Источник данных подключён: <b>'+esc(nm)+'</b> — процесс тянет свежие данные сам.</div>';
-  }
+  var inp=_wzRuntime(a).input||{};
+  if(inp.kind!=='manual_file') return '';
   // #7 (Гульжан 20.07): раньше банер вёл только в «Подключить источник» (OAuth/refresh-токены —
   // «круги мучений»), а для ТЕСТА подключать ничего не нужно. Разводим два пути явно: тест на
   // приложенном файле (сейчас, без подключения) и живой источник (для автономной работы 24/7).
@@ -4773,11 +4781,11 @@ function _wzArchTitle(a){
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
   var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
-  var _srcLabel = a.source&&a.source.kind ? ('Источник: '+_srcName(a.source.kind))
-      : (a.panel_url ? 'Источник: входящие каналы (пак)' : 'Источник: файл вручную');
-  var ready =
-      _wzReadyChip(a.source&&a.source.kind?'ok':(a.panel_url?'ok':'idle'), _srcLabel)
-    + _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Получатели: не заданы')
+  var _rt=_wzRuntime(a), _inp=_rt.input||{}, _delivery=!!(_rt.delivery||{}).enabled;
+  var _srcLabel = _inp.kind==='connector' && a.source&&a.source.kind ? ('Источник: '+_srcName(a.source.kind))
+      : (_inp.kind==='manual_file' ? 'Источник: файл при запуске' : (_inp.label||'Отдельный источник не требуется'));
+  var ready = (_inp.kind==='none'?'':_wzReadyChip(_inp.kind==='manual_file'?'idle':'ok', _srcLabel))
+    + (_delivery ? _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Доставка: требует настройки') : '')
     + _wzReadyChip(a.schedule&&a.schedule.period?'ok':'idle', a.schedule&&a.schedule.period?('Расписание: '+a.schedule.period):'Запуск вручную');
   var lr=a.last_run, AR=_wzArch(a);
   // Главное число подписываем ЖАНРОМ и трактуем по жанру. Сумму показываем только там,
@@ -4839,7 +4847,7 @@ function _wzCabLaunch(a){
   // Подсказка «что дальше» — жанровая и УМЕСТНАЯ: советовать расписание тому, у кого оно
   // уже стоит, значит шуметь. Показываем только пока обвязка не достроена.
   var _needSched = !(a.schedule&&a.schedule.period) && !a.inbound;
-  var _needRcpt = !((a.recipients||[]).length);
+  var _needRcpt = _delivery && !((a.recipients||[]).length);
   var nudge = (AR.nudge && (_needSched || _needRcpt))
       ? '<div style="font-size:12.5px;color:var(--ink-soft);margin-top:12px;padding:9px 12px;background:var(--cream);border-radius:8px">'+esc(AR.nudge)+
         ' <a href="#" onclick="wzCabTab(\'settings\');return false" style="color:#c60">Настроить →</a></div>' : '';
@@ -5016,7 +5024,7 @@ function _wzSectionLabel(txt){
 function _wzCabSettings(a){
   // #2 ленивая подгрузка «куда шлём» (dest получателей) — один раз, потом перерисовать с адресами
   if(window.CONN_DEST===undefined){ window.CONN_DEST=null; jget('/x/secrets').then(function(sc){ var m={}; (sc.secrets||[]).forEach(function(x){ if(x.dest) m[x.connector]=x.dest; }); window.CONN_DEST=m; if(_wzCabI>=0 && Object.keys(m).length) _wzCabRender(); }).catch(function(){ window.CONN_DEST={}; }); }
-  var sid=a.session_id, rc=(a.recipients||[]);
+  var sid=a.session_id, rc=(a.recipients||[]), _rt=_wzRuntime(a), _inp=_rt.input||{};
   var recRows = rc.length ? rc.map(function(ch){
      return '<div style="display:flex;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:8px 12px;margin-bottom:6px">'+
        '<span style="font-size:16px">'+chEmoji(ch)+'</span>'+
@@ -5032,7 +5040,8 @@ function _wzCabSettings(a){
   // Теперь называем таблицу, доступ, число строк и колонки, и даём ссылку открыть.
   var _si=(a.source||{}), _id=_si.identity||{};
   var srcBody;
-  if(_si.kind){
+  var srcActions='';
+  if(_inp.kind==='connector' && _si.kind){
     var bits=[];
     if(_id.url) bits.push('<a href="'+esc(_id.url)+'" target="_blank" rel="noopener noreferrer" style="color:#c60">открыть таблицу ↗</a>');
     if(_id.access) bits.push('доступ: '+esc(_id.access));
@@ -5044,12 +5053,22 @@ function _wzCabSettings(a){
       (cols.length
         ? '<div style="font-size:12px;color:var(--silver);margin-bottom:10px">колонки: '+esc(cols.slice(0,10).join(', '))+(cols.length>10?' …':'')+'</div>'
         : '<div style="font-size:12.5px;color:#C57E33;margin-bottom:10px">⚠ структура источника неизвестна — процесс не заметит, если колонки изменятся. Привяжите источник заново.</div>');
+    srcActions='<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">Сменить источник</button> '+
+      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>';
+  } else if(_inp.kind==='local_folder') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)"><span style="color:#2f9e56">✓</span> '+esc(_inp.label||'Локальная папка на этом устройстве')+'</div>'+
+      '<div style="font-size:12.5px;color:var(--silver);margin-top:6px">Процесс читает папку напрямую во время запуска. Прикладывать файл или подключать API не нужно.</div>';
+  } else if(_inp.kind==='inbound') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)"><span style="color:#2f9e56">✓</span> '+esc(_inp.label||'Входящие сообщения')+'</div>';
+    srcActions='<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Настроить входящие</button>';
+  } else if(_inp.kind==='none') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)">Отдельный источник для этого процесса не требуется.</div>';
   } else {
-    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px"><span style="color:var(--silver)">файл загружается вручную при запуске</span></div>';
+    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px"><span style="color:var(--silver)">файл прикладывается при запуске</span></div>';
+    srcActions='<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">Привязать живой источник</button> '+
+      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>';
   }
-  var srcCard = _wzCard(_wzH('Источник данных')+srcBody+
-     '<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">'+((a.source&&a.source.kind)?'Сменить источник':'Привязать источник')+'</button> '+
-     '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>');
+  var srcCard = _wzCard(_wzH('Источник данных')+srcBody+(srcActions?'<div style="margin-top:10px">'+srcActions+'</div>':''));
   // Мультитаргет T2: требования к устройству — preflight не пустит прогон, если они не выполнены
   var tr=a.target_requirements||{};
   var trCard = _wzCard(_wzH('Требования к устройству')+
@@ -5067,7 +5086,7 @@ function _wzCabSettings(a){
      ('<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">В витрину</button>'+
       (a.flow_id?'<div style="font-size:11.5px;color:var(--silver);margin-top:6px">Композиция издаётся паком: блоки + план (flow) + восстановление при установке.</div>':'')));
   var advCard = _wzCard(_wzH('Переделать процесс')+
-     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные, получатели, расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
+     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные'+(_wzDeliveryEnabled(a)?', получатели':'')+', расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
      '<button class="btn ghost sm" onclick="configureProcess('+_wzCabI+')">Изменить параметры (словами)</button> '+
      '<button class="btn ghost sm" onclick="openInWizard(\''+esc(sid)+'\')">Открыть в Мастере</button>');
   // C6: журнал правок (решения Строителя человеческим языком) + откат последней
@@ -5088,10 +5107,12 @@ function _wzCabSettings(a){
   // по КАКИМ правилам считает, КОМУ и КАК отдаёт, КОГДА и ГДЕ исполняется.
   // Раньше эта логика была разорвана на четыре вкладки (Настройка/Правила/Шаблон/Процесс),
   // хотя настраивают обычно подряд, а не точечно.
+  var deliverySection = _wzDeliveryEnabled(a)
+       ? _wzSectionLabel('Кому и как отправлять') + recipientsCard + _wzCabTemplate(a)
+       : '';
   return _wzSectionLabel('Данные и правила')
        + srcCard + _wzCabPanelFields(a) + _wzCabRules(a)
-       + _wzSectionLabel('Кому и как отправлять')
-       + recipientsCard + _wzCabTemplate(a)
+       + deliverySection
        + _wzSectionLabel('Когда и где исполнять')
        + scCard + trCard
        + _wzSectionLabel('Процесс целиком')
@@ -5263,19 +5284,30 @@ async function removeRule(i,ri){ var a=AUTOS[i]; if(!a) return; a.rules=(a.rules
 async function addField(i){ var a=AUTOS[i]; if(!a) return; var k=(el('wz_newfk-'+i)||{}).value||'', v=(el('wz_newfv-'+i)||{}).value||''; k=k.trim(); v=v.trim(); if(!k||!v) return; a.fields=a.fields||{}; a.fields[k]=v; await _saveRules(a); }
 async function removeField(i,fi){ var a=AUTOS[i]; if(!a||!a.fields) return; var k=Object.keys(a.fields)[fi]; if(k===undefined) return; delete a.fields[k]; await _saveRules(a); }
 // ── вкладка «Шаблон сообщения»: текст доставки per-automation с плейсхолдерами ──
-var _TPL_DEFAULT='✅ Extella: {name} — процесс отработал.\nПозиций: {count}\nСумма: {sum} ₸';
+var _TPL_DEFAULT='✅ Extella: {name} — процесс отработал.\nДата: {date}';
+function _wzTplDefault(a){
+  var out=(_wzRuntime(a).output||{}), tpl=_TPL_DEFAULT;
+  if(out.supports_count) tpl+='\nРезультат: {count}';
+  if(out.supports_sum) tpl+='\nСумма: {sum} ₸';
+  return tpl;
+}
 function _renderTplLocal(tpl, a){
-  return (String(tpl||'').trim()||_TPL_DEFAULT)
+  var lr=(a&&a.last_run)||{};
+  var count=lr.total_count==null?'—':String(lr.total_count);
+  var sum=lr.total_sum==null?'—':(typeof lr.total_sum==='number'?lr.total_sum.toLocaleString('ru-RU'):String(lr.total_sum));
+  return (String(tpl||'').trim()||_wzTplDefault(a))
     .replace(/\{name\}/g, a.process_name||a.client_name||'процесс')
-    .replace(/\{count\}/g,'128')
-    .replace(/\{sum\}/g,'26 000 000')
-    .replace(/\{date\}/g,'2026-07-12 09:00 UTC');
+    .replace(/\{count\}/g,count)
+    .replace(/\{sum\}/g,sum)
+    .replace(/\{date\}/g,(lr.at||'дата прогона').slice(0,16).replace('T',' '));
 }
 function _wzCabTemplate(a){
-  var tpl=a.message_template||'';
+  var tpl=a.message_template||'', out=(_wzRuntime(a).output||{}), ph=['<code>{name}</code> — имя','<code>{date}</code> — дата'];
+  if(out.supports_count) ph.push('<code>{count}</code> — результат в числах');
+  if(out.supports_sum) ph.push('<code>{sum}</code> — сумма');
   return _wzCard(_wzH('Шаблон сообщения получателям')+
-    '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры: <code>{name}</code> — имя, <code>{count}</code> — позиций, <code>{sum}</code> — сумма, <code>{date}</code> — дата. Пусто — стандартный текст.</div>'+
-    '<textarea id="wz_tpl-'+_wzCabI+'" class="sess-select" style="width:100%;max-width:none;min-height:120px;font:13px/1.5 var(--mono,monospace);padding:10px" oninput="previewTemplate('+_wzCabI+')" placeholder="'+esc(_TPL_DEFAULT)+'">'+esc(tpl)+'</textarea>'+
+    '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Доступно: '+ph.join(', ')+'. Пусто — стандартный текст.</div>'+
+    '<textarea id="wz_tpl-'+_wzCabI+'" class="sess-select" style="width:100%;max-width:none;min-height:120px;font:13px/1.5 var(--mono,monospace);padding:10px" oninput="previewTemplate('+_wzCabI+')" placeholder="'+esc(_wzTplDefault(a))+'">'+esc(tpl)+'</textarea>'+
     '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn gold sm" onclick="saveTemplate('+_wzCabI+')">Сохранить шаблон</button></div>'+
     '<div style="font-size:12px;color:var(--silver);margin:12px 0 4px">Так увидит получатель:</div>'+
     '<div id="wz_tplprev-'+_wzCabI+'" style="white-space:pre-wrap;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;font-size:13px">'+esc(_renderTplLocal(tpl,a))+'</div>');

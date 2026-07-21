@@ -12,6 +12,7 @@ from wz_process import (  # noqa: E402
     STEP_RESULT_SCHEMA, accept_step, answer_human, block_for_human, checkpoint,
     budget_preflight, grant_step_budget, is_budget_gate, memory_entry, normalize_step_result,
     permission_preflight, process_from_blueprint,
+    project_runtime_contract,
     process_status, ready_steps, record_approval, recover_after_restart, repair_step,
     record_usage, step_map, transition_step, validate_process,
 )
@@ -51,6 +52,58 @@ def test_unknown_task_is_generate():
     assert validate_process(graph)["ok"]
     assert graph["steps"][0]["implementation"]["mode"] == "generate"
     assert graph["steps"][0]["status"] == "ready"
+
+
+def test_cabinet_projects_local_folder_without_fake_file_or_delivery():
+    blueprint = {"process_name": "Уборка папки Downloads", "goal": "Убраться в папке ~/Downloads",
+                 "stages": [
+        {"id": "scan", "title": "Сканирование папки Downloads",
+         "business_description": "Прочитать локальную папку ~/Downloads",
+         "inputs": ["локальная папка"], "outputs": ["список файлов"]},
+        {"id": "move", "title": "Разложить файлы", "depends_on": ["scan"],
+         "business_description": "Создать подпапки и переместить файлы",
+         "outputs": ["журнал перемещений"]},
+    ]}
+    graph = process_from_blueprint("wz_downloads", blueprint)
+    session = {"goal": blueprint["goal"], "answers": {"task": {"answer": "Сортировать Downloads"}}}
+    build = {"source_file": "/tmp/build_fixture/task_input.json",
+             "source_files": ["/tmp/build_fixture/task_input.json"]}
+    contract = project_runtime_contract(graph, session, build, blueprint)
+    assert contract["input"]["kind"] == "local_folder"
+    assert contract["input"]["path"] == "~/Downloads"
+    assert not contract["input"]["manual_upload"]
+    assert not contract["delivery"]["enabled"]
+
+
+def test_cabinet_keeps_real_file_and_real_delivery():
+    blueprint = {"process_name": "Отчёт", "goal": "Прочитать Excel и отправить отчёт",
+                 "stages": [{"id": "read", "title": "Прочитать Excel", "inputs": ["xlsx"]},
+                            {"id": "send", "title": "Отправить в Telegram", "depends_on": ["read"],
+                             "permissions": {"send": ["telegram:owner"]},
+                             "outputs": ["total_count", "total_sum"]}]}
+    graph = process_from_blueprint("wz_report", blueprint)
+    contract = project_runtime_contract(graph, {}, {"source_file": "/tmp/report.xlsx"}, blueprint)
+    assert contract["input"]["kind"] == "manual_file"
+    assert contract["delivery"]["enabled"]
+    assert contract["output"]["supports_count"] and contract["output"]["supports_sum"]
+
+
+def test_cabinet_ui_is_gated_by_runtime_contract():
+    html = (ROOT / "ui" / "wizard.html").read_text(encoding="utf-8")
+    assert "if(inp.kind!=='manual_file') return '';" in html
+    assert "var deliverySection = _wzDeliveryEnabled(a)" in html
+    assert ".replace(/\\{count\\}/g,'128')" not in html
+    assert ".replace(/\\{sum\\}/g,'26 000 000')" not in html
+
+
+def test_cabinet_does_not_treat_generated_document_as_input_file():
+    blueprint = {"process_name": "Создать памятку", "goal": "Создать PDF-памятку для сотрудников",
+                 "stages": [{"id": "write", "title": "Сформировать памятку",
+                             "inputs": [], "outputs": ["памятка.pdf"]}]}
+    graph = process_from_blueprint("wz_generate_pdf", blueprint)
+    contract = project_runtime_contract(graph, {},
+                                        {"source_file": "/tmp/build_fixture/task_input.json"}, blueprint)
+    assert contract["input"]["kind"] == "none"
 
 
 def test_resource_budgets_survive_and_fail_closed():
