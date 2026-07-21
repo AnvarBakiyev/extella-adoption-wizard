@@ -13,7 +13,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
-from wz_llm import run_llm_expert, design_agent, gen_panel_manifest
+from wz_llm import run_llm_expert, design_agent, gen_panel_manifest, llm_transient_error
 from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
 from wz_process import (accept_step as universal_accept_step, atomic_write_json,
                         budget_preflight as universal_budget_preflight,
@@ -544,6 +544,9 @@ BUILD_ERRORS = {
     "plan_failed": ("Не удалось составить план стройки",
                     "Уточните задачу словами в описании процесса: чем конкретнее цель и что на входе, "
                     "тем точнее план. Затем повторите стройку."),
+    "plan_transport_failed": ("Связь прервалась во время составления плана",
+                              "Интервью и сессия сохранены. Когда интернет станет стабильнее, нажмите "
+                              "«Повторить сборку» — начинать заново и переписывать задачу не нужно."),
     "plan_not_saved": ("План стройки не сохранился",
                         "Похоже, платформа не приняла запись. Повторите стройку через минуту; "
                         "если повторится — это вопрос к платформе, а не к описанию процесса."),
@@ -1619,9 +1622,11 @@ def _run_build(session_id, build_id):
         # план строит design-агент первым; при флапе — фолбэк по цепочке Qwen (run_llm_expert)
         r = run_llm_expert("wz_build_plan", dict(session_id=session_id, namespace=ns, **llm), wait=900,
                            agents=[design_agent()])
-        if not isinstance(r, dict) or r.get("status") == "error":
+        if not isinstance(r, dict) or str(r.get("status") or "").lower() in (
+                "error", "failed", "timeout", "timed_out", "cancelled"):
+            error_code = "plan_transport_failed" if llm_transient_error(r) else "plan_failed"
             stage("plan", "Составляю план стройки", "error", error=str(r)[:300])
-            prog["status"] = "error"; prog["error_struct"] = _build_error("plan_failed", str(r)[:200])
+            prog["status"] = "error"; prog["error_struct"] = _build_error(error_code, str(r)[:200])
             prog["error"] = prog["error_struct"]["message"]; save(); _unlock(); return
         plan_path = SESS_DIR / (session_id + "_build_plan.json")
         if not plan_path.exists():

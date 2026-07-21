@@ -24,6 +24,7 @@ def load_build(saved):
     llm.run_llm_expert = lambda *args, **kwargs: {}
     llm.design_agent = lambda: "agent_design"
     llm.gen_panel_manifest = lambda *args, **kwargs: {}
+    llm.llm_transient_error = lambda _result: False
     agentic = types.ModuleType("wz_agentic")
     agentic.build_agentic_solution = lambda *args, **kwargs: {}
     agentic.prepare_task_context = lambda *args, **kwargs: {}
