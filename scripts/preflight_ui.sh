@@ -123,6 +123,11 @@ python3 scripts/check_catalog_install.py \
   && echo "   ✓ полная/дельта-установка кладут каталог, мост восстанавливает резерв" \
   || { echo "   ✗ новый Mac снова остановится на шаге «План»"; fail=1; }
 
+echo "→ атомарность плана"
+python3 scripts/check_blueprint_atomicity.py \
+  && echo "   ✓ неполный blueprint не выглядит готовым и не открывает стройку" \
+  || { echo "   ✗ формальный success снова может маскировать отсутствие плана"; fail=1; }
+
 echo "→ инлайн-скрипт wizard.html"
 python3 - <<'PY' > /tmp/_wz_inline.js
 import re

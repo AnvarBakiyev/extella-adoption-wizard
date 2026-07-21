@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.03"
+EXPECTED_VERSION="5.04"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 PY="$(command -v python3.12 || command -v python3 || true)"

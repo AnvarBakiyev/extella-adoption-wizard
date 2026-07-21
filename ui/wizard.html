@@ -570,6 +570,14 @@ const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"bluepr
 const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
 let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
 
+function usableBlueprintDoc(doc){
+  const bp=doc&&doc.blueprint, su=bp&&bp.suitability, score=su&&Number(su.score);
+  return !!(bp && typeof bp==="object" && String(bp.process_name||"").trim()
+    && Array.isArray(bp.stages) && bp.stages.length
+    && bp.stages.every(x=>x&&typeof x==="object"&&(x.id||x.title))
+    && Number.isFinite(score) && score>=0 && score<=100);
+}
+
 const jget = (u)=>fetch(u).then(r=>r.json());
 // #12 CSRF double-submit: тянем токен моста один раз и шлём его в заголовке всех POST (свой UI same-origin —
 // preflight не возникает; чужая localhost-страница токен не прочитает). Пустой — повторяем запрос токена.
@@ -1941,7 +1949,7 @@ async function loadSession(sid){
   await loadChatHistory(sid);                 // подтянуть стенограмму разговора этой сессии
   S.session = await jget("/x/session?id="+encodeURIComponent(sid));
   S.blueprint = null; S.spec = null;
-  try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(bp && bp.blueprint) S.blueprint = bp; }catch(e){}
+  try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(usableBlueprintDoc(bp)) S.blueprint = bp; }catch(e){}
   try{ const sp = await jget("/x/spec?session_id="+encodeURIComponent(sid)); if(sp && sp.markdown) S.spec = sp.markdown; }catch(e){}
   var st = S.session && S.session.stage;
   // собранный/запущенный процесс живёт в КАБИНЕТЕ «Автоматизаций» — открываем его (а не пустое интервью
@@ -2831,8 +2839,14 @@ async function generateBlueprint(){
   const r = await jpost("/x/expert",{expert_name:"wz_generate_blueprint",params:{session_id:S.sessionId}});
   el("genBtn").disabled = false;
   if(r.status!=="success"){ setStatus("stBlueprint","ошибка: "+esc(r.message||JSON.stringify(r).slice(0,200))); return; }
-  setStatus("stBlueprint",`✓ готово · пригодность ${r.suitability_score}/100`);
-  S.blueprint = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
+  const saved = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
+  if(!usableBlueprintDoc(saved)){
+    S.blueprint = null;
+    setStatus("stBlueprint","ошибка: модель не сохранила полноценный план — ничего не опубликовано; обновите Wizard и повторите");
+    await reloadSession(); render(); return;
+  }
+  S.blueprint = saved;
+  setStatus("stBlueprint",`✓ готово · пригодность ${Number(saved.blueprint.suitability.score)}/100`);
   await reloadSession(); render();
 }
 function _currentDataCheck(){

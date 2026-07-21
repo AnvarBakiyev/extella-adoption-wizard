@@ -14,9 +14,10 @@ DELTA = (ROOT / "scripts" / "qa_delta_update.sh").read_text(encoding="utf-8")
 
 def extracted_ensure():
     tree = ast.parse(SERVER)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_ensure_catalog_path")
-    ns = {}
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), "server.py", "exec"), ns)
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+           and n.name in ("_catalog_usable", "_ensure_catalog_path")]
+    ns = {"Path": Path, "json": json}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=fns, type_ignores=[])), "server.py", "exec"), ns)
     return ns["_ensure_catalog_path"]
 
 
@@ -34,11 +35,18 @@ def main():
         root = Path(td)
         cat, app = root / "catalog", root / "app"
         app.mkdir()
-        (app / "catalog.json").write_text('{"catalog_version":"test"}', encoding="utf-8")
+        valid = {"catalog_version": "test", "capabilities": [{"id": "cap"}],
+                 "process_archetypes": [{"id": "flow"}]}
+        (app / "catalog.json").write_text(json.dumps(valid), encoding="utf-8")
+        cat.mkdir()
+        # Реальный дефект с VM: legacy был валидным JSON, но не контрактом каталога.
+        (cat / "catalog_v1.json").write_text(
+            json.dumps({"version": 1, "generated": True, "components": [],
+                        "capabilities": [], "note": "placeholder"}), encoding="utf-8")
         ensure.__globals__.update({"_CAT_DIR": cat, "APP_DIR": app})
         resolved = ensure()
         assert resolved == cat / "catalog.json" and resolved.exists()
-        assert resolved.read_text(encoding="utf-8") == '{"catalog_version":"test"}'
+        assert json.loads(resolved.read_text(encoding="utf-8")) == valid
     print("каталог: full install + QA delta + local self-heal ✓")
 
 
