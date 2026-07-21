@@ -924,6 +924,66 @@ def _normalize_source_model(raw, package):
     return {"ok": True, "model": model}
 
 
+def _neutral_source_model(package, previous_error=""):
+    """Identity-only recovery when Qwen returned no parseable Source Model at all.
+
+    This is deliberately narrower than semantic recovery: exact source/section ids come from the
+    profiler, every physical input stays mandatory, and no join key or normalization is invented.
+    The downstream holistic Qwen worker still receives the full Task Contract and acceptance must
+    prove the business result.  A *substantive but invalid* Qwen model never enters this fallback.
+    """
+    inventory = _source_inventory((package or {}).get("inputs") or [])
+    if not inventory:
+        return {"ok": False, "why": previous_error or "нет фактических входов для Source Model"}
+    sources = []
+    for item in inventory:
+        sections = []
+        for section in item.get("sections") or []:
+            columns = [str(x) for x in (section.get("columns") or []) if str(x)]
+            section_evidence = (["фактические колонки: " + ", ".join(columns[:20])] if columns else
+                                ["фактический раздел профиля: " + str(section.get("id") or section.get("name"))])
+            sections.append({
+                "section_id": section.get("id"), "name": section.get("name"),
+                "role": "фактический раздел обязательного входа; бизнес-смысл берётся из Task Contract",
+                "entities": ["записи обязательного входа"], "identifier_fields": [],
+                "date_fields": [], "numeric_fields": [], "evidence": section_evidence,
+            })
+        sources.append({
+            "source_id": item.get("id"), "name": item.get("name"),
+            "role": "обязательный физический вход из утверждённого Task Contract",
+            "entities": ["данные обязательного входа"], "sections": sections,
+            "limitations": ["семантическая роль не угадана; её определяет целостный Qwen-исполнитель, а проверяет приёмка"],
+            "evidence": ["идентичность зафиксирована профилем: format=%s sha256=%s" %
+                         (item.get("format") or "unknown", item.get("sha256") or "unknown")],
+        })
+    contract = (package or {}).get("task_contract") if isinstance((package or {}).get("task_contract"), dict) else {}
+    required = contract.get("required_result") if isinstance(contract.get("required_result"), dict) else {}
+    criteria = _as_text_list(required.get("success_criteria"), 20)
+    if not criteria:
+        criteria = ["все фактические входы прочитаны и перечислены в evidence результата",
+                    "итоговый результат соответствует утверждённому Task Contract"]
+    raw = {
+        "status": "ready", "strategy": "holistic_build",
+        "reason": "Qwen не вернула JSON Source Model; харнесс зафиксировал только доказанные идентичности входов без смысловых догадок",
+        "sources": sources,
+        "operations": [{"name": "Выполнить утверждённый Task Contract целиком",
+                        "inputs": [str(x.get("id")) for x in inventory if x.get("id")],
+                        "join_keys": [], "normalizations": [],
+                        "evidence": ["утверждённый Task Contract и фактический профиль всех входов"]}],
+        "acceptance_criteria": criteria, "selected_capabilities": [],
+        "missing_capability": "", "question": "",
+    }
+    checked = _normalize_source_model(raw, package)
+    if checked.get("ok"):
+        model = checked["model"]
+        model.setdefault("contract_repairs", []).append("fallback:deterministic_identity_after_empty_qwen")
+        model["fallback_reason"] = _clip(previous_error, 500)
+        body = json.dumps({k: v for k, v in model.items() if k != "sha256"},
+                          ensure_ascii=False, sort_keys=True, default=str)
+        model["sha256"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return checked
+
+
 def build_source_model(package, llm, max_tries=2, progress=None):
     """Qwen строит Source Model, детерминированный валидатор не позволяет ей выдумать вход/лист."""
     last_error = ""
@@ -938,6 +998,15 @@ def build_source_model(package, llm, max_tries=2, progress=None):
                 progress(attempt, tries, "success", "")
             return checked
         last_error = checked.get("why") or "невалидная Source Model"
+        # No object at all means the provider used its response budget for reasoning and emitted no
+        # final JSON. Repeating the same long prompt costs minutes and usually reproduces the same
+        # shape. Identity-only recovery is safe here because it invents no semantic mapping.
+        if not raw:
+            fallback = _neutral_source_model(package, last_error)
+            if fallback.get("ok"):
+                if progress:
+                    progress(attempt, tries, "success", "использована доказанная identity-only Source Model")
+                return fallback
         if progress:
             progress(attempt, tries, "retry" if attempt < tries else "failed", last_error)
     return {"ok": False, "why": last_error or "Source Model не построена"}

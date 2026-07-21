@@ -105,6 +105,26 @@ def assert_matrix(mod):
     mod._llm_json = original_llm_json
     assert retried["ok"] and len(prompts) == 2 and "не определена роль" in prompts[1]
 
+    # Provider may spend its whole response on reasoning and return no final JSON (Gulzhan 21.07).
+    # Only that empty-shape failure receives a neutral identity model; semantic invalidity remains
+    # fail-closed and is never papered over.
+    empty_calls = []
+    mod._llm_json = lambda *a, **k: empty_calls.append(True) or {}
+    neutral = mod.build_source_model(one, {}, max_tries=2)
+    assert neutral["ok"] and neutral["model"]["strategy"] == "holistic_build"
+    assert len(empty_calls) == 1
+    assert neutral["model"]["sources"][0]["source_id"] == "source_001"
+    assert "fallback:deterministic_identity_after_empty_qwen" in neutral["model"]["contract_repairs"]
+    invalid_ref = source_for(one)
+    invalid_ref["sources"][0]["name"] = "invented.xlsx"
+    mod._llm_json = lambda *a, **k: invalid_ref
+    still_rejected = mod.build_source_model(one, {}, max_tries=2)
+    mod._llm_json = lambda *a, **k: {"reason": "не могу доказать роли входов"}
+    reason_only = mod.build_source_model(one, {}, max_tries=1)
+    mod._llm_json = original_llm_json
+    assert not still_rejected["ok"] and "неизвестный вход" in still_rejected["why"]
+    assert not reason_only["ok"] and "<missing>" in reason_only["why"]
+
     # 2. Несколько таблиц и различные ID: преобразование допустимо только с evidence.
     multi = package([profile("left.xlsx", [("Items", ["external_id", "qty"], ["0012", 2])]),
                      profile("right.xlsx", [("Export", ["reference", "value"], ["12", 2])])],

@@ -1759,7 +1759,10 @@ def _run_build(session_id, build_id):
         stage("task_contract", "Task Contract готов", "success",
               detail="контракт " + str((task_package.get("task_contract") or {}).get("sha256") or "")[:10])
         stage("source_model", "Source Model подтверждена", "success",
-              detail="стратегия: " + str(source_model.get("strategy") or ""))
+              detail="стратегия: " + str(source_model.get("strategy") or "") +
+              (" · точные входы восстановлены харнессом после пустого JSON Qwen"
+               if "fallback:deterministic_identity_after_empty_qwen" in
+                  (source_model.get("contract_repairs") or []) else ""))
         if source_model.get("status") in ("need_human", "acquire"):
             error_code = "needs_owner_input" if source_model["status"] == "need_human" else "capability_missing"
             detail = str(source_model.get("reason") or source_model.get("missing_capability") or "")
