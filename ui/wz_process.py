@@ -687,7 +687,9 @@ def accept_step(graph, step_id, result, semantic_verdict=None, memory=None):
         threshold = float((step.get("acceptance") or {}).get("minimum_confidence") or 0.7)
         if semantic.get("verdict") != "pass" or float(semantic.get("confidence") or 0) < threshold:
             validation["ok"] = False
-            validation["issues"].append("semantic acceptance failed")
+            validation["issues"].append(
+                "semantic acceptance failed: verdict=%s, confidence=%.2f, required=%.2f" %
+                (semantic.get("verdict") or "missing", float(semantic.get("confidence") or 0), threshold))
     attempt = {"attempt": len(step.get("attempts") or []) + 1, "step_version": step.get("version"),
                "result": copy.deepcopy(result), "validation": validation,
                "semantic_verdict": copy.deepcopy(semantic), "at": now_iso()}

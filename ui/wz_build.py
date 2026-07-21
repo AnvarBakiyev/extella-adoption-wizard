@@ -2010,8 +2010,10 @@ def _run_build(session_id, build_id):
                         max_elapsed_seconds=3600, prepared_context=step_context,
                         step_contract=step_contract, expert_name_override=stable_expert)
                     attempt_count = len(solution.get("attempts") or [])
-                    judged_count = sum(1 for row in (solution.get("attempts") or [])
-                                       if isinstance(row, dict) and (row.get("validation") or {}).get("ok"))
+                    judged_count = sum(
+                        1 for row in (solution.get("attempts") or [])
+                        if isinstance(row, dict) and (row.get("validation") or {}).get("ok") and
+                        (row.get("judge") or {}).get("source") != "deterministic_contract")
                     llm_calls_used = max(1, attempt_count + judged_count + 1)
                     universal_record_usage(
                         process_graph, attempts=attempt_count, llm_calls=llm_calls_used,

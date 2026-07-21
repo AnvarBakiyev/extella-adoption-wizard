@@ -1338,18 +1338,21 @@ BUILD_BRIEF:
 
 
 def _code_artifact_prompt(build_prompt, expert_name):
-    """Переключить Строителя из tool-action в детерминированный code-artifact контракт.
+    """Детерминированный основной контракт: модель проектирует, харнесс сохраняет.
 
-    Нативное действие остаётся первым путём. Этот контракт используется, когда модель
-    рассуждала, но не создала запись эксперта: код возвращается харнессу, затем проходит
-    тот же валидатор и сохраняется только через контролируемый ``/api/expert/save``.
+    Код возвращается харнессу, проходит тот же валидатор и сохраняется только через
+    контролируемый ``/api/expert/save``. Нативное tool-action используется лишь как fallback.
     """
-    return ("РЕЖИМ ВОССТАНОВЛЕНИЯ АРТЕФАКТА. Предыдущее рассуждение не создало эксперта. "
-            "Не вызывай действия платформы и не объясняй ход мысли. На основании полной спецификации ниже "
+    normalized = build_prompt.replace(
+        "Исходный код помещай ТОЛЬКО в действие создания/обновления эксперта, не печатай код в ответе.",
+        "Исходный код верни ТОЛЬКО в поле code итогового JSON.")
+    return ("РЕЖИМ CODE-ARTIFACT. Не вызывай действия платформы и не объясняй ход мысли. "
+            "На основании полной спецификации ниже "
             "верни РОВНО один JSON-объект без markdown: "
             '{"code":"<полный исходный код>","description":"<назначение эксперта>"}. '
             "Поле code обязано содержать ровно одну top-level функцию с именем " + expert_name +
-            ". Не сокращай код и не используй многоточия.\n\nПОЛНАЯ СПЕЦИФИКАЦИЯ:\n" + build_prompt)
+            ". Не сокращай код и не используй многоточия. Фразы полной спецификации о действии сохранения "
+            "заменены этим контрактом: сохранять будет харнесс.\n\nПОЛНАЯ СПЕЦИФИКАЦИЯ:\n" + normalized)
 
 
 def _sample_literals(task_package):
@@ -1408,9 +1411,16 @@ def _get_scoped_expert(expert_name, agent_id):
 
 
 def _create_or_update(expert_name, task_package, feedback, llm):
-    """Нативная Qwen-стройка с последующим независимым get и усыновлением в global."""
+    """Один code-artifact вызов Qwen -> validation -> save; tool-action только fallback.
+
+    В Chat эксперт создаётся быстро, потому что модель не ждёт второй оркестраторный круг. Здесь
+    делаем тот же основной путь детерминированным: Qwen возвращает код, а сохранение выполняет
+    харнесс. Нативное действие остаётся запасным путём для провайдеров без стабильного JSON-mode.
+    """
+    started = time.monotonic()
     agent_id = llm.get("agent_id") or qwen_agent()
     prompt = _build_prompt(expert_name, task_package, feedback, agent_id)
+    generation_path = "code_artifact"
     if llm.get("api_key"):
         try:
             body = {"model": llm.get("model"), "temperature": 0,
@@ -1430,24 +1440,26 @@ def _create_or_update(expert_name, task_package, feedback, llm):
         except Exception as exc:
             return {"ok": False, "why": "LLM не создала код: " + _clip(exc, 300)}
     else:
-        run = _post_agent(agent_id, {"agent_id": agent_id, "input": prompt, "run_timeout": 650,
-                                     "store": True, "max_output_tokens": 3000}, timeout=700)
-        found = _get_scoped_expert(expert_name, agent_id)
+        # Быстрый основной путь: один обычный ответ модели, как в Chat. Qwen не должна сама
+        # угадывать/вызывать действие создания — API-save ниже остаётся под контролем харнесса.
+        spec = _llm_json(llm, _code_artifact_prompt(prompt, expert_name),
+                         max_tokens=9000, timeout=360)
+        found = {"expert_code": str((spec or {}).get("code") or ""),
+                 "description": str((spec or {}).get("description") or "")}
         if not found or not (found.get("expert_code") or found.get("code")):
-            found = api("/api/expert/get", {"name": expert_name, "global": True}, timeout=70)
-        if not found or not (found.get("expert_code") or found.get("code")):
-            # Responses API иногда завершает только reasoning без tool-action. Один ограниченный
-            # code-artifact fallback убирает случайность: Qwen пишет код, харнесс валидирует и сам
-            # сохраняет эксперта. Это всё ещё одна попытка шага, а не скрытый переход к соседним шагам.
-            spec = _llm_json(llm, _code_artifact_prompt(prompt, expert_name),
-                             max_tokens=9000, timeout=700)
-            found = {"expert_code": str((spec or {}).get("code") or ""),
-                     "description": str((spec or {}).get("description") or "")}
-            if not found["expert_code"]:
+            generation_path = "native_action_fallback"
+            run = _post_agent(agent_id, {"agent_id": agent_id, "input": prompt, "run_timeout": 320,
+                                         "store": True, "max_output_tokens": 3000}, timeout=360)
+            found = _get_scoped_expert(expert_name, agent_id)
+            if not found or not (found.get("expert_code") or found.get("code")):
+                found = api("/api/expert/get", {"name": expert_name, "global": True}, timeout=70)
+            if not found or not (found.get("expert_code") or found.get("code")):
                 response_kind = "reasoning без действия" if _agent_text(run) else \
                                 str((run or {}).get("status") or "пустой ответ")
-                return {"ok": False, "why": ("Qwen не создала запись эксперта и не вернула "
-                                               "исполняемый code-artifact (" + response_kind + ")")}
+                return {"ok": False, "why": ("Qwen не вернула исполняемый code-artifact и не создала "
+                                               "запись эксперта запасным действием (" + response_kind + ")"),
+                        "generation_path": generation_path,
+                        "generation_seconds": round(time.monotonic() - started, 1)}
     code = str(found.get("expert_code") or found.get("code") or "")
     issues = _validate_code(expert_name, code, task_package)
     if issues:
@@ -1457,7 +1469,9 @@ def _create_or_update(expert_name, task_package, feedback, llm):
                                       "kwargs": dict(EXPERT_KWARGS), "cspl": "fython", "global": True}, timeout=180)
     ok = isinstance(saved, dict) and (saved.get("status") == "success" or saved.get("id"))
     return {"ok": bool(ok), "why": "" if ok else "global save: " + _clip(saved, 400),
-            "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest()}
+            "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            "generation_path": generation_path,
+            "generation_seconds": round(time.monotonic() - started, 1)}
 
 
 def _delete_draft(expert_name, agent_id=""):
@@ -1679,6 +1693,14 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
     time_budget = max(300, int(max_elapsed_seconds or 3600))
     started_monotonic = time.monotonic()
     step_contract = step_contract if isinstance(step_contract, dict) else None
+    step_acceptance = ((step_contract or {}).get("acceptance")
+                       if isinstance((step_contract or {}).get("acceptance"), dict) else {}) or {}
+    semantic_criteria = [str(x) for x in (step_acceptance.get("semantic_criteria") or [])
+                         if str(x).strip()]
+    try:
+        semantic_threshold = max(0.0, min(1.0, float(step_acceptance.get("minimum_confidence", 0.7))))
+    except Exception:
+        semantic_threshold = 0.7
     if step_contract:
         step_dir = re.sub(r"[^A-Za-z0-9_-]+", "_", str(step_contract.get("id") or "step"))[:80]
         step_version = max(1, int(step_contract.get("version") or 1))
@@ -1768,9 +1790,11 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         if not has_runnable:
             creation_calls += 1
         remaining = total_budget - total_calls
-        phase_name = "Создаю draft-эксперта" if not has_runnable else "Ремонтирую draft-эксперта"
-        progress("agentic_reason", "%s · общий шаг %d/%d" % (phase_name, total_calls, total_budget),
-                 "running", "draft: %s · осталось общих шагов: %d · repair run/accept: %d/%d, %d/%d" %
+        phase_name = "Qwen создаёт code-artifact draft-эксперта" if not has_runnable else \
+                     "Qwen создаёт исправленный code-artifact"
+        progress("agentic_reason", "%s · попытка текущего шага %d/%d" %
+                 (phase_name, total_calls, total_budget),
+                 "running", "draft: %s · осталось попыток: %d · repair run/accept: %d/%d, %d/%d" %
                  (draft_name, remaining, run_repairs, run_budget, acceptance_repairs, accept_budget))
         package["working_memory"] = package.get("working_memory") or {"version": 1, "entries": []}
         _refresh_package(package)
@@ -1836,7 +1860,9 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         runnable_attempts += 1
         previous_code_sha = code_sha
         progress("agentic_reason", "Draft-эксперт сохранён и независимо прочитан", "success",
-                 "%s · код %s · изменился: %s" % (draft_name, code_sha[:10], "да" if code_changed else "первый"))
+                 "%s · код %s · путь: %s · %.1f сек · изменился: %s" %
+                 (draft_name, code_sha[:10], built.get("generation_path") or "unknown",
+                  float(built.get("generation_seconds") or 0), "да" if code_changed else "первый"))
         outdir = bdir / ("solution_attempt_%d" % total_calls)
         outdir.mkdir(parents=True, exist_ok=True)
         progress("agentic_run", "Запускаю настоящий draft через run_expert", "running",
@@ -1853,8 +1879,18 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             progress("agentic_run", "Draft обработал обязательные входы и создал артефакты", "success",
                      "файлов: %d · артефактов: %d" %
                      (len(sample_files), len(validation.get("artifacts") or [])))
-            progress("agentic_accept", "Независимо проверяю бизнес-результат по Task Contract", "running", "")
-            judge = judge_result(package, result, validation)
+            if step_contract and not semantic_criteria:
+                # Для файлов/хэшей/schema/counts второй вызов Qwen ничего не доказывает сверх
+                # детерминированного гейта. Семантические шаги по-прежнему проверяет независимая Qwen.
+                judge = {"verdict": "pass", "confidence": 1.0, "issues": [], "owner_question": "",
+                         "memory": {"concepts": [], "rules": []}, "rejected_hypotheses": [],
+                         "source": "deterministic_contract"}
+                progress("agentic_accept", "Детерминированная приёмка шага пройдена", "success",
+                         "дополнительный вызов Qwen не требуется")
+            else:
+                progress("agentic_accept", "Независимо проверяю бизнес-результат по Task Contract", "running",
+                         "порог: %d%%" % round(semantic_threshold * 100))
+                judge = judge_result(package, result, validation)
             failure_class = "acceptance"
         else:
             judge = {"verdict": "fail", "confidence": 1.0, "issues": validation["issues"],
@@ -1868,7 +1904,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                            "acceptance_repair": acceptance_repairs, "total": total_calls}}
         attempts.append(rec)
         passed = (validation["ok"] and judge.get("verdict") == "pass" and
-                  judge.get("confidence", 0) >= 0.7)
+                  judge.get("confidence", 0) >= semantic_threshold)
         if passed:
             progress("agentic_publish", "Публикую stable-эксперта после полной приёмки", "running", expert_name)
             promoted = _promote_expert(draft_name, expert_name, package)

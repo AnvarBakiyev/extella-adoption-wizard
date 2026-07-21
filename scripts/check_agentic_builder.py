@@ -128,16 +128,16 @@ def main():
         escaped = code.replace("return {}", "return list(Path.home().rglob('*.xlsx'))")
         assert any("Path.home(" in x for x in mod._validate_code("pc_run_process", escaped, package))
 
-        # Responses API может завершить только reasoning и не выполнить tool-action. Харнесс обязан
-        # запросить строгий code-artifact, проверить его и сам сохранить запись эксперта.
+        # Быстрый путь — один code-artifact ответ, validation и контролируемый API-save. Responses API
+        # reasoning не должен победить финальный message. Нативный tool-action остаётся только fallback.
         original_post = mod._post_agent
         original_get = mod._get_scoped_expert
         original_api = mod.api
         fallback_calls, saved_experts = [], []
 
-        def reasoning_then_artifact(_agent, payload, **_kwargs):
+        def artifact_first(_agent, payload, **_kwargs):
             fallback_calls.append(payload["input"])
-            if payload["input"].startswith("РЕЖИМ ВОССТАНОВЛЕНИЯ АРТЕФАКТА"):
+            if payload["input"].startswith("РЕЖИМ CODE-ARTIFACT"):
                 artifact = json.dumps({"code": code, "description": "Проверенный тестовый эксперт"},
                                       ensure_ascii=False)
                 return {"status": "completed", "output": [
@@ -146,8 +146,7 @@ def main():
                     {"type": "message", "content": [
                         {"type": "output_text", "text": artifact}]},
                 ]}
-            return {"status": "completed", "output": [{"type": "reasoning", "content": [
-                {"type": "reasoning_text", "text": "Let me analyze, but no tool action was emitted"}]}]}
+            raise AssertionError("native action must not run when code-artifact is valid")
 
         def fallback_api(path, body, **_kwargs):
             if path == "/api/expert/get":
@@ -157,14 +156,32 @@ def main():
                 return {"status": "success", "id": "saved"}
             return {}
 
-        mod._post_agent = reasoning_then_artifact
+        mod._post_agent = artifact_first
         mod._get_scoped_expert = lambda *_args, **_kwargs: {}
         mod.api = fallback_api
         recovered = mod._create_or_update("pc_run_process", package, "", {"agent_id": "agent_test"})
         assert recovered["ok"] is True, recovered
-        assert len(fallback_calls) == 2 and fallback_calls[1].startswith("РЕЖИМ ВОССТАНОВЛЕНИЯ")
+        assert len(fallback_calls) == 1 and fallback_calls[0].startswith("РЕЖИМ CODE-ARTIFACT")
+        assert recovered["generation_path"] == "code_artifact"
         assert saved_experts and saved_experts[0]["name"] == "pc_run_process"
         assert saved_experts[0]["code"] == code
+
+        # Если провайдер не соблюдает JSON-контракт, один нативный action-fallback всё ещё разрешён.
+        native = {"called": False}
+
+        def invalid_artifact_then_native(_agent, payload, **_kwargs):
+            if payload["input"].startswith("РЕЖИМ CODE-ARTIFACT"):
+                return {"status": "completed", "output_text": "не JSON"}
+            native["called"] = True
+            return {"status": "completed", "output_text": "эксперт сохранён"}
+
+        mod._post_agent = invalid_artifact_then_native
+        mod._get_scoped_expert = lambda *_args, **_kwargs: (
+            {"expert_code": code, "description": "Нативный fallback"} if native["called"] else {})
+        recovered_native = mod._create_or_update(
+            "pc_run_process", package, "", {"agent_id": "agent_test"})
+        assert recovered_native["ok"] is True and native["called"], recovered_native
+        assert recovered_native["generation_path"] == "native_action_fallback"
         mod._post_agent = original_post
         mod._get_scoped_expert = original_get
         mod.api = original_api
@@ -219,7 +236,7 @@ def main():
         assert promotions and promotions[0][1] == "pc_run_process" and "__draft_" in promotions[0][0]
         assert deletions and deletions[0][0] == promotions[0][0]
         assert any(event[0] == "agentic_accept" and event[2] == "success" for event in events)
-        assert any("Создаю draft-эксперта" in event[1] for event in events)
+        assert any("code-artifact draft-эксперта" in event[1] for event in events)
         assert any("run_expert" in event[1] for event in events)
         assert any("Stable-эксперт опубликован" in event[1] for event in events)
         assert built["verified_memory"] and all(x["status"] == "verified" for x in built["verified_memory"])
@@ -235,6 +252,40 @@ def main():
         assert failed["expert_ran"] is True and failed["verified_memory"] == []
         assert all(x.get("status") != "verified" or x.get("source") == "owner"
                    for x in failed["working_memory"]["entries"])
+
+        # Внутренний Строитель и внешний UPC обязаны применять один minimum_confidence. Раньше
+        # Строитель публиковал stable при 0.85, после чего UPC с порогом 0.90 отвергал тот же шаг.
+        runs[:] = [result, result, result]
+        promotions.clear(); deletions.clear()
+        mod.judge_result = lambda *a, **k: {"verdict": "pass", "confidence": 0.85,
+                                            "issues": [], "owner_question": ""}
+        strict = mod.build_agentic_solution(
+            sid, "build_strict_semantic", "pc", [xlsx, pdf], root, root,
+            {"agent_id": "agent_test"}, progress=lambda *args: None,
+            max_creation_attempts=1, max_acceptance_repairs=2, max_total_attempts=3,
+            step_contract={"id": "quality", "title": "Смысловая проверка", "version": 1,
+                           "acceptance": {"required_artifacts": ["report_md", "report_xlsx"],
+                                          "semantic_criteria": ["результат соответствует смыслу"],
+                                          "minimum_confidence": 0.90}})
+        assert strict["ok"] is False and promotions == [], strict
+        assert all((row.get("judge") or {}).get("confidence") == 0.85
+                   for row in strict["attempts"] if row.get("judge")), strict["attempts"]
+
+        # Полностью детерминированный контракт не оплачивает и не ждёт второго Qwen-судью.
+        runs[:] = [result]
+        promotions.clear(); deletions.clear()
+        mod.judge_result = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("deterministic step must not call semantic judge"))
+        deterministic = mod.build_agentic_solution(
+            sid, "build_deterministic_fast", "pc", [xlsx, pdf], root, root,
+            {"agent_id": "agent_test"}, progress=lambda *args: None,
+            max_creation_attempts=1, max_total_attempts=3,
+            step_contract={"id": "files", "title": "Проверка файлов", "version": 1,
+                           "acceptance": {"required_artifacts": ["report_md", "report_xlsx"],
+                                          "deterministic_checks": ["оба файла обработаны"],
+                                          "semantic_criteria": [], "minimum_confidence": 0.99}})
+        assert deterministic["ok"] is True and promotions, deterministic
+        assert deterministic["judge"]["source"] == "deterministic_contract"
 
     source = BUILD.read_text(encoding="utf-8")
     assert "prepared = prepare_task_context(" in source
