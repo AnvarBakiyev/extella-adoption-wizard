@@ -1191,13 +1191,28 @@ def _post_agent(agent_id, payload, timeout=700):
 
 
 def _agent_text(response):
-    text = ""
+    """Текст Responses API: финальный message приоритетнее внутреннего reasoning.
+
+    Некоторые Qwen-compatible провайдеры возвращают только ``reasoning_text`` даже при
+    ``status=completed``. Это не доказательство выполненного действия, но такой текст нужен
+    JSON-fallback-у и для короткой диагностики вместо печати всего envelope в интерфейс.
+    """
+    final, reasoning = [], []
     for item in (response or {}).get("output", []):
-        if isinstance(item, dict) and item.get("type") == "message":
-            for content in item.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "output_text":
-                    text += str(content.get("text") or "")
-    return text or str((response or {}).get("output_text") or "")
+        if not isinstance(item, dict):
+            continue
+        bucket = final if item.get("type") == "message" else reasoning
+        for content in item.get("content", []):
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in ("output_text", "text") and item.get("type") == "message":
+                bucket.append(str(content.get("text") or ""))
+            elif content.get("type") == "reasoning_text":
+                reasoning.append(str(content.get("text") or ""))
+    direct = (response or {}).get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        final.append(direct)
+    return "".join(final).strip() or "".join(reasoning).strip()
 
 
 def _json_object(text):
@@ -1322,6 +1337,21 @@ BUILD_BRIEF:
 {brief_json}{step_directive}{repair}"""
 
 
+def _code_artifact_prompt(build_prompt, expert_name):
+    """Переключить Строителя из tool-action в детерминированный code-artifact контракт.
+
+    Нативное действие остаётся первым путём. Этот контракт используется, когда модель
+    рассуждала, но не создала запись эксперта: код возвращается харнессу, затем проходит
+    тот же валидатор и сохраняется только через контролируемый ``/api/expert/save``.
+    """
+    return ("РЕЖИМ ВОССТАНОВЛЕНИЯ АРТЕФАКТА. Предыдущее рассуждение не создало эксперта. "
+            "Не вызывай действия платформы и не объясняй ход мысли. На основании полной спецификации ниже "
+            "верни РОВНО один JSON-объект без markdown: "
+            '{"code":"<полный исходный код>","description":"<назначение эксперта>"}. '
+            "Поле code обязано содержать ровно одну top-level функцию с именем " + expert_name +
+            ". Не сокращай код и не используй многоточия.\n\nПОЛНАЯ СПЕЦИФИКАЦИЯ:\n" + build_prompt)
+
+
 def _sample_literals(task_package):
     """Отличительные значения СТРОК образца, которым запрещено просачиваться в исходник решения."""
     values = set()
@@ -1406,7 +1436,18 @@ def _create_or_update(expert_name, task_package, feedback, llm):
         if not found or not (found.get("expert_code") or found.get("code")):
             found = api("/api/expert/get", {"name": expert_name, "global": True}, timeout=70)
         if not found or not (found.get("expert_code") or found.get("code")):
-            return {"ok": False, "why": "Qwen не сохранила эксперта: " + _clip(run, 500)}
+            # Responses API иногда завершает только reasoning без tool-action. Один ограниченный
+            # code-artifact fallback убирает случайность: Qwen пишет код, харнесс валидирует и сам
+            # сохраняет эксперта. Это всё ещё одна попытка шага, а не скрытый переход к соседним шагам.
+            spec = _llm_json(llm, _code_artifact_prompt(prompt, expert_name),
+                             max_tokens=9000, timeout=700)
+            found = {"expert_code": str((spec or {}).get("code") or ""),
+                     "description": str((spec or {}).get("description") or "")}
+            if not found["expert_code"]:
+                response_kind = "reasoning без действия" if _agent_text(run) else \
+                                str((run or {}).get("status") or "пустой ответ")
+                return {"ok": False, "why": ("Qwen не создала запись эксперта и не вернула "
+                                               "исполняемый code-artifact (" + response_kind + ")")}
     code = str(found.get("expert_code") or found.get("code") or "")
     issues = _validate_code(expert_name, code, task_package)
     if issues:

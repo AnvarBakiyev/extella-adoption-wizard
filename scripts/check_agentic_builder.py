@@ -128,6 +128,47 @@ def main():
         escaped = code.replace("return {}", "return list(Path.home().rglob('*.xlsx'))")
         assert any("Path.home(" in x for x in mod._validate_code("pc_run_process", escaped, package))
 
+        # Responses API может завершить только reasoning и не выполнить tool-action. Харнесс обязан
+        # запросить строгий code-artifact, проверить его и сам сохранить запись эксперта.
+        original_post = mod._post_agent
+        original_get = mod._get_scoped_expert
+        original_api = mod.api
+        fallback_calls, saved_experts = [], []
+
+        def reasoning_then_artifact(_agent, payload, **_kwargs):
+            fallback_calls.append(payload["input"])
+            if payload["input"].startswith("РЕЖИМ ВОССТАНОВЛЕНИЯ АРТЕФАКТА"):
+                artifact = json.dumps({"code": code, "description": "Проверенный тестовый эксперт"},
+                                      ensure_ascii=False)
+                return {"status": "completed", "output": [
+                    {"type": "reasoning", "content": [
+                        {"type": "reasoning_text", "text": "внутренний анализ не является ответом"}]},
+                    {"type": "message", "content": [
+                        {"type": "output_text", "text": artifact}]},
+                ]}
+            return {"status": "completed", "output": [{"type": "reasoning", "content": [
+                {"type": "reasoning_text", "text": "Let me analyze, but no tool action was emitted"}]}]}
+
+        def fallback_api(path, body, **_kwargs):
+            if path == "/api/expert/get":
+                return {}
+            if path == "/api/expert/save":
+                saved_experts.append(body)
+                return {"status": "success", "id": "saved"}
+            return {}
+
+        mod._post_agent = reasoning_then_artifact
+        mod._get_scoped_expert = lambda *_args, **_kwargs: {}
+        mod.api = fallback_api
+        recovered = mod._create_or_update("pc_run_process", package, "", {"agent_id": "agent_test"})
+        assert recovered["ok"] is True, recovered
+        assert len(fallback_calls) == 2 and fallback_calls[1].startswith("РЕЖИМ ВОССТАНОВЛЕНИЯ")
+        assert saved_experts and saved_experts[0]["name"] == "pc_run_process"
+        assert saved_experts[0]["code"] == code
+        mod._post_agent = original_post
+        mod._get_scoped_expert = original_get
+        mod.api = original_api
+
         def ready_source(pkg, llm, max_tries=2):
             sources = []
             for p in pkg["inputs"]:
