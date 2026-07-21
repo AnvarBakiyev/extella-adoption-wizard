@@ -90,7 +90,7 @@ def main():
     @check("мост запущен на ожидаемой UPC-версии")
     def _():
         d = call("/x/health")
-        return d.get("version") == "5.10", "версия: %s" % d.get("version")
+        return d.get("version") == "5.11", "версия: %s" % d.get("version")
 
     print("\nUniversal Process API")
     UPC_SID = "wz_smoke_upc_" + uuid.uuid4().hex[:12]

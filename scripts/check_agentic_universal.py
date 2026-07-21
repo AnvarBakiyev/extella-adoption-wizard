@@ -82,6 +82,19 @@ def assert_matrix(mod):
                   "Отфильтровать записи и агрегировать сумму")
     valid_one = source_for(one, strategy="build", operation="filter and aggregate")
     assert mod._normalize_source_model(valid_one, one)["ok"]
+    # JSON-mode drift is repaired only when the remaining body is already complete and then still
+    # passes every deterministic source/operation/evidence check.
+    missing_contract_fields = json.loads(json.dumps(valid_one))
+    missing_contract_fields.pop("status")
+    missing_contract_fields.pop("strategy")
+    inferred = mod._normalize_source_model(missing_contract_fields, one)
+    assert inferred["ok"] and inferred["model"]["status"] == "ready"
+    assert "status:<missing>→ready" in inferred["model"]["contract_repairs"]
+    wrapped = mod._normalize_source_model({"source_model": valid_one}, one)
+    assert wrapped["ok"] and "unwrapped:source_model" in wrapped["model"]["contract_repairs"]
+    assert mod._normalize_source_model({"reason": "без контракта"}, one)["ok"] is False
+    nonsense = json.loads(json.dumps(valid_one)); nonsense["status"] = "maybe"
+    assert mod._normalize_source_model(nonsense, one)["ok"] is False
     # Невалидная первая модель не проходит молча: второй вызов получает точную ошибку валидатора.
     prompts = []
     invalid_one = json.loads(json.dumps(valid_one)); invalid_one["sources"][0]["role"] = ""

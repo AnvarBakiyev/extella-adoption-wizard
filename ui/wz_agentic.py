@@ -711,12 +711,50 @@ def _normalize_source_model(raw, package):
     """Fail-closed контракт Source Model: только фактические файлы/листы и доказанные операции."""
     if not isinstance(raw, dict):
         return {"ok": False, "why": "Qwen не вернула объект Source Model"}
+    raw = dict(raw)
+    contract_repairs = []
+    # Some Qwen-compatible endpoints wrap the requested object even with JSON mode enabled. The
+    # nested object still goes through every deterministic identity/evidence/operation check below.
+    if not any(key in raw for key in ("sources", "operations", "strategy", "question")):
+        for wrapper in ("source_model", "model", "result"):
+            nested = raw.get(wrapper)
+            if isinstance(nested, dict) and any(
+                    key in nested for key in ("sources", "operations", "strategy", "question")):
+                raw = dict(nested)
+                contract_repairs.append("unwrapped:" + wrapper)
+                break
     status = str(raw.get("status") or "").lower()
     strategy = str(raw.get("strategy") or "").lower()
+    question_hint = str(raw.get("question") or "").strip()
+    missing_hint = str(raw.get("missing_capability") or "").strip()
+    has_model_body = (isinstance(raw.get("sources"), list) and bool(raw.get("sources")) and
+                      isinstance(raw.get("operations"), list) and bool(raw.get("operations")))
+    if status in ("ok", "success", "complete", "completed") and has_model_body:
+        status = "ready"
+        contract_repairs.append("status:" + str(raw.get("status")) + "→ready")
+    if not status:
+        if strategy == "acquire" or (missing_hint and question_hint):
+            status = "acquire"
+        elif strategy == "need_human" or (question_hint and not has_model_body):
+            status = "need_human"
+        elif has_model_body:
+            status = "ready"
+        if status:
+            contract_repairs.append("status:<missing>→" + status)
+    if strategy in ("generate", "create", "code"):
+        strategy = "build"
+        contract_repairs.append("strategy:" + str(raw.get("strategy")) + "→build")
+    if not strategy:
+        if status in ("need_human", "acquire"):
+            strategy = status
+        elif status == "ready" and has_model_body:
+            strategy = "build"
+        if strategy:
+            contract_repairs.append("strategy:<missing>→" + strategy)
     if status not in SOURCE_STATUSES:
-        return {"ok": False, "why": "неизвестный status Source Model: " + status}
+        return {"ok": False, "why": "неизвестный status Source Model: " + (status or "<missing>")}
     if strategy not in BUILD_STRATEGIES:
-        return {"ok": False, "why": "неизвестная strategy Source Model: " + strategy}
+        return {"ok": False, "why": "неизвестная strategy Source Model: " + (strategy or "<missing>")}
     if status == "ready" and strategy in ("acquire", "need_human"):
         return {"ok": False, "why": "ready несовместим со strategy=" + strategy}
     if status == "need_human" and strategy != "need_human":
@@ -879,7 +917,8 @@ def _normalize_source_model(raw, package):
              "operations": operations,
              "acceptance_criteria": criteria,
              "selected_capabilities": selected,
-             "missing_capability": missing_capability, "question": question}
+             "missing_capability": missing_capability, "question": question,
+             "contract_repairs": contract_repairs}
     body = json.dumps(model, ensure_ascii=False, sort_keys=True, default=str)
     model["sha256"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return {"ok": True, "model": model}
