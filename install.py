@@ -69,6 +69,9 @@ for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
     except Exception as e:
         print("  ❌ " + name + " — " + str(e)[:80]); fail += 1
 print(f"  Итог: сохранено {ok}, ошибок {fail}")
+if fail:
+    print("  Установка остановлена: обязательные эксперты сохранились не полностью.")
+    sys.exit(2)
 
 # проверка ключевого эксперта
 try:

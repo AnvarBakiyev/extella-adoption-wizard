@@ -128,6 +128,11 @@ python3 scripts/check_blueprint_atomicity.py \
   && echo "   ✓ неполный blueprint не выглядит готовым и не открывает стройку" \
   || { echo "   ✗ формальный success снова может маскировать отсутствие плана"; fail=1; }
 
+echo "→ runtime эксперта плана"
+python3 scripts/check_blueprint_expert_runtime.py \
+  && echo "   ✓ prompt строится и blueprint действительно записывается" \
+  || { echo "   ✗ эксперт плана компилируется, но падает до сохранения результата"; fail=1; }
+
 echo "→ маршрутизация локальных экспертов"
 python3 scripts/check_local_expert_routing.py \
   && echo "   ✓ сессия/план/ТЗ исполняются на устройстве открытого Wizard" \

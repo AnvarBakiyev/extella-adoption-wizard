@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.05"
+EXPECTED_VERSION="5.06"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 PY="$(command -v python3.12 || command -v python3 || true)"
@@ -37,6 +37,7 @@ fi
 
 echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" -m py_compile "$SRC"/ui/*.py
+"$PY" "$SRC/scripts/check_blueprint_expert_runtime.py"
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
 # падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
 # повторяем проверку лишь когда бинарник реально запускается.
@@ -63,7 +64,10 @@ done
 cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
 echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
-echo "  ✓ эксперты, концепты и правила не переустанавливались"
+
+echo "→ Обновляю только исправленный эксперт плана"
+EXTELLA_DELTA_FILES="experts/wz_generate_blueprint.py" "$PY" "$SRC/install.py"
+echo "  ✓ wz_generate_blueprint обновлён; остальные эксперты, концепты и правила не переустанавливались"
 
 echo "→ Перезапускаю только мост Wizard"
 if launchctl print "gui/$(id -u)/ai.extella.wizard-bridge" >/dev/null 2>&1; then
