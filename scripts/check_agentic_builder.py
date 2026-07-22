@@ -128,25 +128,20 @@ def main():
         escaped = code.replace("return {}", "return list(Path.home().rglob('*.xlsx'))")
         assert any("Path.home(" in x for x in mod._validate_code("pc_run_process", escaped, package))
 
-        # Быстрый путь — один code-artifact ответ, validation и контролируемый API-save. Responses API
-        # reasoning не должен победить финальный message. Нативный tool-action остаётся только fallback.
+        # Быстрый платформенный путь совпадает с Chat: одно нативное действие создания эксперта.
+        # JSON code-artifact остаётся контролируемым fallback, а не вторым обязательным кругом.
         original_post = mod._post_agent
         original_get = mod._get_scoped_expert
         original_api = mod.api
         fallback_calls, saved_experts = [], []
 
-        def artifact_first(_agent, payload, **_kwargs):
+        native_created = {"value": False}
+
+        def native_first(_agent, payload, **_kwargs):
             fallback_calls.append(payload["input"])
-            if payload["input"].startswith("РЕЖИМ CODE-ARTIFACT"):
-                artifact = json.dumps({"code": code, "description": "Проверенный тестовый эксперт"},
-                                      ensure_ascii=False)
-                return {"status": "completed", "output": [
-                    {"type": "reasoning", "content": [
-                        {"type": "reasoning_text", "text": "внутренний анализ не является ответом"}]},
-                    {"type": "message", "content": [
-                        {"type": "output_text", "text": artifact}]},
-                ]}
-            raise AssertionError("native action must not run when code-artifact is valid")
+            assert not payload["input"].startswith("РЕЖИМ CODE-ARTIFACT")
+            native_created["value"] = True
+            return {"status": "completed", "output_text": "эксперт создан"}
 
         def fallback_api(path, body, **_kwargs):
             if path == "/api/expert/get":
@@ -156,32 +151,35 @@ def main():
                 return {"status": "success", "id": "saved"}
             return {}
 
-        mod._post_agent = artifact_first
-        mod._get_scoped_expert = lambda *_args, **_kwargs: {}
+        mod._post_agent = native_first
+        mod._get_scoped_expert = lambda *_args, **_kwargs: (
+            {"expert_code": code, "description": "Проверенный тестовый эксперт"}
+            if native_created["value"] else {})
         mod.api = fallback_api
         recovered = mod._create_or_update("pc_run_process", package, "", {"agent_id": "agent_test"})
         assert recovered["ok"] is True, recovered
-        assert len(fallback_calls) == 1 and fallback_calls[0].startswith("РЕЖИМ CODE-ARTIFACT")
-        assert recovered["generation_path"] == "code_artifact"
+        assert len(fallback_calls) == 1 and not fallback_calls[0].startswith("РЕЖИМ CODE-ARTIFACT")
+        assert recovered["generation_path"] == "native_action"
         assert saved_experts and saved_experts[0]["name"] == "pc_run_process"
         assert saved_experts[0]["code"] == code
 
-        # Если провайдер не соблюдает JSON-контракт, один нативный action-fallback всё ещё разрешён.
+        # Если нативное действие не сохранило эксперта, один code-artifact fallback разрешён.
         native = {"called": False}
 
-        def invalid_artifact_then_native(_agent, payload, **_kwargs):
+        def invalid_native_then_artifact(_agent, payload, **_kwargs):
             if payload["input"].startswith("РЕЖИМ CODE-ARTIFACT"):
-                return {"status": "completed", "output_text": "не JSON"}
+                artifact = json.dumps({"code": code, "description": "Artifact fallback"},
+                                      ensure_ascii=False)
+                return {"status": "completed", "output_text": artifact}
             native["called"] = True
-            return {"status": "completed", "output_text": "эксперт сохранён"}
+            return {"status": "completed", "output_text": "reasoning only"}
 
-        mod._post_agent = invalid_artifact_then_native
-        mod._get_scoped_expert = lambda *_args, **_kwargs: (
-            {"expert_code": code, "description": "Нативный fallback"} if native["called"] else {})
+        mod._post_agent = invalid_native_then_artifact
+        mod._get_scoped_expert = lambda *_args, **_kwargs: {}
         recovered_native = mod._create_or_update(
             "pc_run_process", package, "", {"agent_id": "agent_test"})
         assert recovered_native["ok"] is True and native["called"], recovered_native
-        assert recovered_native["generation_path"] == "native_action_fallback"
+        assert recovered_native["generation_path"] == "code_artifact_fallback"
         mod._post_agent = original_post
         mod._get_scoped_expert = original_get
         mod.api = original_api

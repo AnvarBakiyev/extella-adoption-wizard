@@ -5,6 +5,7 @@
 а не стабильность внешнего провайдера или конкретные слова одной отрасли.
 """
 import importlib.util
+import copy
 import json
 import sys
 import tempfile
@@ -526,6 +527,52 @@ def transient_retry_reuses_draft_once(mod, root, inp, good):
     assert "не меняй выбор входов" in repair_prompt and code.strip() in repair_prompt
 
 
+def scoped_step_context_is_local_and_zero_llm(mod, root):
+    """A child sees its file plus the global manifest, but never reruns Source Model Qwen."""
+    pdf = root / "document.pdf"; pdf.write_text("Document id A-1", encoding="utf-8")
+    table = root / "table.xlsx"; table.write_text("synthetic", encoding="utf-8")
+    profiles = [
+        {"name": pdf.name, "extension": ".pdf", "bytes": pdf.stat().st_size,
+         "sha256": mod._sha256(pdf), "text_sample": "Document id A-1", "text_source": "fixture"},
+        {"name": table.name, "extension": ".xlsx", "bytes": table.stat().st_size,
+         "sha256": mod._sha256(table), "columns": ["id", "amount"], "sample_rows": [["id", "amount"]]},
+    ]
+    pkg = package(profiles, "Compare the document with the table")
+    root_model = mod._normalize_source_model(source_for(pkg, operation="compare sources"), pkg)
+    assert root_model["ok"]
+    pkg["source_model"] = root_model["model"]
+    prepared = {"ok": True, "package": pkg, "source_model": root_model["model"],
+                "source_memory_ids": []}
+    calls = []
+    original = mod._llm_json
+    mod._llm_json = lambda *a, **k: calls.append(True) or {}
+    step = {"id": "pdf_partition", "version": 1, "title": "Read PDF",
+            "purpose": "Extract canonical facts only", "execution_role": "data",
+            "input_contract": {"scope": "map_partition", "source_refs": [str(pdf)],
+                               "parent_business_goal": "Compare the document with the table"},
+            "output_contract": {"artifacts": ["source_facts.json"]},
+            "acceptance": {"required_artifacts": ["source_facts.json"], "semantic_criteria": []}}
+    derived = mod.derive_step_context(prepared, [pdf], step)
+    mod._llm_json = original
+    assert derived["ok"] and derived["derived"] and derived["llm_calls"] == 0 and not calls
+    local_pkg = derived["package"]
+    assert [x["name"] for x in local_pkg["inputs"]] == [pdf.name]
+    contract = local_pkg["task_contract"]
+    assert contract["upc_scope"] == "map_partition" and len(contract["inputs"]) == 1
+    assert len(contract["process_inputs"]) == 2
+    assert "канонические факты" in derived["source_model"]["operations"][0]["name"]
+    gate = mod.owner_question_gate(
+        local_pkg, "Only one PDF is present. Please provide the two Excel files required for comparison.")
+    assert not gate["ask"] and gate["classification"] == "partition_contract_defect"
+    genuine = mod.owner_question_gate(local_pkg, "Какое бизнес-правило применять к записи без даты?")
+    assert genuine["ask"] and genuine["classification"] == "business_ambiguity"
+
+    runtime_pkg = copy.deepcopy(local_pkg)
+    runtime_pkg["upc_step"] = {"execution_role": "runtime_setup", "input_contract": {"scope": "runtime_config"}}
+    runtime_gate = mod.owner_question_gate(runtime_pkg, "Please attach the original Excel input")
+    assert not runtime_gate["ask"] and runtime_gate["classification"] == "runtime_context_defect"
+
+
 def main():
     mod = load_module()
     assert_matrix(mod)
@@ -537,6 +584,7 @@ def main():
         repair_and_memory(mod, root, inp, good, bad)
         adaptive_gulzhan_timeout(mod, root)
         transient_retry_reuses_draft_once(mod, root, inp, good)
+        scoped_step_context_is_local_and_zero_llm(mod, root)
     print("универсальная матрица: 15 классов + adaptive timeout/split + transient retry + repair budget + память + fail-closed stops ✓")
 
 

@@ -11,12 +11,13 @@ sys.path.insert(0, str(ROOT / "ui"))
 from wz_process import (  # noqa: E402
     STEP_RESULT_SCHEMA, accept_step, adaptive_failure_decision, answer_human,
     assess_reuse_compatibility, block_for_human, checkpoint,
-    budget_preflight, grant_step_budget, is_budget_gate, memory_entry, normalize_step_result,
+    budget_preflight, grant_step_budget, is_budget_gate, make_step, memory_entry, normalize_step_result,
     expand_failure_subgraph, input_fingerprint,
     permission_preflight, process_from_blueprint,
     project_runtime_contract,
     process_status, ready_steps, reconcile_checkpoints, record_approval, recover_after_restart, repair_step,
-    record_usage, step_map, transition_step, validate_process,
+    record_usage, step_contract_fingerprint, step_map, transition_step, upgrade_process_graph,
+    validate_process,
 )
 
 
@@ -273,6 +274,47 @@ def test_failure_driven_decomposition_is_bounded_and_resumable():
         raise AssertionError("same failure split must not loop")
 
 
+def test_failure_children_extract_local_facts_and_merge_global_goal():
+    graph = process_from_blueprint("scoped", {"process_name": "Mixed", "goal": "Reconcile sources",
+        "stages": [{"id": "root", "title": "Reconcile all inputs"}]})
+    root = step_map(graph)["root"]
+    transition_step(graph, "root", "running")
+    decision = {"failure_class": "workload_timeout", "action": "split_step",
+                "evidence": ["mixed input workload"], "owner_question": ""}
+    sources = [{"path": "/tmp/document.pdf", "name": "document.pdf", "format": "pdf"},
+               {"path": "/tmp/table.xlsx", "name": "table.xlsx", "format": "xlsx"}]
+    expansion = expand_failure_subgraph(graph, "root", sources=sources, failure=decision)
+    children = [step_map(graph)[sid] for sid in expansion["added"]]
+    maps = [x for x in children if (x.get("input_contract") or {}).get("scope") == "map_partition"]
+    merge = [x for x in children if (x.get("input_contract") or {}).get("scope") == "map_merge"]
+    assert len(maps) == 2 and len(merge) == 1
+    assert all("source_facts.json" in (x.get("acceptance") or {}).get("required_artifacts", []) for x in maps)
+    assert all(not (x.get("acceptance") or {}).get("semantic_criteria") for x in maps)
+    assert all("глобальное сопоставление" in x["purpose"] for x in maps)
+    assert "Reconcile all inputs" in merge[0]["purpose"]
+    assert len((maps[0].get("input_contract") or {}).get("process_source_manifest") or []) == 2
+
+
+def test_runtime_and_delivery_steps_never_partition_by_business_files():
+    graph = process_from_blueprint("roles", {"process_name": "Any process", "stages": [
+        {"id": "read", "title": "Read input"},
+        {"id": "schedule", "title": "Регулярный запуск по расписанию"},
+        {"id": "send", "title": "Доставка отчёта ответственным лицам"},
+    ]})
+    roles = {x["id"]: x.get("execution_role") for x in graph["steps"]}
+    assert roles == {"read": "data", "schedule": "runtime_setup", "send": "delivery"}
+    for sid in ("schedule", "send"):
+        step = step_map(graph)[sid]
+        transition_step(graph, sid, "running")
+        try:
+            expand_failure_subgraph(graph, sid, sources=[{"path": "/tmp/a.pdf", "format": "pdf"}],
+                                    failure={"failure_class": "workload_timeout", "action": "split_step"})
+        except ValueError as exc:
+            assert "cannot be partitioned" in str(exc)
+        else:
+            raise AssertionError("runtime wrapper was split by source format")
+
+
 def test_mixed_input_failure_recovers_through_children_and_checkpoint_resume():
     """Reproduce the failure shape, not Gulzhan's domain data: split, repair, resume, merge."""
     graph = process_from_blueprint("wz_mixed_recovery", {
@@ -386,6 +428,39 @@ def test_reuse_requires_semantic_compatibility():
                  "params": {"input": "transcript", "output": "dialogue tags"}}
     verdict = assess_reuse_compatibility(step, candidate)
     assert not verdict["ok"] and verdict["failure_class"] == "capability_mismatch"
+
+
+def test_inflight_graph_upgrade_preserves_proofs_and_unblocks_false_partition_question():
+    graph = process_from_blueprint("upgrade", {"process_name": "Mixed", "stages": [
+        {"id": "root", "title": "Сверить PDF и Excel"}]})
+    root = step_map(graph)["root"]
+    root.pop("execution_role", None)
+    root["status"] = "succeeded"
+    root["checkpoint"] = {
+        "schema": "upc-checkpoint/1.0", "step_id": "root", "step_version": 1,
+        "step_contract_sha256": "legacy", "checkpoint_sha256": "legacy",
+    }
+    child_spec = {
+        "id": "root_d1_batch_001", "title": "Обработать ограниченную партию 1 (pdf)",
+        "input_contract": {"required": True, "source_refs": ["/tmp/a.pdf"]},
+    }
+    child = make_step(child_spec, child_spec, 2)
+    child.pop("execution_role", None)
+    child["delegation"] = {"parent_step_id": "root", "depth": 1}
+    child["dependencies"] = ["root"]
+    child["status"] = "blocked_human"
+    child["human_gate"] = {"question": "Предоставьте второй Excel-файл"}
+    graph["steps"].append(child)
+    graph["edges"].append({"from": "root", "to": child["id"], "condition": "succeeded"})
+
+    upgraded = upgrade_process_graph(graph)
+
+    assert upgraded["changed"] and upgraded["unblocked"] == [child["id"]]
+    assert root["execution_role"] == "data"
+    assert root["checkpoint"]["step_contract_sha256"] == step_contract_fingerprint(root)
+    assert child["status"] == "ready" and child.get("human_gate") is None
+    assert child["input_contract"]["scope"] == "map_partition"
+    assert child["acceptance"]["semantic_criteria"] == []
 
 
 def test_checkpoint_invalidates_changed_input_and_descendants_only():

@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
 from wz_llm import run_llm_expert, design_agent, gen_panel_manifest, llm_transient_error
-from wz_agentic import build_agentic_solution, prepare_task_context, _builder_brief
+from wz_agentic import (build_agentic_solution, derive_step_context, prepare_task_context,
+                        _builder_brief)
 from wz_process import (accept_step as universal_accept_step,
                         assess_reuse_compatibility as universal_assess_reuse,
                         atomic_write_json,
@@ -25,13 +26,15 @@ from wz_process import (accept_step as universal_accept_step,
                         expand_failure_subgraph as universal_expand_failure_subgraph,
                         file_sha256 as universal_file_sha256,
                         input_fingerprint as universal_input_fingerprint,
+                        step_can_partition as universal_step_can_partition,
                         is_budget_gate as universal_is_budget_gate,
                         normalize_step_result, process_from_blueprint,
                         record_usage as universal_record_usage,
                         recover_after_restart as universal_recover_after_restart,
                         reconcile_checkpoints as universal_reconcile_checkpoints,
                         process_status as universal_process_status, ready_steps as universal_ready_steps,
-                        step_map as universal_step_map, transition_step as universal_transition_step)
+                        step_map as universal_step_map, transition_step as universal_transition_step,
+                        upgrade_process_graph as universal_upgrade_process_graph)
 
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
@@ -1733,6 +1736,12 @@ def _run_build(session_id, build_id):
                         })
             except Exception:
                 process_graph = candidate_graph
+        upgraded = universal_upgrade_process_graph(process_graph)
+        if upgraded.get("changed"):
+            process_checkpoint(process_graph, process_path, process_events_path, {
+                "type": "process_contract_upgraded", "changes": upgraded.get("changed"),
+                "unblocked": upgraded.get("unblocked"),
+            })
         process_graph["run"]["run_id"] = build_id
         process_graph["task_contract_ref"] = {"path": str(bdir / "task_contract.json"), "sha256": ""}
         process_graph["source_model_ref"] = {"path": str(bdir / "source_model.json"), "sha256": ""}
@@ -1924,15 +1933,46 @@ def _run_build(session_id, build_id):
 
             def input_files_for(step):
                 contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
+                role = str(step.get("execution_role") or "data")
+                deps = [str(x) for x in step.get("dependencies") or []]
+                by_id = universal_step_map(process_graph)
+
+                def envelope(kind, dependencies):
+                    target_dir = bdir / "process" / "runtime_inputs"
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    target = target_dir / (str(step.get("id")) + "_v" + str(step.get("version")) + ".json")
+                    doc = {
+                        "schema": "upc-runtime-envelope/1.0", "kind": kind,
+                        "step_id": step.get("id"), "execution_role": role,
+                        "configuration": {
+                            "source": _build_session.get("source") or {},
+                            "schedule": _build_session.get("schedule") or {},
+                            "delivery": _build_session.get("delivery") or {},
+                            "recipients": _build_session.get("recipients") or []},
+                        "dependencies": [{
+                            "step_id": dep_id, "version": (by_id.get(dep_id) or {}).get("version"),
+                            "status": (by_id.get(dep_id) or {}).get("status"),
+                            "output": (by_id.get(dep_id) or {}).get("output"),
+                            "artifacts": (by_id.get(dep_id) or {}).get("artifact_refs") or []}
+                            for dep_id in dependencies],
+                        "constraints": ["build validation is preview-only",
+                                        "do not inspect original business files in this step"],
+                    }
+                    target.write_text(json.dumps(doc, ensure_ascii=False, indent=2, default=str),
+                                      encoding="utf-8")
+                    return [target]
+
+                if role in ("runtime_setup", "delivery", "control"):
+                    # These nodes configure/preview the process around accepted data work. Feeding
+                    # them the original PDF/XLSX caused duplicate analysis and a second file split.
+                    return envelope("runtime_config", deps)
                 source_refs = [Path(str(x)) for x in (contract.get("source_refs") or []) if str(x)]
                 selected_sources = [x for x in source_refs if x.exists() and x.is_file()]
                 if selected_sources:
                     # Failure-driven map children must never silently receive the original full set.
                     return list(dict.fromkeys(selected_sources))
-                deps = [str(x) for x in step.get("dependencies") or []]
                 if not deps:
                     return list(sample_files)
-                by_id = universal_step_map(process_graph)
                 files = []
                 dependency_doc = {"schema": "upc-dependency-bundle/1.0",
                                   "step_id": step.get("id"), "dependencies": []}
@@ -2051,13 +2091,13 @@ def _run_build(session_id, build_id):
                     if int(budgets.get("max_total_attempts") or 0) > 0:
                         step_limit = min(step_limit, remaining_attempts)
                     if int(budgets.get("max_llm_calls") or 0) > 0:
-                        step_limit = min(step_limit, max(0, (remaining_calls - 1) // 2))
+                        step_limit = min(step_limit, max(0, remaining_calls // 2))
                     if int(budgets.get("max_total_tokens") or 0) > 0:
                         step_limit = min(step_limit, max(0, remaining_tokens // 24000))
                     if float(budgets.get("max_cost_usd") or 0) > 0 and rate > 0:
                         step_limit = min(step_limit, max(0, int(remaining_cost // (24 * rate))))
                     generated_reserve = 1 if mode in ("generate", "llm_worker", "delegate") else 0
-                    reserve = {"attempts": max(3, step_limit), "llm_calls": 1 + 2 * max(3, step_limit),
+                    reserve = {"attempts": max(3, step_limit), "llm_calls": 2 * max(3, step_limit),
                                "tokens": 24000 * max(3, step_limit),
                                "cost_usd": 24 * rate * max(3, step_limit),
                                "generated_experts": generated_reserve}
@@ -2089,14 +2129,20 @@ def _run_build(session_id, build_id):
                                       (attempt, total), "running" if state == "running" else state, detail)
 
                     step_contract = dict(step)
+                    step_contract["global_source_manifest"] = [
+                        {"name": Path(path).name, "path": str(path),
+                         "format": Path(path).suffix.casefold().lstrip(".") or "unknown",
+                         "sha256": universal_file_sha256(path)}
+                        for path in sample_files if Path(path).is_file()]
                     step_contract["process_memory"] = [
                         {k: row.get(k) for k in ("id", "kind", "text", "scope", "confidence",
                                                 "step_id", "step_version")}
                         for row in (process_graph.get("memory") or [])
                         if isinstance(row, dict) and row.get("status") == "verified"]
-                    step_context = prepare_task_context(
-                        session_id, step_files, SESS_DIR, llm, progress=source_progress,
-                        step_contract=step_contract)
+                    step_context = derive_step_context(prepared, step_files, step_contract)
+                    source_progress(1, 1, "success" if step_context.get("ok") else "failed",
+                                    "локальный вид выведен из общей Source Model без вызова Qwen"
+                                    if step_context.get("ok") else str(step_context.get("why") or "ошибка"))
                     if not step_context.get("ok"):
                         source = step_context.get("source_model") or {}
                         question = str(source.get("question") or "")
@@ -2145,7 +2191,10 @@ def _run_build(session_id, build_id):
                         1 for row in (solution.get("attempts") or [])
                         if isinstance(row, dict) and (row.get("validation") or {}).get("ok") and
                         (row.get("judge") or {}).get("source") != "deterministic_contract")
-                    llm_calls_used = max(1, attempt_count + judged_count + 1)
+                    # The process-level Source Model was paid once above.  Derived step contexts
+                    # are deterministic views and must not consume another imaginary LLM call.
+                    context_calls = int(step_context.get("llm_calls") or 0)
+                    llm_calls_used = max(0, attempt_count + judged_count + context_calls)
                     universal_record_usage(
                         process_graph, attempts=attempt_count, llm_calls=llm_calls_used,
                         tokens=llm_calls_used * 12000,
@@ -2159,7 +2208,8 @@ def _run_build(session_id, build_id):
                         step["attempts"] = solution.get("attempts") or []
                         step["error"] = {"code": solution.get("code") or "agentic_acceptance_failed",
                                          "message": detail}
-                        if solution.get("control_action") == "split_step":
+                        if (solution.get("control_action") == "split_step" and
+                                universal_step_can_partition(step)):
                             decision = solution.get("failure_decision") or {
                                 "failure_class": solution.get("failure_kind") or "no_progress",
                                 "action": "split_step", "evidence": [detail], "owner_question": ""}

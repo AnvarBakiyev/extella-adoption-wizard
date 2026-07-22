@@ -24,13 +24,14 @@ from pathlib import Path
 from wz_platform import BASE, CONFIG, api, qwen_agent, run_expert
 from wz_llm import design_agent
 try:
-    from wz_process import adaptive_failure_decision
+    from wz_process import adaptive_failure_decision, step_can_partition
 except ModuleNotFoundError:  # direct-file QA loaders do not add ui/ to sys.path
     _process_spec = importlib.util.spec_from_file_location(
         "wz_process", Path(__file__).with_name("wz_process.py"))
     _process_module = importlib.util.module_from_spec(_process_spec)
     _process_spec.loader.exec_module(_process_module)
     adaptive_failure_decision = _process_module.adaptive_failure_decision
+    step_can_partition = _process_module.step_can_partition
 
 
 EXPERT_KWARGS = {
@@ -611,6 +612,12 @@ def _builder_brief(task_package):
         "task_contract": p.get("task_contract"),
         "upc_step": p.get("upc_step"),
         "source_model": p.get("source_model"),
+        "process_source_context": {
+            "manifest": p.get("global_source_manifest"),
+            "accepted_source_model": p.get("global_source_model"),
+            "boundary": ("Это справочная модель всего процесса. Физически обрабатывай только "
+                         "input_profiles текущего шага; соседние источники принадлежат runtime."),
+        },
         "working_memory": p.get("working_memory"),
         "goal": {"process_name": p.get("client_name"), "original_request": p.get("original_request")},
         "owner_contract": {
@@ -1059,7 +1066,23 @@ def _apply_upc_step(package, step_contract):
         return package
     package["upc_step"] = _compact(step_contract)
     contract = copy.deepcopy(package.get("task_contract") or {})
+    input_contract = (step_contract.get("input_contract")
+                      if isinstance(step_contract.get("input_contract"), dict) else {})
+    scope = str(input_contract.get("scope") or "atomic_step")
+    global_inputs = copy.deepcopy(contract.get("inputs") or [])
+    local_inputs = [{"source_id": "source_%03d" % index,
+                     "name": _nfc(profile.get("name")), "format": profile.get("extension"),
+                     "bytes": profile.get("bytes"), "sha256": profile.get("sha256"),
+                     "profile": _contract_profile(profile)}
+                    for index, profile in enumerate(package.get("inputs") or [], 1)]
     contract["business_goal"] = str(step_contract.get("purpose") or step_contract.get("title") or "")
+    contract["process_business_goal"] = str(
+        input_contract.get("parent_business_goal") or contract.get("business_goal") or "")
+    contract["upc_scope"] = scope
+    contract["process_inputs"] = global_inputs
+    contract["inputs"] = local_inputs
+    contract["process_source_manifest"] = copy.deepcopy(
+        input_contract.get("process_source_manifest") or package.get("global_source_manifest") or [])
     acceptance = step_contract.get("acceptance") if isinstance(step_contract.get("acceptance"), dict) else {}
     output_contract = (step_contract.get("output_contract")
                        if isinstance(step_contract.get("output_contract"), dict) else {})
@@ -1088,6 +1111,8 @@ def _apply_upc_step(package, step_contract):
         "source_file": "file or dependency bundle selected by the UPC runtime",
         "output_dir": "isolated directory for this step version; inputs are immutable",
         "build_validation": "dangerous effects are preview-only while the expert is being accepted",
+        "scope": scope,
+        "siblings_managed_by_runtime": scope == "map_partition",
     }
     package["acceptance_contract"] = {
         "must_use_every_sample": not bool(step_contract.get("dependencies")),
@@ -1102,6 +1127,99 @@ def _apply_upc_step(package, step_contract):
     contract["sha256"] = hashlib.sha256(contract_raw.encode("utf-8")).hexdigest()
     package["task_contract"] = contract
     return _refresh_package(package)
+
+
+def _profile_for_local_path(path, root_profiles):
+    """Reuse the expensive root profile whenever content is already known."""
+    path = Path(str(path))
+    sha = _sha256(path) if path.is_file() else ""
+    by_sha = {str(x.get("sha256") or ""): x for x in root_profiles or [] if x.get("sha256")}
+    by_name = {_ref_key(x.get("name"), basename=True): x for x in root_profiles or [] if x.get("name")}
+    found = by_sha.get(sha) or by_name.get(_ref_key(path.name, basename=True))
+    return copy.deepcopy(found) if found else profile_file(path)
+
+
+def derive_step_context(prepared_context, sample_files, step_contract):
+    """Derive a per-step context from the one authoritative process Source Model.
+
+    Profiling and Source Model reasoning used to run again for every step.  Besides being slow, that
+    let a scoped PDF child reinterpret the whole Excel/PDF business task and ask the owner for files
+    assigned to sibling nodes.  A step now receives only its physical/dependency inputs, while the
+    global manifest remains visible as runtime-owned context.  No LLM call is needed for this view.
+    """
+    prepared_context = prepared_context if isinstance(prepared_context, dict) else {}
+    if not prepared_context.get("ok"):
+        return copy.deepcopy(prepared_context)
+    root_package = copy.deepcopy(prepared_context.get("package") or {})
+    root_profiles = list(root_package.get("inputs") or [])
+    global_inventory = _source_inventory(root_profiles)
+    root_package["global_source_manifest"] = [
+        {"source_id": row.get("id"), "name": row.get("name"), "format": row.get("format"),
+         "bytes": row.get("bytes"), "sha256": row.get("sha256")}
+        for row in global_inventory]
+    root_package["global_source_model"] = copy.deepcopy(prepared_context.get("source_model") or {})
+    try:
+        local_profiles = [_profile_for_local_path(path, root_profiles) for path in (sample_files or [])]
+    except Exception as exc:
+        return {"ok": False, "why": "не удалось профилировать вход шага: " + _clip(exc, 400),
+                "package": root_package,
+                "source_model": {"status": "error", "reason": _clip(exc, 400)},
+                "source_memory_ids": []}
+    root_package["inputs"] = local_profiles
+    root_package = _apply_upc_step(root_package, step_contract)
+    checked = _neutral_source_model(root_package, "derived from accepted process source model")
+    if not checked.get("ok"):
+        return {"ok": False, "why": checked.get("why") or "локальная Source Model не построена",
+                "package": root_package,
+                "source_model": {"status": "error", "reason": checked.get("why") or ""},
+                "source_memory_ids": []}
+    model = checked["model"]
+    scope = str((((step_contract or {}).get("input_contract") or {}).get("scope")) or "atomic_step")
+    model["strategy"] = "build"
+    model["reason"] = ("Локальный вид выведен из принятой глобальной Source Model; соседние входы "
+                       "принадлежат другим узлам runtime и не являются отсутствующими данными.")
+    model.setdefault("contract_repairs", []).append("derived:process_source_model→" + scope)
+    if scope == "map_partition":
+        ids = [str(row.get("source_id")) for row in model.get("sources") or [] if row.get("source_id")]
+        model["operations"] = [{
+            "name": "Извлечь и нормализовать канонические факты объявленной партии",
+            "inputs": ids, "join_keys": [], "normalizations": [],
+            "evidence": ["scoped source_refs и принятая глобальная Source Model"]}]
+        model["acceptance_criteria"] = [
+            "каждый локальный вход представлен фактами и provenance",
+            "глобальное сопоставление и итоговый вывод оставлены merge-шагу"]
+    body = json.dumps({k: v for k, v in model.items() if k != "sha256"},
+                      ensure_ascii=False, sort_keys=True, default=str)
+    model["sha256"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    root_package["source_model"] = model
+    items = _source_memory(model)
+    root_package["working_memory"] = _merge_memory(root_package.get("working_memory"), items)
+    _refresh_package(root_package)
+    return {"ok": True, "package": root_package, "source_model": model,
+            "source_memory_ids": [x.get("id") for x in items if x.get("id")],
+            "derived": True, "llm_calls": 0}
+
+
+def owner_question_gate(task_package, question):
+    """Allow owner interruption only for a genuine business choice, not a partition artefact."""
+    question = str(question or "").strip()
+    step = (task_package or {}).get("upc_step") if isinstance((task_package or {}).get("upc_step"), dict) else {}
+    contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
+    scope = str(contract.get("scope") or "")
+    role = str(step.get("execution_role") or "")
+    text = question.casefold()
+    asks_for_input = any(marker in text for marker in (
+        "provide", "attach", "upload", "missing file", "missing input", "which file",
+        "предостав", "прилож", "загруз", "не хватает файл", "отсутствует файл",
+        "какой файл", "где файл", "оба файла", "two excel", "два excel"))
+    if question and asks_for_input and scope == "map_partition":
+        return {"ask": False, "classification": "partition_contract_defect",
+                "reason": "соседние источники существуют в process manifest и принадлежат другим узлам"}
+    if question and asks_for_input and role in ("runtime_setup", "delivery", "control"):
+        return {"ask": False, "classification": "runtime_context_defect",
+                "reason": "служебный шаг не должен запрашивать исходные бизнес-файлы"}
+    return {"ask": bool(question), "classification": "business_ambiguity" if question else "none",
+            "reason": ""}
 
 
 def prepare_task_context(session_id, sample_files, sess_dir, llm, progress=None, step_contract=None):
@@ -1350,6 +1468,10 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
     if upc_step:
         required = ((task_package.get("acceptance_contract") or {}).get("required_artifacts") or
                     ["step_result_json"])
+        input_contract = (upc_step.get("input_contract")
+                          if isinstance(upc_step.get("input_contract"), dict) else {})
+        scope = str(input_contract.get("scope") or "atomic_step")
+        role = str(upc_step.get("execution_role") or "data")
         step_directive = ("\n\nЭТО ОДИН ШАГ UNIVERSAL PROCESS CONTRACT. Реализуй ТОЛЬКО upc_step из BUILD_BRIEF, "
                           "не всю конечную задачу и не соседние шаги. Выполни его input/output contract, "
                           "не расширяй permissions и верни наблюдаемые доказательства именно его acceptance. "
@@ -1359,6 +1481,17 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
                           "Всегда запиши в output_dir файл step_result.json с summary, output и evidence; верни его в "
                           "artifacts как kind=step_result_json. Дополнительные обязательные артефакты: " +
                           json.dumps(required, ensure_ascii=False) + ".")
+        if scope == "map_partition":
+            step_directive += (
+                "\nЭТО MAP-ПАРТИЦИЯ. Её единственная задача — прочитать локальные source_refs и вернуть "
+                "канонические факты с provenance. Отсутствие других файлов процесса ожидаемо: они существуют "
+                "в process_source_manifest, назначены соседним узлам и будут сведены merge-шагом. Не сравнивай "
+                "локальный PDF с отсутствующим здесь Excel, не делай глобальный бизнес-вывод и не проси "
+                "владельца приложить соседние файлы.")
+        if role in ("runtime_setup", "delivery", "control"):
+            step_directive += (
+                "\nЭТО СЛУЖЕБНЫЙ ШАГ. source_file содержит конфигурационный/dependency envelope, а не набор "
+                "сырых бизнес-данных. Проверяй только настройку/preview и не ищи PDF/XLSX исходного процесса.")
     repair = ""
     if feedback:
         action = str(feedback.get("required_next_action") or "") if isinstance(feedback, dict) else ""
@@ -1532,11 +1665,12 @@ def _get_scoped_expert(expert_name, agent_id):
 
 
 def _create_or_update(expert_name, task_package, feedback, llm):
-    """Один code-artifact вызов Qwen -> validation -> save; tool-action только fallback.
+    """Create one expert with the shortest platform-appropriate path.
 
-    В Chat эксперт создаётся быстро, потому что модель не ждёт второй оркестраторный круг. Здесь
-    делаем тот же основной путь детерминированным: Qwen возвращает код, а сохранение выполняет
-    харнесс. Нативное действие остаётся запасным путём для провайдеров без стабильного JSON-mode.
+    BYOC endpoints return a code artifact which the harness validates and saves.  The Extella Qwen
+    already has the native expert action used by Chat, so asking it for a long JSON code artifact
+    first only to fall back to the action doubled the wall time.  For that path the native action is
+    primary; deterministic code-artifact generation remains one bounded fallback.
     """
     started = time.monotonic()
     agent_id = llm.get("agent_id") or qwen_agent()
@@ -1561,24 +1695,26 @@ def _create_or_update(expert_name, task_package, feedback, llm):
         except Exception as exc:
             return {"ok": False, "why": "LLM не создала код: " + _clip(exc, 300)}
     else:
-        # Быстрый основной путь: один обычный ответ модели, как в Chat. Qwen не должна сама
-        # угадывать/вызывать действие создания — API-save ниже остаётся под контролем харнесса.
-        spec = _llm_json(llm, _code_artifact_prompt(prompt, expert_name),
-                         max_tokens=9000, timeout=360)
-        found = {"expert_code": str((spec or {}).get("code") or ""),
-                 "description": str((spec or {}).get("description") or "")}
+        generation_path = "native_action"
+        run = _post_agent(agent_id, {"agent_id": agent_id, "input": prompt, "run_timeout": 260,
+                                     "store": True, "max_output_tokens": 2200}, timeout=300)
+        found = _get_scoped_expert(expert_name, agent_id)
         if not found or not (found.get("expert_code") or found.get("code")):
-            generation_path = "native_action_fallback"
-            run = _post_agent(agent_id, {"agent_id": agent_id, "input": prompt, "run_timeout": 320,
-                                         "store": True, "max_output_tokens": 3000}, timeout=360)
-            found = _get_scoped_expert(expert_name, agent_id)
-            if not found or not (found.get("expert_code") or found.get("code")):
-                found = api("/api/expert/get", {"name": expert_name, "global": True}, timeout=70)
-            if not found or not (found.get("expert_code") or found.get("code")):
+            found = api("/api/expert/get", {"name": expert_name, "global": True}, timeout=70)
+        native_code = str((found or {}).get("expert_code") or (found or {}).get("code") or "")
+        native_issues = _validate_code(expert_name, native_code, task_package) if native_code else [
+            "нативное действие не сохранило code-artifact"]
+        if native_issues:
+            generation_path = "code_artifact_fallback"
+            spec = _llm_json(llm, _code_artifact_prompt(prompt, expert_name),
+                             max_tokens=9000, timeout=330)
+            found = {"expert_code": str((spec or {}).get("code") or ""),
+                     "description": str((spec or {}).get("description") or "")}
+            if not found.get("expert_code"):
                 response_kind = "reasoning без действия" if _agent_text(run) else \
                                 str((run or {}).get("status") or "пустой ответ")
-                return {"ok": False, "why": ("Qwen не вернула исполняемый code-artifact и не создала "
-                                               "запись эксперта запасным действием (" + response_kind + ")"),
+                return {"ok": False, "why": ("Qwen не создала эксперта нативным действием (" +
+                                               response_kind + ") и не вернула code-artifact"),
                         "generation_path": generation_path,
                         "generation_seconds": round(time.monotonic() - started, 1)}
     code = str(found.get("expert_code") or found.get("code") or "")
@@ -1982,7 +2118,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                 "issues": issues, "code_seen": duplicate_code, "strategy_seen": duplicate_strategy,
                 "input_count": len(sample_files),
                 "input_formats": sorted({Path(x).suffix.casefold() for x in sample_files}),
-                "can_split": bool(step_contract),
+                "can_split": bool(step_contract and step_can_partition(step_contract)),
             })
             controller_history.append(controller)
             last_controller = controller
@@ -2126,10 +2262,18 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             "input_count": len(sample_files), "input_formats": input_formats,
             "previous_classes": [x.get("failure_class") for x in controller_history if isinstance(x, dict)],
             "owner_question": owner_question,
-            "semantic_ambiguity": bool(validation.get("ok") and owner_question),
+            "semantic_ambiguity": bool(validation.get("ok") and owner_question and
+                                       owner_question_gate(package, owner_question).get("ask")),
             "semantic_failed": bool(validation.get("ok") and judge.get("verdict") == "fail"),
-            "can_split": bool(step_contract),
+            "can_split": bool(step_contract and step_can_partition(step_contract)),
         })
+        question_gate = owner_question_gate(package, owner_question)
+        if owner_question and not question_gate.get("ask"):
+            controller.setdefault("evidence", []).append(
+                "вопрос человеку подавлен как " + str(question_gate.get("classification") or "technical"))
+            rec["suppressed_owner_question"] = {
+                "question": owner_question, "classification": question_gate.get("classification"),
+                "reason": question_gate.get("reason")}
         controller_history.append(controller)
         last_controller = controller
         rec["controller"] = controller

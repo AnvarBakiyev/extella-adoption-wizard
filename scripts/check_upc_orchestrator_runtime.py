@@ -27,6 +27,7 @@ def load_build(saved):
     llm.llm_transient_error = lambda _result: False
     agentic = types.ModuleType("wz_agentic")
     agentic.build_agentic_solution = lambda *args, **kwargs: {}
+    agentic.derive_step_context = lambda prepared, *_args, **_kwargs: prepared
     agentic.prepare_task_context = lambda *args, **kwargs: {}
     agentic._builder_brief = lambda value: value
     sys.modules.update({"wz_platform": platform, "wz_llm": llm, "wz_agentic": agentic})

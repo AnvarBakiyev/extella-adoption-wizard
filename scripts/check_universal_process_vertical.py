@@ -42,6 +42,7 @@ def load_build(saved):
 
     agentic = types.ModuleType("wz_agentic")
     agentic.build_agentic_solution = lambda *_args, **_kwargs: {}
+    agentic.derive_step_context = lambda prepared, *_args, **_kwargs: prepared
     agentic.prepare_task_context = lambda *_args, **_kwargs: {}
     agentic._builder_brief = lambda value: value
     sys.modules.update({"wz_platform": platform, "wz_llm": llm, "wz_agentic": agentic})
@@ -190,8 +191,10 @@ def main():
         assert final_steps["collect"]["version"] == 1
         assert final_steps["transform"]["version"] == 2
         assert final["run"]["attempts_used"] == 4, final["run"]
-        assert final["run"]["llm_calls_used"] == 8, final["run"]
-        assert final["run"]["tokens_used"] == 96000, final["run"]
+        # One generation call per deterministic step; the global Source Model is built once
+        # outside this graph accounting and local step contexts no longer invent four extra calls.
+        assert final["run"]["llm_calls_used"] == 4, final["run"]
+        assert final["run"]["tokens_used"] == 48000, final["run"]
         assert final["run"]["estimated_cost_usd"] > 0, final["run"]
         assert any(x.get("kind") == "concept" and x.get("status") == "verified"
                    for x in final.get("memory") or []), final.get("memory")

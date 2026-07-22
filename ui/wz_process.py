@@ -112,8 +112,187 @@ def step_contract_fingerprint(step):
     step = step if isinstance(step, dict) else {}
     return _stable_hash({k: step.get(k) for k in (
         "id", "version", "purpose", "dependencies", "input_contract", "output_contract",
-        "implementation", "permissions", "acceptance", "retry_policy",
+        "implementation", "permissions", "acceptance", "retry_policy", "execution_role",
     )})
+
+
+def infer_execution_role(stage=None, task=None):
+    """Classify what a step *does* without tying the runtime to one business domain.
+
+    The planner may provide an explicit role.  Legacy plans did not, so a conservative fallback
+    separates data/reasoning work from runtime configuration and delivery.  The distinction is a
+    safety boundary: schedule/watch/send wrappers must never receive the original business files
+    or be decomposed into one child per PDF/XLSX.
+    """
+    stage = stage if isinstance(stage, dict) else {}
+    task = task if isinstance(task, dict) else {}
+    explicit = str(task.get("execution_role") or task.get("stage_role") or task.get("role") or
+                   stage.get("execution_role") or stage.get("stage_role") or stage.get("role") or "")
+    normalized = re.sub(r"[^a-z]+", "_", explicit.casefold()).strip("_")
+    aliases = {
+        "data": "data", "transform": "data", "extract": "data", "compute": "data",
+        "reason": "reasoning", "reasoning": "reasoning", "llm": "reasoning",
+        "merge": "integration", "join": "integration", "integration": "integration",
+        "schedule": "runtime_setup", "trigger": "runtime_setup", "runtime": "runtime_setup",
+        "runtime_setup": "runtime_setup", "watcher": "runtime_setup", "monitor": "runtime_setup",
+        "delivery": "delivery", "send": "delivery", "notify": "delivery",
+        "control": "control", "orchestrator": "control", "human": "human",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    mode = str(task.get("implementation_mode") or stage.get("implementation_mode") or "").casefold()
+    if mode == "human":
+        return "human"
+    permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+    permissions = permissions or (stage.get("permissions") if isinstance(stage.get("permissions"), dict) else {})
+    if permissions.get("send") or permissions.get("external_write"):
+        return "delivery"
+    name = str(task.get("expert_name") or stage.get("expert_name") or "").casefold().replace("-", "_")
+    text = " ".join(str((task.get(key) or stage.get(key) or ""))
+                    for key in ("title", "purpose", "business_description")).casefold()
+    if any(marker in name for marker in (
+            "schedule", "cron", "autostart", "launchd", "systemd", "daemon", "watcher",
+            "folder_monitor", "monitor_folder", "folder_watch", "watch_folder", "setup_monitor")) or \
+       any(marker in text for marker in (
+            "расписан", "регулярный запуск", "автозапуск", "фоновый демон", "демон мониторинга",
+            "launchagent", "launchd", "systemd", "scheduled trigger", "watch folder")):
+        return "runtime_setup"
+    if any(marker in name for marker in ("send_", "_send_", "deliver", "notif_")) or \
+       any(marker in text for marker in ("доставка отч", "отправить отч", "отправка отч", "send report")):
+        return "delivery"
+    if any(marker in name for marker in ("orchestr", "pipeline")) or \
+       any(marker in text for marker in ("оркестратор процесса", "управляет шагами", "координирует шаги")):
+        return "control"
+    if any(marker in text for marker in ("объединить принятые", "свести результаты", "merge accepted")):
+        return "integration"
+    return "reasoning" if mode == "llm_worker" else "data"
+
+
+def step_can_partition(step):
+    """Only data/integration work may be split by physical input boundaries."""
+    step = step if isinstance(step, dict) else {}
+    contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
+    if contract.get("allow_partition") is False:
+        return False
+    if str(contract.get("scope") or "") in ("map_partition", "runtime_config", "dependency_bundle"):
+        return False
+    return str(step.get("execution_role") or "data") in ("data", "reasoning", "integration")
+
+
+def upgrade_process_graph(graph):
+    """Bring an in-flight UPC sidecar to the current execution-boundary contract.
+
+    QA users often update the bridge while a long build is paused.  Restarting from a clean graph
+    would throw away accepted experts; blindly resuming an older graph would keep the exact bug we
+    fixed (a PDF partition asking for the Excel owned by its sibling).  This migration is deliberately
+    narrow: infer missing execution roles everywhere, and rewrite only recognizable, unfinished
+    failure-map children.  Role-only changes preserve already accepted checkpoints.
+    """
+    if not isinstance(graph, dict):
+        return {"changed": [], "unblocked": []}
+    changed, unblocked, contract_rewrites = [], [], False
+    steps = [x for x in (graph.get("steps") or []) if isinstance(x, dict)]
+    by_id = {str(x.get("id") or ""): x for x in steps}
+
+    def rehash_checkpoint(step):
+        checkpoint = step.get("checkpoint") if isinstance(step.get("checkpoint"), dict) else None
+        if not checkpoint or checkpoint.get("schema") != "upc-checkpoint/1.0":
+            return
+        checkpoint["step_contract_sha256"] = step_contract_fingerprint(step)
+        checkpoint["checkpoint_sha256"] = _stable_hash({
+            k: v for k, v in checkpoint.items() if k not in ("accepted_at", "checkpoint_sha256")})
+
+    for step in steps:
+        role_only = False
+        if not step.get("execution_role"):
+            step["execution_role"] = infer_execution_role(step, step)
+            role_only = True
+            changed.append(str(step.get("id") or "") + ":execution_role")
+        contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
+        title = str(step.get("title") or "").casefold()
+        delegation = step.get("delegation") if isinstance(step.get("delegation"), dict) else {}
+        is_legacy_map = bool(delegation and contract.get("source_refs") and
+                             ("ограниченную партию" in title or "bounded batch" in title))
+        if is_legacy_map and contract.get("scope") != "map_partition" and \
+                step.get("status") != "succeeded":
+            parent = by_id.get(str(delegation.get("parent_step_id") or "")) or {}
+            parent_goal = str(parent.get("purpose") or parent.get("title") or "исходный бизнес-шаг")
+            contract.update({
+                "scope": "map_partition", "allow_partition": False,
+                "parent_step_id": str(parent.get("id") or delegation.get("parent_step_id") or ""),
+                "parent_business_goal": parent_goal,
+            })
+            step["input_contract"] = contract
+            step["execution_role"] = "data"
+            step["purpose"] = (
+                "Прочитать только объявленную партию, доказанно извлечь её факты и нормализовать "
+                "их в канонический промежуточный результат. Не выполнять глобальное сопоставление, "
+                "не делать итоговый бизнес-вывод и не требовать файлы соседних партий.")
+            step["output_contract"] = {
+                "artifacts": ["source_facts.json"], "data_schema": {"type": "object"},
+                "postconditions": ["локальные факты содержат provenance", "нет глобального вывода"],
+            }
+            step["acceptance"] = {
+                "required_artifacts": ["source_facts.json"],
+                "deterministic_checks": ["обработаны все и только source_refs этой партии"],
+                "semantic_criteria": [], "minimum_confidence": 0.7,
+            }
+            question = str(((step.get("human_gate") or {}).get("question") or "")).casefold()
+            asks_for_sibling = any(marker in question for marker in (
+                "предостав", "прилож", "загруз", "отсутствует файл", "не хватает файл",
+                "оба файла", "два excel", "provide", "attach", "upload", "missing file"))
+            if step.get("status") == "blocked_human" and asks_for_sibling:
+                step["status"] = "pending"
+                step["human_gate"] = None
+                step["error"] = None
+                step["status_reason"] = "ложный запрос соседнего входа снят миграцией контракта"
+                unblocked.append(str(step.get("id") or ""))
+            changed.append(str(step.get("id") or "") + ":map_partition")
+            contract_rewrites = True
+            role_only = False
+        if role_only and step.get("status") == "succeeded":
+            # The execution role did not alter the code, input, output or acceptance proof.
+            rehash_checkpoint(step)
+        if changed:
+            step["updated_at"] = now_iso()
+
+    for step in steps:
+        deps = [by_id.get(str(x)) for x in (step.get("dependencies") or [])]
+        is_legacy_merge = bool(deps and all(
+            dep and str((dep.get("input_contract") or {}).get("scope") or "") == "map_partition"
+            for dep in deps))
+        if is_legacy_merge and str((step.get("input_contract") or {}).get("scope") or "") != "map_merge":
+            step.setdefault("input_contract", {})["scope"] = "map_merge"
+            step["input_contract"]["allow_partition"] = False
+            step["execution_role"] = "integration"
+            if step.get("status") == "succeeded":
+                rehash_checkpoint(step)
+            step["updated_at"] = now_iso()
+            changed.append(str(step.get("id") or "") + ":map_merge")
+            contract_rewrites = True
+
+    if changed:
+        if not contract_rewrites:
+            # A role-only schema migration must not make every downstream accepted checkpoint look
+            # stale merely because its predecessor checkpoint was rehashed with the new field.
+            for step in steps:
+                if step.get("status") != "succeeded":
+                    continue
+                checkpoint = step.get("checkpoint") if isinstance(step.get("checkpoint"), dict) else {}
+                if checkpoint.get("schema") != "upc-checkpoint/1.0":
+                    continue
+                checkpoint["dependency_checkpoint_sha256"] = [
+                    str(((by_id.get(str(dep)) or {}).get("checkpoint") or {}).get("checkpoint_sha256") or "")
+                    for dep in (step.get("dependencies") or [])]
+                rehash_checkpoint(step)
+        graph["version"] = int(graph.get("version") or 1) + 1
+        graph["parent_version"] = graph["version"] - 1
+        graph["updated_at"] = now_iso()
+        refresh_ready(graph)
+        valid = validate_process(graph)
+        if not valid["ok"]:
+            raise ValueError("invalid migrated UPC graph: " + "; ".join(valid["errors"]))
+    return {"changed": changed, "unblocked": unblocked, "graph_version": graph.get("version")}
 
 
 def _words(value):
@@ -380,6 +559,7 @@ def make_step(stage, task=None, index=1):
         "id": sid,
         "title": _clip(title, 240),
         "purpose": _clip(purpose, 1000),
+        "execution_role": infer_execution_role(stage, task),
         "dependencies": [_safe_id(x) for x in (task.get("depends_on") or stage.get("depends_on") or [])],
         "input_contract": task.get("input_contract") or {
             "artifacts": _text_list(stage.get("inputs")), "data_schema": {}, "required": True},
@@ -1214,6 +1394,8 @@ def propose_failure_subgraph(parent_step, sources=None, failure=None, max_batch=
     """
     parent_step = parent_step if isinstance(parent_step, dict) else {}
     failure = failure if isinstance(failure, dict) else {}
+    if not step_can_partition(parent_step):
+        raise ValueError("non-data/runtime step cannot be partitioned by source files")
     normalized = []
     for index, raw in enumerate(sources or [], 1):
         item = dict(raw) if isinstance(raw, dict) else {"path": str(raw)}
@@ -1247,23 +1429,50 @@ def propose_failure_subgraph(parent_step, sources=None, failure=None, max_batch=
             proposed.append({
                 "id": sid,
                 "title": "Обработать ограниченную партию %d (%s)" % (index, fmt),
-                "purpose": purpose + " Только для объявленной партии; не читать остальные входы.",
-                "input_contract": {"required": True, "source_refs": [x.get("path") for x in rows],
+                "purpose": ("Прочитать только объявленную партию, доказанно извлечь её факты и "
+                            "нормализовать их в канонический промежуточный результат. Не выполнять "
+                            "глобальное сопоставление, не делать итоговый бизнес-вывод и не требовать "
+                            "файлы соседних партий: их обрабатывает runtime, а объединение выполняет merge-шаг."),
+                "execution_role": "data",
+                "input_contract": {"required": True, "scope": "map_partition",
+                                   "allow_partition": False,
+                                   "parent_step_id": str(parent_step.get("id") or ""),
+                                   "parent_business_goal": purpose,
+                                   "source_refs": [x.get("path") for x in rows],
                                    "source_sha256": [x.get("sha256") for x in rows if x.get("sha256")],
-                                   "format": fmt},
-                "output_contract": {"artifacts": ["upc_step_result.json"],
+                                   "format": fmt,
+                                   "process_source_manifest": [
+                                       {k: item.get(k) for k in ("name", "path", "format", "sha256")}
+                                       for item in normalized]},
+                "output_contract": {"artifacts": ["source_facts.json"],
                                     "data_schema": {"type": "object"},
-                                    "postconditions": ["каждый вход партии имеет доказанный результат"]},
-                "required_artifacts": ["upc_step_result.json"],
-                "semantic_criteria": ["результат относится только к объявленной партии"],
-                "implementation_mode": "generate", "permissions": permissions,
+                                    "postconditions": [
+                                        "каждый объявленный вход представлен каноническими фактами",
+                                        "результат содержит provenance входа и не содержит глобальных выводов"]},
+                "acceptance": {
+                    "required_artifacts": ["source_facts.json"],
+                    "deterministic_checks": [
+                        "обработаны все и только source_refs этой партии",
+                        "source_facts.json содержит provenance и структурированные факты"],
+                    "semantic_criteria": []},
+                "required_artifacts": ["source_facts.json"],
+                "semantic_criteria": [],
+                "implementation_mode": "generate",
+                "permissions": {**empty_permissions(),
+                                "read": list((permissions or {}).get("read") or ["declared_inputs"]),
+                                "create": ["run_output_dir"]},
             })
         proposed.append({
             "id": "integrate",
             "depends_on": map_ids,
             "title": "Объединить и проверить результат исходного шага",
             "purpose": purpose + " Объединить только принятые результаты партий и проверить полный бизнес-контракт.",
-            "input_contract": {"required": True, "artifacts": ["accepted dependency outputs"]},
+            "execution_role": "integration",
+            "input_contract": {"required": True, "scope": "map_merge", "allow_partition": False,
+                               "artifacts": ["accepted dependency outputs"],
+                               "process_source_manifest": [
+                                   {k: item.get(k) for k in ("name", "path", "format", "sha256")}
+                                   for item in normalized]},
             "output_contract": original_output,
             "acceptance": original_acceptance,
             "implementation_mode": "generate", "permissions": permissions,
