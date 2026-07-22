@@ -208,6 +208,20 @@ def upgrade_process_graph(graph):
             step["execution_role"] = infer_execution_role(step, step)
             role_only = True
             changed.append(str(step.get("id") or "") + ":execution_role")
+        if step.get("status") != "succeeded":
+            acceptance = step.get("acceptance") if isinstance(step.get("acceptance"), dict) else {}
+            output = step.get("output_contract") if isinstance(step.get("output_contract"), dict) else {}
+            current_required = _text_list(acceptance.get("required_artifacts"))
+            canonical_required = canonical_artifact_requirements(
+                current_required, output.get("artifacts"), ensure_step_result=bool(
+                    current_required or output.get("artifacts")))
+            if canonical_required != current_required:
+                if current_required:
+                    acceptance["artifact_labels"] = current_required
+                acceptance["required_artifacts"] = canonical_required
+                step["acceptance"] = acceptance
+                changed.append(str(step.get("id") or "") + ":artifact_contract")
+                contract_rewrites = True
         contract = step.get("input_contract") if isinstance(step.get("input_contract"), dict) else {}
         title = str(step.get("title") or "").casefold()
         delegation = step.get("delegation") if isinstance(step.get("delegation"), dict) else {}
@@ -233,7 +247,7 @@ def upgrade_process_graph(graph):
                 "postconditions": ["локальные факты содержат provenance", "нет глобального вывода"],
             }
             step["acceptance"] = {
-                "required_artifacts": ["source_facts.json"],
+                "required_artifacts": ["step_result_json", "source_facts.json"],
                 "deterministic_checks": ["обработаны все и только source_refs этой партии"],
                 "semantic_criteria": [], "minimum_confidence": 0.7,
             }
@@ -484,6 +498,57 @@ def _text_list(value, limit=40):
     return [_clip(value, 500)]
 
 
+def canonical_artifact_requirements(required=None, outputs=None, ensure_step_result=False):
+    """Translate planner prose into identifiers the runtime can actually verify.
+
+    Qwen sometimes describes an output artifact with a sentence (for example
+    ``"structured data ready for validation"``).  Treating that sentence as a filename makes a
+    perfectly good expert enter an expensive repair loop.  Every such logical/non-file output lives
+    in the canonical ``step_result.json`` envelope.  Concrete requested documents remain separate
+    artifacts and are still checked fail-closed.
+    """
+    raw = _text_list(required)
+    if not raw:
+        raw = _text_list(outputs)
+    out = ["step_result_json"] if ensure_step_result or raw else []
+    known = {
+        "step_result": "step_result_json", "step_result.json": "step_result_json",
+        "step_result_json": "step_result_json", "result_json": "step_result_json",
+        "report.md": "report_md", "report_md": "report_md",
+        "report.xlsx": "report_xlsx", "report_xlsx": "report_xlsx",
+        "report.pdf": "report_pdf", "report_pdf": "report_pdf",
+        "report.docx": "report_docx", "report_docx": "report_docx",
+        "report.pptx": "report_pptx", "report_pptx": "report_pptx",
+    }
+    document_suffixes = {
+        ".json": "json", ".csv": "csv", ".xlsx": "xlsx", ".xls": "xls",
+        ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".md": "md",
+        ".html": "html", ".txt": "txt",
+    }
+    for value in raw:
+        text = str(value or "").strip()
+        folded = text.casefold().replace("-", "_").replace(" ", "_")
+        token = known.get(folded)
+        if not token:
+            # A concrete filename is an enforceable artifact. Keep the basename so generated
+            # output directories may differ between attempts and devices.
+            suffix = Path(text).suffix.casefold()
+            if suffix in document_suffixes:
+                token = Path(text).name
+            elif any(word in text.casefold() for word in ("отчёт", "отчет", "report")):
+                token = "report_md"
+            elif re.fullmatch(r"[a-z][a-z0-9_]{2,80}", folded) and any(
+                    marker in folded for marker in ("artifact", "manifest", "report", "result", "facts")):
+                token = folded
+            else:
+                # Tables, records, facts, classifications and other logical outputs are fields of
+                # step_result.json, not imaginary files named after the planner's prose.
+                token = "step_result_json"
+        if token not in out:
+            out.append(token)
+    return out
+
+
 def _legacy_permissions(stage, task):
     """Conservative migration only; the new planner must provide explicit permissions."""
     text = " ".join(str((task or {}).get(k) or (stage or {}).get(k) or "")
@@ -555,6 +620,12 @@ def make_step(stage, task=None, index=1):
         permissions = _legacy_permissions(stage, task)
     permissions = {kind: _text_list(permissions.get(kind)) for kind in PERMISSION_KINDS}
     retry = task.get("retry_policy") if isinstance(task.get("retry_policy"), dict) else {}
+    output_contract = task.get("output_contract") or {
+        "artifacts": _text_list(stage.get("outputs") or stage.get("output")),
+        "data_schema": {}, "postconditions": _text_list(stage.get("postconditions"))}
+    required_artifacts = canonical_artifact_requirements(
+        acceptance.get("required_artifacts") or task.get("required_artifacts"),
+        (output_contract.get("artifacts") if isinstance(output_contract, dict) else []))
     return {
         "id": sid,
         "title": _clip(title, 240),
@@ -563,16 +634,13 @@ def make_step(stage, task=None, index=1):
         "dependencies": [_safe_id(x) for x in (task.get("depends_on") or stage.get("depends_on") or [])],
         "input_contract": task.get("input_contract") or {
             "artifacts": _text_list(stage.get("inputs")), "data_schema": {}, "required": True},
-        "output_contract": task.get("output_contract") or {
-            "artifacts": _text_list(stage.get("outputs") or stage.get("output")),
-            "data_schema": {}, "postconditions": _text_list(stage.get("postconditions"))},
+        "output_contract": output_contract,
         "implementation": _implementation(stage, task),
         "permissions": permissions,
         "acceptance": {
             "deterministic_checks": deterministic if isinstance(deterministic, list) else [],
             "semantic_criteria": _text_list(semantic),
-            "required_artifacts": _text_list(acceptance.get("required_artifacts") or
-                                               task.get("required_artifacts")),
+            "required_artifacts": required_artifacts,
             "minimum_confidence": acceptance.get("minimum_confidence", 0.7),
         },
         "retry_policy": {

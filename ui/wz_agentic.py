@@ -24,13 +24,15 @@ from pathlib import Path
 from wz_platform import BASE, CONFIG, api, qwen_agent, run_expert
 from wz_llm import design_agent
 try:
-    from wz_process import adaptive_failure_decision, step_can_partition
+    from wz_process import (adaptive_failure_decision, canonical_artifact_requirements,
+                            step_can_partition)
 except ModuleNotFoundError:  # direct-file QA loaders do not add ui/ to sys.path
     _process_spec = importlib.util.spec_from_file_location(
         "wz_process", Path(__file__).with_name("wz_process.py"))
     _process_module = importlib.util.module_from_spec(_process_spec)
     _process_spec.loader.exec_module(_process_module)
     adaptive_failure_decision = _process_module.adaptive_failure_decision
+    canonical_artifact_requirements = _process_module.canonical_artifact_requirements
     step_can_partition = _process_module.step_can_partition
 
 
@@ -1086,13 +1088,9 @@ def _apply_upc_step(package, step_contract):
     acceptance = step_contract.get("acceptance") if isinstance(step_contract.get("acceptance"), dict) else {}
     output_contract = (step_contract.get("output_contract")
                        if isinstance(step_contract.get("output_contract"), dict) else {})
-    required_artifacts = (acceptance.get("required_artifacts") or
-                          output_contract.get("artifacts") or [])
-    required_artifacts = [str(x) for x in required_artifacts if str(x).strip()]
-    # Every step leaves a machine-readable trace even when its business output is not a file.
-    # Human reports are only required when the planner explicitly asks for them.
-    if not required_artifacts:
-        required_artifacts = ["step_result_json"]
+    required_artifacts = canonical_artifact_requirements(
+        acceptance.get("required_artifacts"), output_contract.get("artifacts"),
+        ensure_step_result=True)
     contract["required_result"] = {
         "success_criteria": ((acceptance.get("deterministic_checks") or []) +
                              (acceptance.get("semantic_criteria") or [])),
@@ -1788,6 +1786,104 @@ def _artifact_paths(result):
     return clean
 
 
+def materialize_step_result(result, output_dir):
+    """Persist one stable result envelope for every real expert execution.
+
+    The model owns the business result; the harness only normalizes its transport shape and records
+    it.  In particular, this function never invents used files, successful checks or business
+    values.  That keeps deterministic and semantic acceptance fail-closed while giving every step
+    the same inspectable artifact regardless of which Qwen/provider produced it.
+    """
+    raw = result
+    if isinstance(raw, str):
+        raw = _json_object(raw)
+    if not isinstance(raw, dict):
+        raw = {"status": "error", "message": "expert returned a non-object result",
+               "raw_result": _clip(result, 1200)}
+    else:
+        raw = copy.deepcopy(raw)
+
+    # Some executors wrap the expert payload once. Unwrap only a recognisable result object; a
+    # provider response or task receipt is evidence of failure, not proof of business success.
+    nested = raw.get("result")
+    if (isinstance(nested, dict) and str(nested.get("status") or "") in ("success", "error") and
+            not any(key in raw for key in ("summary", "evidence", "output", "structured_data"))):
+        raw = copy.deepcopy(nested)
+
+    evidence = raw.get("evidence")
+    if isinstance(evidence, list):
+        evidence = {"acceptance_checks": copy.deepcopy(evidence)}
+    elif not isinstance(evidence, dict):
+        evidence = {}
+    raw["evidence"] = evidence
+
+    files_used = evidence.get("files_used") or raw.get("files_used") or []
+    if isinstance(files_used, str):
+        files_used = [files_used]
+    elif not isinstance(files_used, (list, tuple, set)):
+        files_used = []
+    files_used = [_nfc(str(item)) for item in files_used if str(item).strip()]
+    if files_used:
+        evidence["files_used"] = files_used
+    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
+    # A count may be derived from the expert's own file evidence; expected inputs are deliberately
+    # not used here because that would allow a skipped input to pass acceptance.
+    if files_used and summary.get("processed_files") in (None, ""):
+        summary["processed_files"] = len({_ref_key(Path(item).name) for item in files_used})
+    raw["summary"] = summary
+
+    structured = raw.get("structured_data")
+    if structured is None:
+        structured = raw.get("output") if isinstance(raw.get("output"), (dict, list)) else {}
+    raw["structured_data"] = structured
+    if "output" not in raw and structured:
+        raw["output"] = copy.deepcopy(structured)
+
+    errors = raw.get("errors") if isinstance(raw.get("errors"), list) else []
+    if isinstance(raw.get("errors"), str) and raw.get("errors").strip():
+        errors = [raw.get("errors").strip()]
+    if raw.get("status") != "success" and not errors:
+        why = raw.get("message") or raw.get("error") or raw.get("status") or "expert failed"
+        errors = [_clip(why, 1000)]
+    raw["errors"] = errors
+
+    artifacts = raw.get("artifacts") if isinstance(raw.get("artifacts"), list) else []
+    if isinstance(raw.get("artifacts"), str) and raw.get("artifacts").strip():
+        artifacts = [raw.get("artifacts").strip()]
+    artifacts = copy.deepcopy(artifacts)
+    known_paths = {str(item.get("path")) for item in artifacts if isinstance(item, dict)} | {
+        str(item) for item in artifacts if isinstance(item, str)}
+    for key in REPORT_KEYS:
+        path = raw.get(key)
+        if isinstance(path, str) and path.strip() and path not in known_paths:
+            artifacts.append({"kind": key, "path": path})
+            known_paths.add(path)
+    raw["artifacts"] = artifacts
+    target = Path(output_dir).resolve() / "step_result.json"
+    envelope = {
+        "schema": "extella.step_result.v1",
+        "status": raw.get("status"),
+        "summary": summary,
+        "processed_files": summary.get("processed_files"),
+        "structured_data": structured,
+        "artifacts": artifacts,
+        "errors": errors,
+        "evidence": evidence,
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(envelope, ensure_ascii=False, indent=2, default=str),
+                             encoding="utf-8")
+        temporary.replace(target)
+        raw["artifacts"].append({"kind": "step_result_json", "path": str(target)})
+    except Exception as exc:
+        raw["status"] = "error"
+        raw["message"] = "canonical step_result.json was not persisted: " + _clip(exc, 500)
+        raw["errors"].append(raw["message"])
+    return raw
+
+
 def validate_result(result, sample_files, task_package=None):
     """Детерминированная часть приёмки: модель не может позеленить отсутствующие входы/отчёты."""
     issues = []
@@ -1841,7 +1937,9 @@ def validate_result(result, sample_files, task_package=None):
         except Exception:
             continue
     required = acceptance_contract.get("required_artifacts")
-    if not isinstance(required, list):
+    if isinstance(required, list):
+        required = canonical_artifact_requirements(required, ensure_step_result=bool(required))
+    else:
         required = ["report_md", "report_xlsx"]
     for need in [str(x).casefold() for x in required if str(x).strip()]:
         matches = [(kind, path, size) for kind, path, size in live
@@ -2181,6 +2279,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
         result = run_expert(draft_name, params, wait=run_timeout, glob=True)
         run_seconds = round(time.monotonic() - run_started, 1)
         expert_ran = True
+        result = materialize_step_result(result, outdir)
         validation = validate_result(result, sample_files, package)
         if validation["ok"]:
             progress("agentic_run", "Draft обработал обязательные входы и создал артефакты", "success",

@@ -3446,16 +3446,16 @@ async function pollBuild(){
   if(d && d.status==="success"){
     const p = d.progress;
     renderBuildProgress(p);
-    if(p.status==="built"){ PROCESS_REPAIR_PENDING.clear(); S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
+    if(p.status==="built"){ clearProcessRepairPending(); S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
     if(p.status==="waiting_for_owner"){
-      PROCESS_REPAIR_PENDING.clear();
+      clearProcessRepairPending();
       S.buildId=null; S.buildDone=false; S.waitingBuild=p;
       await reloadSession(); renderTest(); return;
     }
     if(p.status==="error"){
       // AC-06: сбой отвечает на три вопроса — что не получилось, из-за чего и ЧТО ДЕЛАТЬ.
       // Раньше владелец видел одну строку и не понимал, его это проблема или наша.
-      PROCESS_REPAIR_PENDING.clear(); S.buildDone=true; S.buildId=null; S.waitingBuild=null;
+      clearProcessRepairPending(); S.buildDone=true; S.buildId=null; S.waitingBuild=null;
       if(S.session) delete S.session.building;
       var es=p.error_struct||{};
       el("buildProgress").innerHTML += '<div class="card gap-card">'+
@@ -3506,6 +3506,13 @@ async function continueBuildFromAnswer(buildId){
   await reloadSession(); renderTest();
 }
 const PROCESS_REPAIR_PENDING=new Set();
+function clearProcessRepairPending(){
+  PROCESS_REPAIR_PENDING.clear();
+  document.querySelectorAll("[data-process-repair]").forEach(btn=>{
+    btn.disabled=false;
+    btn.innerHTML='↻ Починить только этот шаг';
+  });
+}
 function markProcessRepairPending(stepId,pending){
   const key=String(stepId||"");
   if(pending) PROCESS_REPAIR_PENDING.add(key); else PROCESS_REPAIR_PENDING.delete(key);

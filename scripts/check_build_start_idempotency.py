@@ -50,6 +50,8 @@ def main():
     assert '"already_started": True' in server
     assert "PROCESS_REPAIR_PENDING" in wizard and "data-process-repair" in wizard
     assert "Ремонт запускается" in wizard
+    assert "function clearProcessRepairPending()" in wizard
+    assert wizard.count("clearProcessRepairPending();") >= 3
     assert 'str(_s.get("building") or "") == build_id' in build
 
     with tempfile.TemporaryDirectory(prefix="wz_build_dedupe_") as td:

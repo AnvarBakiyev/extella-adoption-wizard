@@ -225,10 +225,34 @@ def acceptance_cases(mod, root):
                  {"criterion": "проверены все строки", "passed": True, "evidence": "1 строка, 0 совпадений"}]},
              "report_md": str(md), "report_xlsx": str(xlsx)}
     assert mod.validate_result(empty, [inp])["ok"]
+    # Planner prose is not treated as a fantasy filename. The harness records the expert's actual
+    # structured return in a provider-independent envelope and derives only the count proved by
+    # files_used; it does not invent input evidence or acceptance checks.
+    canonical_dir = out / "canonical"
+    canonical = mod.materialize_step_result({
+        "status": "success", "summary": {"total_count": 1},
+        "output": {"records": [{"id": "A", "value": 1}]},
+        "evidence": {"files_used": [str(inp)], "acceptance_checks": [
+            {"criterion": "input parsed", "passed": True, "evidence": "1 data row"}]},
+    }, canonical_dir)
+    contract = {"acceptance_contract": {
+        "must_use_every_sample": True,
+        "required_artifacts": ["структурированные данные, готовые к проверке"],
+    }}
+    checked = mod.validate_result(canonical, [inp], contract)
+    assert checked["ok"], checked
+    assert canonical["summary"]["processed_files"] == 1
+    saved = json.loads((canonical_dir / "step_result.json").read_text(encoding="utf-8"))
+    assert saved["schema"] == "extella.step_result.v1"
+    assert saved["structured_data"]["records"][0]["id"] == "A"
+    assert any(x.get("kind") == "step_result_json" for x in canonical["artifacts"])
     # 11. Формальный success без фактов отклоняется.
     false_success = {"status": "success", "summary": {"processed_files": 1, "total_count": 0}}
     rejected = mod.validate_result(false_success, [inp])
     assert not rejected["ok"] and any("acceptance_checks" in x for x in rejected["issues"])
+    normalized_false = mod.materialize_step_result(false_success, out / "false_success")
+    still_rejected = mod.validate_result(normalized_false, [inp], contract)
+    assert not still_rejected["ok"] and any("доказательства обработки" in x for x in still_rejected["issues"])
     return inp, empty, false_success
 
 

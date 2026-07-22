@@ -11,7 +11,8 @@ sys.path.insert(0, str(ROOT / "ui"))
 from wz_process import (  # noqa: E402
     STEP_RESULT_SCHEMA, accept_step, adaptive_failure_decision, answer_human,
     assess_reuse_compatibility, block_for_human, checkpoint,
-    budget_preflight, grant_step_budget, is_budget_gate, make_step, memory_entry, normalize_step_result,
+    budget_preflight, canonical_artifact_requirements, grant_step_budget, is_budget_gate, make_step,
+    memory_entry, normalize_step_result,
     expand_failure_subgraph, input_fingerprint,
     permission_preflight, process_from_blueprint,
     project_runtime_contract,
@@ -55,6 +56,31 @@ def test_unknown_task_is_generate():
     assert validate_process(graph)["ok"]
     assert graph["steps"][0]["implementation"]["mode"] == "generate"
     assert graph["steps"][0]["status"] == "ready"
+
+
+def test_planner_prose_is_canonical_result_not_imaginary_file():
+    label = "структурированные данные, готовые к проверке"
+    task = {
+        "id": "extract", "title": "Извлечь данные", "action": "build",
+        "output_contract": {"artifacts": [label], "data_schema": {"type": "object"}},
+        "acceptance": {"required_artifacts": [label], "semantic_criteria": []},
+    }
+    step = make_step(task, task, 1)
+    assert step["acceptance"]["required_artifacts"] == ["step_result_json"]
+    assert canonical_artifact_requirements(["report.xlsx"]) == ["step_result_json", "report_xlsx"]
+
+    # An unfinished graph downloaded before this fix is upgraded in place, so accepted neighbours
+    # are not rebuilt and a targeted repair can continue with the canonical contract.
+    graph = process_from_blueprint("legacy_artifact", {
+        "process_name": "Legacy", "stages": [{"id": "extract", "title": "Извлечь данные"}]})
+    legacy = graph["steps"][0]
+    legacy["status"] = "repairing"
+    legacy["acceptance"]["required_artifacts"] = [label]
+    legacy["output_contract"]["artifacts"] = [label]
+    migrated = upgrade_process_graph(graph)
+    assert legacy["acceptance"]["required_artifacts"] == ["step_result_json"]
+    assert legacy["acceptance"]["artifact_labels"] == [label]
+    assert any(x.endswith(":artifact_contract") for x in migrated["changed"])
 
 
 def test_cabinet_projects_local_folder_without_fake_file_or_delivery():
@@ -363,9 +389,12 @@ def test_mixed_input_failure_recovers_through_children_and_checkpoint_resume():
                 result = success_result(step)
                 required = (step.get("acceptance") or {}).get("required_artifacts") or []
                 if required:
-                    artifact = root / (step["id"] + "_upc_step_result.json")
-                    artifact.write_text(json.dumps({"step_id": step["id"], "ok": True}), encoding="utf-8")
-                    result["artifacts"] = [{"path": str(artifact), "kind": required[0]}]
+                    result["artifacts"] = []
+                    for index, kind in enumerate(required, 1):
+                        artifact = root / (step["id"] + "_artifact_%02d.json" % index)
+                        artifact.write_text(json.dumps({"step_id": step["id"], "kind": kind,
+                                                        "ok": True}), encoding="utf-8")
+                        result["artifacts"].append({"path": str(artifact), "kind": kind})
                 result["provenance"] = {
                     "input_sha256": input_fingerprint([
                         Path(x) for x in ((step.get("input_contract") or {}).get("source_refs") or [])]),
