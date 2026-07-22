@@ -91,15 +91,23 @@ def wz_generate_blueprint(
     SYSTEM = f"""Ты — архитектор решений платформы Extella. По ответам бизнес-интервью составь Process Blueprint — бизнес-план внедрения ИИ-процесса.
 
 ЖЁСТКИЕ ПРАВИЛА:
-1. Используй ТОЛЬКО возможности из переданного КАТАЛОГА: в capability_ids — только id из catalog.capabilities, в asset_names — только имена из assets каталога, в pack_id — только id из catalog.packs или null, в archetype.id — только id из catalog.process_archetypes или null.
-2. Всё, чего в каталоге нет, но что нужно клиенту, — оформляй как элемент gaps (честный разрыв с предложением, как закрыть), а НЕ как стадию с выдуманными компонентами. И наоборот: ПЕРЕД тем как записать потребность в gaps, проверь каталог — если возможность там есть (например, «еженедельно» = возможность scheduling, «уведомить» = integrations), это СТАДИЯ или её часть, а не разрыв.
+1. КАТАЛОГ — инвентарь готовых кандидатов, а НЕ граница возможных задач. Сначала ищи точный подходящий
+компонент: в capability_ids — только id из catalog.capabilities, в asset_names — только имена из assets
+каталога. Если готового компонента нет, стадия всё равно ОБЯЗАТЕЛЬНО остаётся в плане и получает
+implementation_mode=generate (создать CSPL/fython-эксперта) или llm_worker (Qwen сама выполняет
+смысловой шаг). acquire используй только для внешней готовой модели/репозитория/инструмента, human — для
+решения, доступа или опасного действия человека, delegate — для ограниченного дочернего процесса.
+2. Неизвестная каталогу задача НЕ является ошибкой и сама по себе НЕ является gap. gap добавляй только
+когда шаг нельзя честно выполнить через generate/llm_worker: нужна внешняя способность (acquire), доступ,
+решение или действие человека (human). И наоборот: перед gap проверь каталог — если возможность там есть
+(например, «еженедельно» = scheduling, «уведомить» = integrations), используй reuse.
 2в. Если клиент назвал периодичность процесса (ежедневно/еженедельно/ежемесячно/к закрытию периода) — в blueprint ОБЯЗАНА быть финальная стадия «Регулярный запуск» с возможностью scheduling, где явно указана периодичность из ответов.
 2б. Активно ищи СКРЫТЫЕ технические разрывы в ответах клиента: сканы/фотографии документов → нужно распознавание (OCR); звонки/аудио/видео → нужна расшифровка речи; данные только в закрытой системе → нужен доступ/выгрузка. Такие вещи честно клади в gaps, даже если клиент о них не спросил.
 2г. Если разрыв закрывается известным расширением из catalog.delivery_extensions — укажи в элементе gap поле extension_id (точный id из каталога) и в proposal перескажи его effort_hint; если подходящего расширения нет — extension_id: null.
 2а. Сначала подбери ближайший АРХЕТИП процесса из catalog.process_archetypes (типовую форму) и строй стадии по его capability_flow, адаптируя под ответы клиента; если ни один архетип не подходит — archetype.id = null и собирай стадии из возможностей напрямую. Процесс может относиться к ЛЮБОМУ департаменту (финансы, HR, юристы, закупки, операции, маркетинг) — не своди всё к контакт-центру.
 2д. БАЗА ЗНАНИЙ: если процесс опирается на закон/кодекс/регламент/стандарт/политику (ответ knowledge_base не пуст ИЛИ по смыслу нужны правовые нормы — кадровые документы, договоры, налоги и т.п.) — ОБЯЗАТЕЛЬНО добавь стадию с capability_ids=["knowledge_grounding"] (asset_names=["kp_ask"]), которая находит релевантные статьи в базе и подставляет их в работу (агент опирается на актуальный документ, а не память модели). Выбери подходящую базу из ПЕРЕДАННОГО СПИСКА knowledge_packs по домену (HR→trud_rk, договоры→grazhd_rk, налоги→nalog_rk и т.д.) и запиши её id в поле knowledge_pack.pack_id. Если нужной базы в списке нет — knowledge_pack.pack_id=null и добавь элемент в gaps «нужна база знаний: …». НЕ вшивай статьи закона в другие стадии статикой — только через стадию knowledge_grounding.
 2е. ИСТОЧНИК ДАННЫХ (обязательно): определи, откуда процесс берёт ИСХОДНЫЕ данные для работы, и заполни поле data_source. needs_external=true, если процессу нужны данные из внешней системы (CRM, БД, рекламный кабинет, 1С, таблицы, API), а не введённые вручную. Опиши, ЧТО это за данные, и предположи способ получения obtained_by (file — файл вручную; sheets — Google Sheets; api — своя система по API/ключу; crm — CRM; ads — рекламный кабinet; unknown — не ясно). Если needs_external=true и obtained_by≠file — ПЕРВЫМ пунктом open_questions поставь вопрос «Откуда брать эти данные и есть ли к ним доступ (файл / Google Sheets / своя система по API / CRM / рекламный кабинет)?».
-2ж. НЕСУЩИЙ СЛОЙ (обязательно): определи, какой ОДИН слой платформы для ЭТОЙ задачи несущий (crux) — где концентрируется сложность и ценность, во что стройка вложится в первую очередь. Заполни crux_layer {layer, why}. Варианты layer: source (главное — дотянуться до данных), capability (главное — найти и поставить нужную модель/репо/навык, напр. 3D-генерация, распознавание речи, OCR), knowledge_voice (главное — знать данные и манеру клиента, «делай как мы»), trust (главное — доверие к суждению и калибровка, напр. контроль качества/оценка), action (главное — переписка/переговоры/действия во внешнем мире), artifact (главное — оформление результата в Excel/PowerPoint/документ), orchestration (главное — многошаговая координация процесса). Выбери ОДИН, самый несущий.
+2ж. НЕСУЩИЙ СЛОЙ (обязательно): определи, какой ОДИН слой платформы для ЭТОЙ задачи несущий (crux) — где концентрируется сложность и ценность, во что стройка вложится в первую очередь. Заполни crux_layer {{layer, why}}. Варианты layer: source (главное — дотянуться до данных), capability (главное — найти и поставить нужную модель/репо/навык, напр. 3D-генерация, распознавание речи, OCR), knowledge_voice (главное — знать данные и манеру клиента, «делай как мы»), trust (главное — доверие к суждению и калибровка, напр. контроль качества/оценка), action (главное — переписка/переговоры/действия во внешнем мире), artifact (главное — оформление результата в Excel/PowerPoint/документ), orchestration (главное — многошаговая координация процесса). Выбери ОДИН, самый несущий.
 3. Суитабилити считай по рубрике каталога: self_serve_allowed=true только для процессов класса {json.dumps(rubric.get("self_serve_allowed", []), ensure_ascii=False)}; процессы с записью во внешние системы или действиями от имени компании — self_serve_allowed=false и risk_level минимум medium.
 4. Не выдумывай числа и факты о клиенте: опирайся только на ответы интервью. Если данных мало — пиши меньше стадий и больше open_questions.
 5. Учитывай открытые комментарии команды (переданы отдельно) — это уточнения к ответам.
@@ -114,8 +122,12 @@ def wz_generate_blueprint(
   "suitability": {{"score": 0-100, "risk_level": "low|medium|high", "self_serve_allowed": true/false, "rationale": "почему такой скор"}},
   "stages": [
     {{"id": "s1", "title": "...", "business_description": "что происходит, бизнес-языком",
-      "capability_ids": ["id из каталога"], "asset_names": ["имена из каталога"],
-      "inputs": "что на входе", "outputs": "что на выходе"}}
+      "capability_ids": ["только известные id из каталога"], "asset_names": ["только известные имена из каталога"],
+      "implementation_mode": "reuse|generate|llm_worker|acquire|human|delegate",
+      "capability_ref": "точный id/asset для reuse или null", "implementation_why": "почему выбран режим",
+      "depends_on": ["id предыдущего шага"], "inputs": "что на входе", "outputs": "что на выходе",
+      "permissions": {{"read":[],"create":[],"move":[],"modify":[],"delete":[],"install":[],"send":[],"external_write":[]}},
+      "acceptance": {{"deterministic_checks":["наблюдаемая проверка"],"semantic_criteria":["смысловой критерий"],"required_artifacts":[]}}}}
   ],
   "pack_recommendation": {{"pack_id": "id из каталога или null", "fit": "почему подходит / чего не хватает", "adaptation_needed": ["что настроить под клиента"]}},
   "knowledge_pack": {{"pack_id": "id из knowledge_packs или null", "why": "почему эта база нужна процессу"}},
@@ -190,32 +202,56 @@ def wz_generate_blueprint(
         _stages = [st for st in _stages if isinstance(st, dict) and (st.get("title") or st.get("id"))]
         # #14: пустой набор стадий — не валидный процесс; честный отказ вместо «пустой» сборки
         assert _stages, "blueprint без валидных стадий"
-        bp["stages"] = _stages
+        # UPC v1 гарантирует минимум 40 статических шагов. Более крупная задача должна быть
+        # иерархической (`delegate`), а не бесконтрольно раздувать один prompt/граф.
+        bp["stages"] = _stages[:40]
     except Exception as e:
         return {"status": "error", "message": "Не удалось разобрать план от модели: " + str(e)[:200]}
 
-    # -- Catalog guardrail --------------------------------------------
+    # -- Catalog inventory normalization (not a whitelist) ------------
     warnings = []
     gaps = bp.get("gaps") or []
+    implementation_modes = {"reuse", "generate", "llm_worker", "acquire", "human", "delegate"}
+    permission_kinds = ("read", "create", "move", "modify", "delete", "install", "send", "external_write")
     for st in bp["stages"]:
         bad_caps = [c for c in (st.get("capability_ids") or []) if c not in cap_ids]
         bad_assets = [a for a in (st.get("asset_names") or []) if a not in asset_names]
         if bad_caps or bad_assets:
+            st["requested_components"] = [str(x) for x in bad_caps + bad_assets]
             st["capability_ids"] = [c for c in (st.get("capability_ids") or []) if c in cap_ids]
             st["asset_names"] = [a for a in (st.get("asset_names") or []) if a in asset_names]
             removed = bad_caps + bad_assets
             warnings.append("stage '" + str(st.get("title", st.get("id", "?")))[:60] +
-                            "': unknown components stripped: " + ", ".join(str(x) for x in removed))
-            gaps.append({"title": "Компоненты вне каталога в стадии «" + str(st.get("title", "?"))[:60] + "»",
-                         "description": "Модель предложила компоненты, которых нет в каталоге: " + ", ".join(str(x) for x in removed),
-                         "proposal": "Проверить потребность и при необходимости запланировать разработку"})
+                            "': unknown inventory refs routed to generative mode: " +
+                            ", ".join(str(x) for x in removed))
+        known = list(st.get("asset_names") or []) + list(st.get("capability_ids") or [])
+        mode = str(st.get("implementation_mode") or "").lower()
+        if mode not in implementation_modes:
+            mode = "reuse" if known else "generate"
+        if mode == "reuse" and not known and not st.get("capability_ref"):
+            mode = "generate"
+            warnings.append("stage '" + str(st.get("title", st.get("id", "?")))[:60] +
+                            "': reuse without inventory match -> generate")
+        st["implementation_mode"] = mode
+        if mode == "reuse":
+            ref = st.get("capability_ref")
+            if ref not in cap_ids and ref not in asset_names:
+                ref = known[0] if known else None
+            st["capability_ref"] = ref
+        else:
+            st["capability_ref"] = None
+        st["depends_on"] = [str(x) for x in (st.get("depends_on") or []) if str(x)]
+        perms = st.get("permissions") if isinstance(st.get("permissions"), dict) else {}
+        st["permissions"] = {kind: ([str(x) for x in perms.get(kind) if str(x)]
+                                    if isinstance(perms.get(kind), list) else [])
+                             for kind in permission_kinds}
+        acceptance = st.get("acceptance") if isinstance(st.get("acceptance"), dict) else {}
+        st["acceptance"] = {
+            "deterministic_checks": [str(x) for x in (acceptance.get("deterministic_checks") or []) if str(x)],
+            "semantic_criteria": [str(x) for x in (acceptance.get("semantic_criteria") or []) if str(x)],
+            "required_artifacts": [str(x) for x in (acceptance.get("required_artifacts") or []) if str(x)],
+        }
     bp["gaps"] = gaps
-    # #13: после срезки неизвестных компонентов — если НИ одна стадия не имеет исполнимых компонентов
-    # (ни capability_ids, ни asset_names), процесс собрать не из чего → честный отказ вместо «пустой» сборки
-    if not any((st.get("capability_ids") or st.get("asset_names")) for st in bp["stages"]):
-        return {"status": "error", "gaps": gaps, "warnings": warnings,
-                "message": "план без исполнимых компонентов: предложенные инструменты вне каталога. "
-                           "Уточните задачу в интервью или запросите разработку недостающих компонентов."}
 
     pr = bp.get("pack_recommendation") or {}
     if pr.get("pack_id") and pr["pack_id"] not in pack_ids:

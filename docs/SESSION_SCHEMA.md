@@ -49,7 +49,10 @@
 | `message_template` | str | /x/message_template | шаблон доставки, плейсхолдеры `{name}{count}{sum}{date}` |
 | `rules`/`fields` | list/dict | /x/rules | правила словами + поля владельца (композиции применяют на лету; Мастер-процессы — при пересборке) |
 | `rules_struct` | list | /x/rules (F2) | скомпилированные из `rules` машинные фильтры `[{field, op: >|>=|<|<=|==|contains, value}]` — Qwen интерпретирует ОДИН раз при записи, оркестратор применяет детерминированно на каждом прогоне |
+| `rules_synced` | bool | /x/rules | результат последней синхронизации правил с платформой: `true` — правила записаны, `false` — сохранены только в локальной сессии |
+| `report_spec` | dict | /x/report_spec_set | спецификация итогового отчёта (формат, структура и параметры представления); пустой объект = настройки ещё не заданы |
 | `target_requirements` | dict | /x/target_requirements (T2) | требования процесса к устройству `{apps:[...], local_only: bool, device: <slug>}` — preflight (`_target_preflight`) проверяет ДО прогона/расписания против паспортов `target:passport:*` |
+| `placement` | dict | /x/placement_set (A1) | подтверждённая карта исполнения `{map:{stage: device_ref}, confirmed: bool, set_at: ISO}`; наружу и в сессии сохраняются только безопасные `device_ref`, не полные target UUID |
 | `source` | dict/None | /x/source_bind | привязанный источник данных `{kind, …}` |
 | `inbound` | dict | /x/inbound | приём входящих `{mode, channel, target, …}`; исполнение — KV `inbound:<sid>` |
 | `runs` | list | /x/run_process | ручные прогоны `{at, status, findings?/total_*?, digest_source?}`; расписание пишет в `sched:<sid>.runs` |
@@ -59,6 +62,7 @@
 | `published` | dict | /x/publish | `{pack_id, repo_url, at}` |
 | `goal` | str | flow_save / доводка | описание для карточек |
 | `demo_runs` | list | демо-раннер | исторический артефакт |
+| `process_contract` | dict | UPC planner/runtime | Добавочный указатель на единый процесс `{schema:"upc/1.0", path, process_id, active_version, active_run_id, status, updated_at}`. Отсутствие означает legacy-процесс; читатели обязаны мигрировать его только при явной новой стройке. Сам граф и checkpoint лежат в `<sid>_process.json`; события — в `<sid>_process_events.jsonl`. |
 
 
 ## Run-record v1 (F3 — единая история исполнения)
@@ -70,4 +74,6 @@
 
 ## Сайдкары (та же папка, тот же sid)
 `<sid>_blueprint.json` `{session_id, generated_at, blueprint{process_name, archetype, goal, stages[], …}}` ·
-`<sid>_build_plan.json` · `<sid>_chat.json` (стенограмма Помощника) · `sessions_archive/` (удалённые — архив, не hard-delete).
+`<sid>_build_plan.json` · `<sid>_process.json` (UPC v1: версионируемый граф + checkpoint) ·
+`<sid>_process_events.jsonl` (append-only журнал переходов/приёмки/полномочий) ·
+`<sid>_chat.json` (стенограмма Помощника) · `sessions_archive/` (удалённые — архив, не hard-delete).

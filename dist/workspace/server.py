@@ -4,7 +4,7 @@
 # Роль: (1) отдаёт UI (index.html); (2) прокси к движку wz_workspace — ТОКЕН ЖИВЁТ ТУТ, в браузер не уходит,
 # deferred-задачи доводятся до результата на сервере; (3) локальные действия: запуск автопилота (Popen драйвера),
 # приём файлов (upload → в папку проекта), обзор папок для пикера.
-import json, os, sys, time, base64, subprocess, socket, urllib.request
+import json, os, sys, time, base64, subprocess, socket, urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 34767
@@ -48,6 +48,75 @@ def ws_call(params, wait=180, expert="wz_workspace"):
         return json.loads(res) if isinstance(res, str) else (res or {})
     except Exception:
         return {"status": "error", "message": "нечитаемый ответ движка"}
+
+
+WIZARD_BASE = "http://127.0.0.1:8765"
+
+
+def _wizard_call(path, body=None, timeout=20):
+    """Read/mutate the canonical Wizard Process Contract; Workspace owns no process copy."""
+    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(WIZARD_BASE + path, data=data,
+                                 headers={"Content-Type": "application/json"},
+                                 method="GET" if body is None else "POST")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def process_list(limit=12):
+    """Compact read model for existing Workspace: inputs, artifacts, checks and step history."""
+    try:
+        sessions = (_wizard_call("/x/sessions") or {}).get("sessions") or []
+    except Exception as exc:
+        return {"status": "error", "message": "Wizard недоступен: " + str(exc)[:120], "processes": []}
+    rows = []
+    for session in sorted(sessions, key=lambda x: str(x.get("updated_at") or ""), reverse=True):
+        if not session.get("process_id") or len(rows) >= max(1, min(int(limit or 12), 30)):
+            continue
+        sid = str(session.get("session_id") or "")
+        try:
+            doc = _wizard_call("/x/process?" + urllib.parse.urlencode({
+                "session_id": sid, "surface": "workspace"}))
+            graph = doc.get("process") if isinstance(doc, dict) else None
+            if not isinstance(graph, dict):
+                continue
+            steps = []
+            for step in graph.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                steps.append({
+                    "id": step.get("id"), "title": step.get("title"),
+                    "status": step.get("status"), "version": step.get("version"),
+                    "mode": (step.get("implementation") or {}).get("mode"),
+                    "expert_ref": (step.get("implementation") or {}).get("expert_ref"),
+                    "input_contract": step.get("input_contract"),
+                    "output_contract": step.get("output_contract"),
+                    "artifacts": step.get("artifact_refs") or [],
+                    "evidence": step.get("evidence") or [], "error": step.get("error"),
+                    "human_gate": step.get("human_gate"),
+                    "attempts_count": len(step.get("attempts") or []),
+                })
+            rows.append({
+                "session_id": sid, "client_name": session.get("client_name"),
+                "updated_at": session.get("updated_at"), "process_id": graph.get("process_id"),
+                "process_version": graph.get("version"), "process_status": doc.get("process_status"),
+                "title": graph.get("title"), "goal": graph.get("goal"), "steps": steps,
+                "events": (doc.get("events") or [])[-30:],
+            })
+        except Exception:
+            continue
+    return {"status": "success", "source": "wizard-upc/1.0", "processes": rows}
+
+
+def process_action(body):
+    payload = {k: body.get(k) for k in ("session_id", "action", "step_id", "reason",
+                                                   "answer", "permission", "target", "payload", "approved")
+               if k in body}
+    payload["surface"] = "workspace"
+    try:
+        return _wizard_call("/x/process_action", payload, timeout=30)
+    except Exception as exc:
+        return {"status": "error", "message": "действие не принято Wizard: " + str(exc)[:160]}
 
 REG_KW = ("реестр", "трекер", "консолид", "единый", "портфел", "собери все", "registry")
 WRITE_KW = ("запиш", "запис", "сохран", "выгруз", "экспорт", "подтвержда")
@@ -257,6 +326,8 @@ class H(BaseHTTPRequestHandler):
             elif path == "/browse":    self._send(200, browse(b.get("path", "")))
             elif path == "/reveal":    self._send(200, reveal(b.get("path", ""), b.get("mode", "file")))
             elif path == "/upload":    self._send(200, upload(b.get("ws_id", ""), b.get("folder", ""), b.get("filename", ""), b.get("b64", "")))
+            elif path == "/processes": self._send(200, process_list(b.get("limit", 12)))
+            elif path == "/process_action": self._send(200, process_action(b))
             else:                      self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"status": "error", "message": str(e)[:160]})

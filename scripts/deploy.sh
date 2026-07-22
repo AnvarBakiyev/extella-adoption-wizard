@@ -21,7 +21,7 @@ echo
 echo "── ДЕПЛОЙ ──"
 cp ui/*.py ui/wizard.html ~/extella_wizard/app/
 echo "   файлы скопированы"
-launchctl kickstart -k gui/501/ai.extella.wizard-bridge
+launchctl kickstart -k "gui/$(id -u)/ai.extella.wizard-bridge"
 sleep 3
 V=$(curl -s --max-time 10 http://127.0.0.1:8765/x/health | python3 -c 'import sys,json;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "нет ответа")
 echo "   мост поднялся, версия: $V"

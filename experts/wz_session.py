@@ -117,6 +117,9 @@ def wz_session(
                     rec = {"answer": str(ans), "question": fresh.get("answers", {}).get(qid, {}).get("question", "")}
                 rec["updated_at"] = now()
                 fresh["answers"][qid] = rec
+            # Проверка данных зависит от смысла интервью. После любого уточнения прежний вердикт
+            # нельзя показывать как актуальный — на шаге плана он пересчитается автоматически.
+            fresh.pop("data_check", None)
             fresh.setdefault("log", []).append({"ts": now(), "event": "answers saved: " + ", ".join(list(answers.keys())[:10])})
         s2 = _locked_update(session_id, _apply)
         if s2 is None:
