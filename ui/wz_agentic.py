@@ -1911,6 +1911,11 @@ def _create_or_update(expert_name, task_package, feedback, llm):
             if not found.get("expert_code"):
                 response_kind = "reasoning без действия" if _agent_text(run) else \
                                 str((run or {}).get("status") or "пустой ответ")
+                # ФАКТИЧЕСКАЯ ошибка вызова обязана доехать до журнала: без неё «(error)» неотличим
+                # от транзиента, дизайна или бага — два прогона E2E 22.07 расследовались вслепую.
+                err_detail = str((run or {}).get("message") or (run or {}).get("error") or "")[:220]
+                if err_detail:
+                    response_kind += ": " + err_detail
                 return {"ok": False, "why": ("Qwen не создала эксперта нативным действием (" +
                                                response_kind + ") и не вернула code-artifact"),
                         "generation_path": generation_path,
