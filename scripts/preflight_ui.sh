@@ -139,8 +139,13 @@ bash -n scripts/qa_delta_update.sh \
 
 echo "→ локальный bundle системных экспертов"
 python3 scripts/check_local_system_expert_bundle.py \
-  && echo "   ✓ план/стройка/компоновка не зависят от account-scoped registry" \
+  && echo "   ✓ план/стройка/компоновка/сессии не зависят от account-scoped registry" \
   || { echo "   ✗ локальный системный harness неполон"; fail=1; }
+
+echo "→ потеря авторизации и существующий агент"
+python3 scripts/check_agent_auth_resilience.py \
+  && echo "   ✓ Stopped/user_id missing не выдаётся за удалённого агента" \
+  || { echo "   ✗ Wizard снова предлагает пересоздать существующего агента"; fail=1; }
 
 echo "→ каталог возможностей на чистом Mac"
 python3 scripts/check_catalog_install.py \

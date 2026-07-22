@@ -34,13 +34,14 @@ def main():
     assert '"$PY" "$SRC/install.py"' not in delta
     assert '.upc-system-experts-v1' not in delta
     assert 'SYS_EXPERT_DIR="$APP_DIR/system_experts"' in delta
-    assert 'for name in wz_auto_compose.py wz_build_plan.py wz_generate_blueprint.py; do' in delta
+    assert 'for name in wz_auto_compose.py wz_build_plan.py wz_generate_blueprint.py wz_session.py; do' in delta
     assert 'cp "$SRC/experts/$name" "$SYS_EXPERT_DIR/$name"' in delta
     install_text = INSTALL.read_text(encoding="utf-8")
     assert 'SYSTEM_AGENT_ID = cfg.get("system_agent_id") or "agent_extella_default"' in install_text
     assert '"X-Agent-Id": SYSTEM_AGENT_ID' in install_text
     assert '"X-Agent-Id": cfg.get("agent_id"' not in install_text
-    assert 'BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint"}' in install_text
+    assert ('BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", '
+            '"wz_generate_blueprint", "wz_session"}' in install_text)
     assert 'if name in BRIDGE_OWNED_EXPERTS:' in install_text
     for name in ("dist/workspace/$name", "WS_DIR", "Workspace v1.1.0", "EXTELLA_QA_SHA"):
         assert name in delta, f"QA-дельта не обновляет общий Workspace-адаптер: {name}"

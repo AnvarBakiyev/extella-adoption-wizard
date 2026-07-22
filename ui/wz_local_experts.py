@@ -21,7 +21,8 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 SYSTEM_EXPERT_DIR = APP_DIR / "system_experts"
-LOCAL_SYSTEM_EXPERTS = frozenset({"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint"})
+LOCAL_SYSTEM_EXPERTS = frozenset({"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint",
+                                  "wz_session"})
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 _EXTENS_LINE = re.compile(r"(?m)^\s*\$extens\([^\n]*\)\s*$")

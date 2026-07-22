@@ -40,14 +40,14 @@ print("== Каталог возможностей ==\n  ✅ canonical + резе
 # вызывают выбранный Qwen, но не зависят от account-scoped global registry и не требуют Listener.
 system_dir = os.path.join(app_dir, "system_experts")
 os.makedirs(system_dir, exist_ok=True)
-for system_name in ("wz_auto_compose.py", "wz_build_plan.py", "wz_generate_blueprint.py"):
+for system_name in ("wz_auto_compose.py", "wz_build_plan.py", "wz_generate_blueprint.py", "wz_session.py"):
     shutil.copy2(os.path.join(HERE, "experts", system_name), os.path.join(system_dir, system_name))
-print("  ✅ локальный bundle системных экспертов: 3")
+print("  ✅ локальный bundle системных экспертов: 4")
 
 # QA-дельта: без переменной ставим полный пакет как раньше; с ней — только перечисленные
 # repo-relative файлы (experts/..., concepts/..., rules/...). UI копирует быстрый shell-обновлятор.
 DELTA_FILES = {x.strip().replace("\\", "/") for x in os.environ.get("EXTELLA_DELTA_FILES", "").split(",") if x.strip()}
-BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint"}
+BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint", "wz_session"}
 
 def selected(path):
     rel = os.path.relpath(path, HERE).replace(os.sep, "/")

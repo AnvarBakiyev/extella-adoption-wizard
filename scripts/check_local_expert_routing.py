@@ -62,6 +62,8 @@ def main():
     assert 'error_code = "plan_transport_failed" if llm_transient_error(r) else "plan_failed"' in BUILD
     assert '"plan_transport_failed": ("Связь прервалась во время составления плана"' in BUILD
     assert '_local_file_experts = {"wz_session", "wz_generate_blueprint", "wz_project_spec", "wz_data_reality_check"}' in SERVER
+    assert '_bridge_local_experts = {"wz_session"}' in SERVER
+    assert 'run_local_system_expert(expert, params) if expert in _bridge_local_experts' in SERVER
     assert 'run_llm_expert(expert, params, target=_local_tgt)' in SERVER
     assert 'target=(_local_tgt or None)' in SERVER
     assert 'params.setdefault("session_path", str(SESS_DIR / (_sid_plan + ".json")))' in SERVER

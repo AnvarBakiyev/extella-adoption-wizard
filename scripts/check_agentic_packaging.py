@@ -67,7 +67,8 @@ def main():
     # Любой Qwen-провайдер допустим. Pro-копия без BYOK не попадает в рабочий реестр, но её id
     # сохраняется для привязки пользовательского ключа/endpoint вместо безвозвратного удаления.
     create_nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and
-                    node.name in {"_is_qwen_agent_record", "_agent_probe_ok", "_agent_create_copy"}]
+                    node.name in {"_is_qwen_agent_record", "_agent_probe_ok", "_agent_create_copy",
+                                  "_platform_auth_error", "_platform_auth_message"}]
     agent_calls, registered = [], []
 
     def agent_api(endpoint, payload, timeout=0):
@@ -80,7 +81,7 @@ def main():
             return {"status": "error", "message": "pro_key_required: provider API key"}
         return {"status": "success"}
 
-    create_ns = {"api": agent_api, "CONFIG": {}, "BASE_QWEN_AGENT": "agent_base",
+    create_ns = {"api": agent_api, "CONFIG": {}, "BASE_QWEN_AGENT": "agent_base", "json": __import__("json"),
                  "CURAGENT_KV": "current", "qwen_agents": lambda: ["agent_user_qwen"],
                  "_kv_read": lambda *a: "", "_scrub": str,
                  "_agent_register": lambda *a: registered.append(a)}
@@ -95,7 +96,8 @@ def main():
     assert registered == []
 
     link_nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and
-                  node.name in {"_is_qwen_agent_record", "_agent_probe_ok", "_agent_link"}]
+                  node.name in {"_is_qwen_agent_record", "_agent_probe_ok", "_agent_link",
+                                "_platform_auth_error", "_platform_auth_message"}]
     linked = []
 
     def link_api(endpoint, payload, timeout=0):
@@ -106,7 +108,8 @@ def main():
             return {"status": "completed", "output_text": "готов"}
         return {"status": "error"}
 
-    link_ns = {"api": link_api, "_scrub": str, "_agent_register": lambda *a: linked.append(a)}
+    link_ns = {"api": link_api, "_scrub": str, "_agent_register": lambda *a: linked.append(a),
+               "json": __import__("json")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=link_nodes, type_ignores=[])),
                  str(SERVER), "exec"), link_ns)
     accepted = link_ns["_agent_link"]("agent_custom")

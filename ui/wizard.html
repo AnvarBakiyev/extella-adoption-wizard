@@ -614,6 +614,11 @@ var _agentGateShown=false;
 async function agentGate(force){
   if(_agentGateShown && !force) return;
   var st; try{ st=await jget('/x/agents'); }catch(e){ st=null; }
+  if(st && st.platform_ready===false){
+    _agentGateShown=true;
+    _agentGateUnavailable(st.why||'Нет связи с платформой Extella.', !!st.auth_required);
+    return;
+  }
   var cur=(st&&st.current)||'';
   var list=(st&&st.agents)||[];
   if(cur){
@@ -626,6 +631,26 @@ async function agentGate(force){
   }
   _agentGateShown=true;
   _agentGateRender(list, '', '');
+}
+function _agentGateUnavailable(why, authRequired){
+  resetModInput();
+  el("modTitle").textContent = authRequired ? "Сначала запустите Extella" : "Платформа временно недоступна";
+  el("modHint").textContent = why;
+  el("modInput").outerHTML = '<input id="modInput" type="hidden">'
+    + '<div style="padding:12px;border-radius:10px;background:#fff5ef;color:#8d352a;font-size:13px;line-height:1.5">'
+    + (authRequired
+       ? 'Существующий агент не удалён. Не создавайте и не привязывайте его повторно.'
+       : 'Список агентов сохранён на платформе; повторите проверку после восстановления связи.')
+    + '</div><button class="btn gold" style="width:100%;margin-top:12px" onclick="agentGateRetry()">↻ Проверить снова</button>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Позже";
+  _modCb=null;
+}
+async function agentGateRetry(){
+  var ob=el("modOkBtn"); if(ob) ob.disabled=true;
+  _agentGateShown=false;
+  await agentGate(true);
+  if(ob) ob.disabled=false;
 }
 function _agentGateRender(list, broken, why){
   var rows=(list||[]).map(function(a){
@@ -710,6 +735,11 @@ async function agentGateLink(){
 async function refreshAgentBadge(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){ _agents={agents:[],current:""}; }
   const b=el("agentBadge"); if(!b) return;
+  if(_agents && _agents.platform_ready===false){
+    b.textContent = _agents.auth_required ? "⚠ Запустите Extella" : "⚠ Нет связи";
+    b.style.color="#a33b2f"; b.style.fontWeight="700";
+    return;
+  }
   const cur=(_agents.agents||[]).find(a=>a.id===_agents.current);
   b.textContent = cur ? ("🤖 "+cur.name) : "🤖 Выбрать агента";
   b.style.color = cur ? "" : "#a97e35"; b.style.fontWeight = cur ? "" : "700";
@@ -722,6 +752,10 @@ async function refreshAgentBadge(){
 }
 async function openAgentManager(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){}
+  if(_agents && _agents.platform_ready===false){
+    _agentGateUnavailable(_agents.why||'Нет связи с платформой Extella.', !!_agents.auth_required);
+    return;
+  }
   const list=(_agents.agents||[]).map(function(a){
     const on=a.id===_agents.current;
     return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+(on?'var(--gold,#c9a35c)':'var(--cream-dark,#e5e0d5)')+';border-radius:9px;margin-bottom:6px;background:'+(on?'#c9a35c14':'transparent')+'">'+

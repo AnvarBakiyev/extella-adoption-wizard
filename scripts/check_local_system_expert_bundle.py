@@ -20,6 +20,10 @@ def main():
             assert callable(runtime._load_local_system_expert(name)), name
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            session = runtime.run_local_system_expert(
+                "wz_session", {"action": "create", "client_name": "VM", "base_dir": str(root)})
+            assert session.get("status") == "success"
+            assert (root / (session["session"]["session_id"] + ".json")).is_file()
             (root / "wz_auto_compose.py").write_text(
                 '$extens("include.py")\ninclude("import json", [])\n'
                 'def wz_auto_compose(task=""):\n'
@@ -33,7 +37,7 @@ def main():
     finally:
         runtime.SYSTEM_EXPERT_DIR = original_dir
         runtime._CACHE.clear()
-    print("локальные системные эксперты: 3/3 загружаются из подписанного bundle ✓")
+    print("локальные системные эксперты: 4/4, включая сессии без Listener ✓")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.25"
+EXPECTED_VERSION="5.26"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"
@@ -53,6 +53,7 @@ echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" "$SRC/scripts/check_agentic_universal.py"
 "$PY" "$SRC/scripts/check_build_start_idempotency.py"
 "$PY" "$SRC/scripts/check_local_system_expert_bundle.py"
+"$PY" "$SRC/scripts/check_agent_auth_resilience.py"
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
 # падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
 # повторяем проверку лишь когда бинарник реально запускается.
@@ -79,12 +80,12 @@ done
 cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
 mkdir -p "$BACKUP/system_experts"
-for name in wz_auto_compose.py wz_build_plan.py wz_generate_blueprint.py; do
+for name in wz_auto_compose.py wz_build_plan.py wz_generate_blueprint.py wz_session.py; do
   [ ! -f "$SYS_EXPERT_DIR/$name" ] || cp "$SYS_EXPERT_DIR/$name" "$BACKUP/system_experts/$name"
   cp "$SRC/experts/$name" "$SYS_EXPERT_DIR/$name"
 done
 echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
-echo "  ✓ 3 служебных эксперта обновлены локально; пользовательские эксперты, концепты и правила не переустанавливались"
+echo "  ✓ 4 служебных эксперта обновлены локально; пользовательские эксперты, концепты и правила не переустанавливались"
 
 echo "→ Обновляю read/action-адаптер Workspace к тому же Process Contract"
 if [ -d "$WS_DIR" ]; then
