@@ -5,10 +5,11 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.24"
+EXPECTED_VERSION="5.25"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"
+SYS_EXPERT_DIR="$APP_DIR/system_experts"
 PY="$(command -v python3.12 || command -v python3 || true)"
 
 [ -n "$PY" ] || { echo "Нет Python 3.12/3 — обновление остановлено."; exit 1; }
@@ -51,6 +52,7 @@ echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" "$SRC/scripts/check_dependency_input_bundle.py"
 "$PY" "$SRC/scripts/check_agentic_universal.py"
 "$PY" "$SRC/scripts/check_build_start_idempotency.py"
+"$PY" "$SRC/scripts/check_local_system_expert_bundle.py"
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node
 # падал у Гульжан ДО копирования дельты. JS уже прошёл обязательный release-preflight; на клиенте
 # повторяем проверку лишь когда бинарник реально запускается.
@@ -67,20 +69,22 @@ else
   echo "    релизный wizard.html уже проверен серверным preflight"
 fi
 
-echo "→ Проверяю общие системные эксперты (только чтение)"
-"$PY" "$SRC/scripts/check_required_global_experts.py" --config "$APP_DIR/config.json"
-
 BACKUP="$HOME/extella_wizard/backups/qa-${EXPECTED_VERSION}-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP" "$APP_DIR" "$CAT_DIR"
-for name in server.py wz_agentic.py wz_build.py wz_llm.py wz_platform.py wz_process.py wizard.html; do
+mkdir -p "$BACKUP" "$APP_DIR" "$CAT_DIR" "$SYS_EXPERT_DIR"
+for name in server.py wz_agentic.py wz_build.py wz_llm.py wz_local_experts.py wz_platform.py wz_process.py wizard.html; do
   [ ! -f "$APP_DIR/$name" ] || cp "$APP_DIR/$name" "$BACKUP/$name"
   cp "$SRC/ui/$name" "$APP_DIR/$name"
 done
 [ ! -f "$CAT_DIR/catalog.json" ] || cp "$CAT_DIR/catalog.json" "$BACKUP/catalog.json"
 cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
+mkdir -p "$BACKUP/system_experts"
+for name in wz_auto_compose.py wz_build_plan.py wz_generate_blueprint.py; do
+  [ ! -f "$SYS_EXPERT_DIR/$name" ] || cp "$SYS_EXPERT_DIR/$name" "$BACKUP/system_experts/$name"
+  cp "$SRC/experts/$name" "$SYS_EXPERT_DIR/$name"
+done
 echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
-echo "  ✓ эксперты, концепты и правила локально не переустанавливались"
+echo "  ✓ 3 служебных эксперта обновлены локально; пользовательские эксперты, концепты и правила не переустанавливались"
 
 echo "→ Обновляю read/action-адаптер Workspace к тому же Process Contract"
 if [ -d "$WS_DIR" ]; then

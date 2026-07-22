@@ -27,6 +27,9 @@ def main():
     assert 'os.path.join(HERE, "catalog", "catalog.json")' in INSTALL
     assert 'os.path.join(cat_dir, "catalog.json")' in INSTALL
     assert 'os.path.join(app_dir, "catalog.json")' in INSTALL
+    assert 'os.path.join(app_dir, "system_experts")' in INSTALL
+    for name in ("wz_auto_compose.py", "wz_build_plan.py", "wz_generate_blueprint.py"):
+        assert name in INSTALL and name in DELTA
     assert 'cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"' in DELTA
     assert 'cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"' in DELTA
     assert 'params.setdefault("catalog_path", str(_cp))' in SERVER

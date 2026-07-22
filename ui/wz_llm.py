@@ -11,6 +11,7 @@
 import time
 import json
 from wz_platform import CONFIG, api, run_expert, qwen_agent, qwen_agents
+from wz_local_experts import local_system_expert_available, run_local_system_expert
 
 
 def gen_panel_manifest(goal, stages):
@@ -110,12 +111,16 @@ def run_llm_expert(expert_name, params, wait=660, agents=None, target=None):
             seen.add(a)
             agents.append(a)
     agents = agents or [""]
+    local = local_system_expert_available(expert_name)
     last = None
     for aid in agents:
         p = dict(params)
         p["agent_id"] = aid
         for attempt in range(2):   # флап обычно отпускает за секунды → короткий ретрай
-            r = run_expert(expert_name, p, wait=wait, glob=True, target=target)
+            # Bridge-owned planning harnesses ship with the signed local release. Qwen reasoning
+            # remains remote, but no account-scoped registry/Listener round-trip is needed here.
+            r = (run_local_system_expert(expert_name, p) if local else
+                 run_expert(expert_name, p, wait=wait, glob=True, target=target))
             if not llm_transient_error(r):
                 return r
             last = r

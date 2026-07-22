@@ -36,9 +36,18 @@ shutil.copy2(cat_src, os.path.join(cat_dir, "catalog.json"))
 shutil.copy2(cat_src, os.path.join(app_dir, "catalog.json"))
 print("== Каталог возможностей ==\n  ✅ canonical + резерв в app")
 
+# Три bridge-owned эксперта являются частью подписанного локального runtime. Они по-прежнему
+# вызывают выбранный Qwen, но не зависят от account-scoped global registry и не требуют Listener.
+system_dir = os.path.join(app_dir, "system_experts")
+os.makedirs(system_dir, exist_ok=True)
+for system_name in ("wz_auto_compose.py", "wz_build_plan.py", "wz_generate_blueprint.py"):
+    shutil.copy2(os.path.join(HERE, "experts", system_name), os.path.join(system_dir, system_name))
+print("  ✅ локальный bundle системных экспертов: 3")
+
 # QA-дельта: без переменной ставим полный пакет как раньше; с ней — только перечисленные
 # repo-relative файлы (experts/..., concepts/..., rules/...). UI копирует быстрый shell-обновлятор.
 DELTA_FILES = {x.strip().replace("\\", "/") for x in os.environ.get("EXTELLA_DELTA_FILES", "").split(",") if x.strip()}
+BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint"}
 
 def selected(path):
     rel = os.path.relpath(path, HERE).replace(os.sep, "/")
@@ -63,6 +72,9 @@ ok = fail = 0
 for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
     if not selected(f): continue
     name = os.path.basename(f)[:-3]
+    if name in BRIDGE_OWNED_EXPERTS:
+        print("  ⏭  " + name + " — поставлен в локальный signed bundle")
+        continue
     src = open(f, encoding="utf-8").read()
     desc, kwargs = header(src)
     try:
