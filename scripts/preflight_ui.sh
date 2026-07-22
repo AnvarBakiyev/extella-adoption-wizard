@@ -81,6 +81,7 @@ echo "→ Universal Process Contract v1"
 python3 scripts/check_universal_process_runtime.py \
   && python3 scripts/check_universal_process_matrix.py \
   && python3 scripts/check_upc_orchestrator_runtime.py \
+  && python3 scripts/check_dependency_input_bundle.py \
   && python3 scripts/check_universal_process_vertical.py \
   && echo "   ✓ 10/10 сценариев, DAG/checkpoint/resume/HITL, generated orchestrator и вертикальный repair доказаны" \
   || { echo "   ✗ пошаговый runtime, локальный repair или checkpoint сломан"; fail=1; }

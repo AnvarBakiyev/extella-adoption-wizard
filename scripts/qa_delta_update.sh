@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.22"
+EXPECTED_VERSION="5.23"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"
@@ -60,6 +60,7 @@ echo "→ Проверяю скачанную дельту ${SHA:0:7}"
 "$PY" "$SRC/scripts/check_blueprint_expert_runtime.py"
 "$PY" "$SRC/scripts/check_universal_process_runtime.py"
 "$PY" "$SRC/scripts/check_upc_orchestrator_runtime.py"
+"$PY" "$SRC/scripts/check_dependency_input_bundle.py"
 "$PY" "$SRC/scripts/check_agentic_universal.py"
 "$PY" "$SRC/scripts/check_build_start_idempotency.py"
 # `command -v` недостаточно: Homebrew может оставить node в PATH с потерянной dylib. Такой node

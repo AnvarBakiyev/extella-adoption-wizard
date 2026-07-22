@@ -10,6 +10,7 @@ import re
 import time
 import base64
 import hashlib
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from wz_platform import CONFIG, BASE, api, run_expert, qwen_agent
@@ -39,6 +40,52 @@ from wz_process import (accept_step as universal_accept_step,
 SESS_DIR = Path.home() / "extella_wizard" / "sessions"
 RUNS_DIR = Path.home() / "extella_wizard" / "runs"
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz)
+
+
+def _dependency_input_bundle(step, by_id, bdir):
+    """Materialize dependency outputs as one explicit, collision-free input package.
+
+    Generated experts receive one ``source_file`` argument. Passing artifacts from several output
+    directories made the runner choose only the first parent, so a merge step could silently see
+    one of several identically named ``step_result.json`` files. Preserve the upstream step id in
+    every local filename and map it back to the original artifact in a manifest.
+    """
+    dependencies = [str(x) for x in (step.get("dependencies") or [])]
+    safe_step = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(step.get("id") or "step"))[:80] or "step"
+    version = max(1, int(step.get("version") or 1))
+    bundle = Path(bdir) / "process" / "dependency_inputs" / (safe_step + "_v" + str(version))
+    bundle.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema": "upc-dependency-bundle/1.1", "step_id": step.get("id"),
+                "step_version": version, "dependencies": []}
+    copied = []
+    for dep_position, dep_id in enumerate(dependencies, 1):
+        dep = by_id.get(dep_id) or {}
+        dep_token = re.sub(r"[^a-zA-Z0-9_-]+", "_", dep_id)[:64] or ("dep_%03d" % dep_position)
+        dep_row = {"step_id": dep_id, "version": dep.get("version"),
+                   "status": dep.get("status"), "output": dep.get("output"), "artifacts": []}
+        for artifact_position, raw in enumerate(dep.get("artifact_refs") or [], 1):
+            item = raw if isinstance(raw, dict) else {"path": str(raw)}
+            source = Path(str(item.get("path") or ""))
+            if not source.exists() or not source.is_file():
+                continue
+            local_name = "%03d_%s__%03d__%s" % (
+                dep_position, dep_token, artifact_position, source.name)
+            target = bundle / local_name
+            if source.resolve() != target.resolve():
+                shutil.copy2(str(source), str(target))
+            copied.append(target)
+            dep_row["artifacts"].append({
+                "kind": item.get("kind") or "artifact", "path": str(target),
+                "source_path": str(source), "bytes": target.stat().st_size,
+                "sha256": universal_file_sha256(target),
+            })
+        manifest["dependencies"].append(dep_row)
+    manifest_path = bundle / "dependency_manifest.json"
+    temporary = manifest_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str),
+                         encoding="utf-8")
+    temporary.replace(manifest_path)
+    return [manifest_path] + copied
 
 
 def _audit_experts(names):
@@ -1973,26 +2020,7 @@ def _run_build(session_id, build_id):
                     return list(dict.fromkeys(selected_sources))
                 if not deps:
                     return list(sample_files)
-                files = []
-                dependency_doc = {"schema": "upc-dependency-bundle/1.0",
-                                  "step_id": step.get("id"), "dependencies": []}
-                for dep_id in deps:
-                    dep = by_id.get(dep_id) or {}
-                    dep_row = {"step_id": dep_id, "version": dep.get("version"),
-                               "output": dep.get("output"), "artifacts": dep.get("artifact_refs") or []}
-                    dependency_doc["dependencies"].append(dep_row)
-                    for raw in dep.get("artifact_refs") or []:
-                        path = Path(str(raw.get("path") if isinstance(raw, dict) else raw))
-                        if path.exists() and path.is_file():
-                            files.append(path)
-                if files:
-                    return list(dict.fromkeys(files))
-                dep_dir = bdir / "process" / "dependency_inputs"
-                dep_dir.mkdir(parents=True, exist_ok=True)
-                dep_path = dep_dir / (str(step.get("id")) + "_v" + str(step.get("version")) + ".json")
-                dep_path.write_text(json.dumps(dependency_doc, ensure_ascii=False, indent=2, default=str),
-                                    encoding="utf-8")
-                return [dep_path]
+                return _dependency_input_bundle(step, by_id, bdir)
 
             while True:
                 status_now = universal_process_status(process_graph)
