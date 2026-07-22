@@ -1719,10 +1719,27 @@ def _run_build(session_id, build_id):
         _build_session = json.loads((SESS_DIR / (session_id + ".json")).read_text(encoding="utf-8"))
     except Exception:
         _build_session = {}
+    _sess_agent = _build_session.get("agent_id") or ""
+    # Агент сессии мог быть УДАЛЁН с платформы, оставшись в сессии/реестре (QA-агент, 22.07): тогда
+    # и нативное действие, и fallback-кодоген бьют в 404, а стройка падает с ложным «builder_defect».
+    # Дешёвая проверка перед стройкой: мёртвый → честный фолбэк на живого Qwen + заметка в прогрессе.
+    if _sess_agent:
+        try:
+            _ag = api("/api/agent/get", {"agent_id": _sess_agent}, timeout=30)
+            _gone = (isinstance(_ag, dict) and _ag.get("http_code") == 404) or \
+                    (isinstance(_ag, dict) and _ag.get("status") != "error"
+                     and not (_ag.get("id") or _ag.get("model")))
+            if _gone:   # именно НЕТ агента; транзиент 5xx выбор пользователя не понижает
+                stage("agent_check", "Агент сессии недоступен на платформе (" + _sess_agent[:14] +
+                      "…) — стройка идёт на резервном Qwen; проверьте выбор агента в кабинете",
+                      "success", warning=True)
+                _sess_agent = ""
+        except Exception:
+            pass   # сеть моргнула — не решаем судьбу агента по транзиенту
     llm = {"api_key": CONFIG.get("llm_api_key", ""), "model": CONFIG.get("llm_model", ""),
            "base_url": CONFIG.get("llm_base_url", ""),
            "api_token": CONFIG.get("auth_token", ""), "api_base": BASE,
-           "agent_id": _build_session.get("agent_id") or qwen_agent()}
+           "agent_id": _sess_agent or qwen_agent()}
     tok = {"api_token": CONFIG["auth_token"]}
 
     # namespace: короткий snake-префикс для экспертов процесса (из имени клиента)
