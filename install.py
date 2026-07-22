@@ -12,8 +12,13 @@ if not os.path.exists(CFG_PATH):
 cfg = json.load(open(CFG_PATH, encoding="utf-8"))
 TOKEN = cfg.get("auth_token", "")
 BASE = cfg.get("api_base", "https://api.extella.ai")
+# `config.agent_id` is the user's Qwen reasoning agent. It belongs in the BODY of
+# /api/agent/run, but it is not the owner of the shared expert registry. Supplying it as
+# X-Agent-Id while saving a global system expert produces HTTP 401 on linked/copied Qwen
+# agents. Keep the storage scope identical to ui/wz_platform.py and scripts/sync.py.
+SYSTEM_AGENT_ID = cfg.get("system_agent_id") or "agent_extella_default"
 HDR = {"X-Auth-Token": TOKEN, "Content-Type": "application/json",
-       "X-Profile-Id": "default", "X-Agent-Id": cfg.get("agent_id", "agent_extella_default")}
+       "X-Profile-Id": "default", "X-Agent-Id": SYSTEM_AGENT_ID}
 if not TOKEN:
     print("В config.json нет auth_token."); sys.exit(1)
 

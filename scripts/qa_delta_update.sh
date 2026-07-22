@@ -5,10 +5,11 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.21"
+EXPECTED_VERSION="5.22"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"
+UPC_EXPERT_MARKER="$APP_DIR/.upc-system-experts-v1"
 PY="$(command -v python3.12 || command -v python3 || true)"
 
 [ -n "$PY" ] || { echo "Нет Python 3.12/3 — обновление остановлено."; exit 1; }
@@ -88,18 +89,26 @@ cp "$SRC/catalog/catalog.json" "$CAT_DIR/catalog.json"
 cp "$SRC/catalog/catalog.json" "$APP_DIR/catalog.json"
 echo "  ✓ все модули моста, UI и каталог возможностей обновлены; backup: $BACKUP"
 
-if "$PY" - "$INSTALLED_VERSION" <<'PY'
+NEEDS_UPC_EXPERTS=0
+if [ ! -f "$UPC_EXPERT_MARKER" ]; then
+  NEEDS_UPC_EXPERTS=1
+elif "$PY" - "$INSTALLED_VERSION" <<'PY'
 import re, sys
 parts = tuple(int(x) for x in re.findall(r"\d+", sys.argv[1] or ""))
 raise SystemExit(0 if not parts or parts < (5, 14) else 1)
 PY
 then
+  NEEDS_UPC_EXPERTS=1
+fi
+
+if [ "$NEEDS_UPC_EXPERTS" -eq 1 ]; then
   echo "→ Довожу системные эксперты Universal Process со старой версии $INSTALLED_VERSION"
   EXTELLA_DELTA_FILES="experts/wz_generate_blueprint.py,experts/wz_build_plan.py,experts/wz_auto_compose.py" \
     "$PY" "$SRC/install.py"
+  : > "$UPC_EXPERT_MARKER"
   echo "  ✓ 3 требуемых эксперта обновлены; остальные эксперты, концепты и правила не переустанавливались"
 else
-  echo "  ✓ системные эксперты уже актуальны (было v$INSTALLED_VERSION) — не переустанавливались"
+  echo "  ✓ системные эксперты уже актуальны (подтверждено маркером миграции) — не переустанавливались"
 fi
 
 echo "→ Обновляю read/action-адаптер Workspace к тому же Process Contract"

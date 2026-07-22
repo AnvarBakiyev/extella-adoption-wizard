@@ -32,7 +32,14 @@ def main():
     for name in ("wz_generate_blueprint.py", "wz_build_plan.py", "wz_auto_compose.py"):
         assert f"experts/{name}" in delta, f"QA-дельта не обновляет изменённого эксперта {name}"
     assert 'parts < (5, 14)' in delta
-    assert 'системные эксперты уже актуальны' in delta
+    assert 'UPC_EXPERT_MARKER="$APP_DIR/.upc-system-experts-v1"' in delta
+    assert '[ ! -f "$UPC_EXPERT_MARKER" ]' in delta
+    assert ': > "$UPC_EXPERT_MARKER"' in delta
+    assert 'подтверждено маркером миграции' in delta
+    install_text = INSTALL.read_text(encoding="utf-8")
+    assert 'SYSTEM_AGENT_ID = cfg.get("system_agent_id") or "agent_extella_default"' in install_text
+    assert '"X-Agent-Id": SYSTEM_AGENT_ID' in install_text
+    assert '"X-Agent-Id": cfg.get("agent_id"' not in install_text
     for name in ("dist/workspace/$name", "WS_DIR", "Workspace v1.1.0", "EXTELLA_QA_SHA"):
         assert name in delta, f"QA-дельта не обновляет общий Workspace-адаптер: {name}"
     print("QA-дельта: изменённые артефакты выбраны, полный режим сохранён ✓")
