@@ -12,6 +12,7 @@ import tempfile
 import types
 import zipfile
 from pathlib import Path
+from xml.sax.saxutils import escape, quoteattr
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,6 +76,74 @@ def source_for(pkg, strategy="holistic_build", operation="обработать",
                             "normalizations": normalizations or [], "evidence": ["Task Contract"]}],
             "acceptance_criteria": ["все обязательные входы обработаны"],
             "selected_capabilities": selected or [], "missing_capability": "", "question": ""}
+
+
+def write_xlsx(path, sheets):
+    """Small standards-based OOXML fixture; QA must work on a clean Mac without openpyxl."""
+    def ref(index):
+        value, letters = index + 1, ""
+        while value:
+            value, rem = divmod(value - 1, 26)
+            letters = chr(65 + rem) + letters
+        return letters
+
+    content_overrides = []
+    workbook_sheets = []
+    relationships = []
+    worksheet_parts = []
+    for sheet_index, (title, rows) in enumerate(sheets, 1):
+        content_overrides.append(
+            '<Override PartName="/xl/worksheets/sheet%d.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' %
+            sheet_index)
+        workbook_sheets.append('<sheet name=%s sheetId="%d" r:id="rId%d"/>' %
+                               (quoteattr(str(title)), sheet_index, sheet_index))
+        relationships.append(
+            '<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            'Target="worksheets/sheet%d.xml"/>' % (sheet_index, sheet_index))
+        row_xml = []
+        for row_index, row in enumerate(rows, 1):
+            cells = []
+            for column_index, value in enumerate(row):
+                cell_ref = "%s%d" % (ref(column_index), row_index)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    cells.append('<c r="%s"><v>%s</v></c>' % (cell_ref, value))
+                else:
+                    cells.append('<c r="%s" t="inlineStr"><is><t>%s</t></is></c>' %
+                                 (cell_ref, escape(str(value))))
+            row_xml.append('<row r="%d">%s</row>' % (row_index, "".join(cells)))
+        worksheet_parts.append(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<sheetData>%s</sheetData></worksheet>' % "".join(row_xml))
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+        "".join(content_overrides) + '</Types>')
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets>%s</sheets></workbook>' % "".join(workbook_sheets))
+    rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s'
+            '</Relationships>' % "".join(relationships))
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/></Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", rels)
+        for index, worksheet in enumerate(worksheet_parts, 1):
+            archive.writestr("xl/worksheets/sheet%d.xml" % index, worksheet)
 
 
 def assert_matrix(mod):
@@ -229,7 +298,6 @@ def assert_matrix(mod):
 
 
 def acceptance_cases(mod, root):
-    import openpyxl
     inp = root / "input.csv"
     inp.write_text("id,value\nA,1\n", encoding="utf-8")
     out = root / "out"
@@ -239,8 +307,7 @@ def acceptance_cases(mod, root):
                   "The empty result is expected and supported by the recorded acceptance evidence.\n",
                   encoding="utf-8")
     xlsx = out / "report.xlsx"
-    wb = openpyxl.Workbook(); ws = wb.active
-    ws.append(["criterion", "result"]); ws.append(["X", 0]); wb.save(xlsx)
+    write_xlsx(xlsx, [("Report", [["criterion", "result"], ["X", 0]])])
     # 10. Корректный пустой результат принимается с доказательством.
     empty = {"status": "success", "summary": {"processed_files": 1, "total_count": 0, "matched": 0},
              "evidence": {"files_used": ["input.csv"], "acceptance_checks": [
@@ -303,11 +370,9 @@ def gulzhan_regression(mod, root):
     report_md = root / "gulzhan_report.md"
     report_md.write_text("# Synthetic reconciliation\n\nAll three inputs processed. No matches were reported. "
                          "This is deliberately the historical false-success fixture.\n", encoding="utf-8")
-    import openpyxl
     report_xlsx = root / "gulzhan_report.xlsx"
-    wb = openpyxl.Workbook(); ws = wb.active
-    ws.append(["entity", "source_count", "matched"])
-    ws.append(["type_a", 1063, 0]); ws.append(["type_b", 4889, 0]); wb.save(report_xlsx)
+    write_xlsx(report_xlsx, [("Report", [
+        ["entity", "source_count", "matched"], ["type_a", 1063, 0], ["type_b", 4889, 0]])])
     historical = {
         "status": "success",
         "summary": {"processed_files": 3, "erp_rows": 18500, "type_a_count": 1063,
@@ -468,13 +533,22 @@ def repair_and_memory(mod, root, inp, good, bad):
 
 def profile_variants(mod, root):
     # Варьируем порядок листов/названия/колонки и доказываем, что профилировщик не берёт только первые четыре.
-    import openpyxl
     book = root / "renamed.xlsx"
-    wb = openpyxl.Workbook(); wb.remove(wb.active)
-    for i in range(6):
-        ws = wb.create_sheet("Section-%d" % i)
-        ws.append(["field_%d" % i, "measure_%d" % i]); ws.append(["id-%d" % i, i])
-    wb.save(book)
+    write_xlsx(book, [("Section-%d" % i,
+                       [["field_%d" % i, "measure_%d" % i], ["id-%d" % i, i]])
+                      for i in range(6)])
+    sentinel = object()
+    previous_openpyxl = sys.modules.pop("openpyxl", sentinel)
+    sys.modules["openpyxl"] = None
+    try:
+        fallback_profile = mod.profile_file(book)
+    finally:
+        sys.modules.pop("openpyxl", None)
+        if previous_openpyxl is not sentinel:
+            sys.modules["openpyxl"] = previous_openpyxl
+    assert not fallback_profile.get("profile_error"), fallback_profile
+    assert len(fallback_profile["workbook"]) == 6
+    assert fallback_profile["workbook"][5]["columns"] == ["field_5", "measure_5"]
     prof = mod.profile_file(book)
     assert len(prof["workbook"]) == 6 and prof["workbook"][5]["columns"] == ["field_5", "measure_5"]
     doc = root / "flow.docx"

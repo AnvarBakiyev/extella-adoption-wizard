@@ -18,6 +18,8 @@ import tempfile
 import time
 import unicodedata
 import urllib.request
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -134,6 +136,96 @@ def _pdf_text(path):
     return _clip(text, 9000), source or "unavailable_or_scan"
 
 
+def _xlsx_profile_ooxml(path):
+    """Read-only XLSX profile without openpyxl, for clean Macs and QA installers.
+
+    The Builder only needs sheet identity plus a bounded cell sample.  OOXML stores those facts in
+    workbook relationships, shared strings and worksheet XML, so installing a spreadsheet runtime
+    into the bridge is unnecessary.  Full business processing remains the generated expert's job.
+    """
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+          "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+          "p": "http://schemas.openxmlformats.org/package/2006/relationships"}
+
+    def column_index(cell_ref):
+        letters = re.match(r"[A-Za-z]+", str(cell_ref or ""))
+        value = 0
+        for char in (letters.group(0).upper() if letters else ""):
+            value = value * 26 + ord(char) - 64
+        return max(0, value - 1)
+
+    def texts(node):
+        return "".join(str(x.text or "") for x in node.findall(".//m:t", ns))
+
+    with zipfile.ZipFile(str(path)) as archive:
+        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+        relations = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        targets = {str(row.attrib.get("Id") or ""): str(row.attrib.get("Target") or "")
+                   for row in relations.findall("p:Relationship", ns)}
+        shared = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            strings = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared = [texts(item) for item in strings.findall("m:si", ns)]
+        sheets = []
+        for sheet in workbook.findall("m:sheets/m:sheet", ns)[:12]:
+            rid = str(sheet.attrib.get("{%s}id" % ns["r"]) or "")
+            target = targets.get(rid, "")
+            if target.startswith("/"):
+                target = target.lstrip("/")
+            elif not target.startswith("xl/"):
+                target = "xl/" + target.lstrip("/")
+            target = str(Path(target))
+            if target not in archive.namelist():
+                continue
+            worksheet = ET.fromstring(archive.read(target))
+            row_values, max_row, max_column = [], 0, 0
+            for row in worksheet.findall(".//m:sheetData/m:row", ns)[:30]:
+                values = {}
+                row_number = int(row.attrib.get("r") or (len(row_values) + 1))
+                max_row = max(max_row, row_number)
+                for cell in row.findall("m:c", ns):
+                    index = column_index(cell.attrib.get("r"))
+                    if index >= 30:
+                        continue
+                    kind = str(cell.attrib.get("t") or "")
+                    raw_node = cell.find("m:v", ns)
+                    raw = str(raw_node.text or "") if raw_node is not None else ""
+                    if kind == "s":
+                        try:
+                            value = shared[int(raw)]
+                        except Exception:
+                            value = raw
+                    elif kind == "inlineStr":
+                        value = texts(cell)
+                    elif kind == "b":
+                        value = raw == "1"
+                    elif kind in ("str", "e"):
+                        value = raw
+                    else:
+                        try:
+                            value = int(raw) if re.fullmatch(r"[-+]?\d+", raw) else float(raw)
+                        except Exception:
+                            value = raw
+                    values[index] = _clip(value, 180)
+                    max_column = max(max_column, index + 1)
+                width = min(30, max(values.keys(), default=-1) + 1)
+                row_values.append([values.get(index, "") for index in range(width)])
+            header_row, best = 0, -1
+            for index, row in enumerate(row_values):
+                filled = sum(1 for value in row if str(value or "").strip())
+                textual = sum(1 for value in row if str(value or "").strip() and
+                              not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", str(value).strip()))
+                if filled + textual > best:
+                    best, header_row = filled + textual, index
+            sheets.append({"title": _nfc(sheet.attrib.get("name")),
+                           "max_row": max_row or len(row_values), "max_column": max_column,
+                           "header_row": header_row + 1,
+                           "columns": [_nfc(v) for v in
+                                       (row_values[header_row] if row_values else []) if str(v).strip()],
+                           "sample_rows": row_values})
+        return sheets
+
+
 def profile_file(path):
     """Фактический, ограниченный профиль входа для рассуждения Qwen и независимой приёмки."""
     p = Path(path)
@@ -146,30 +238,34 @@ def profile_file(path):
     ext = p.suffix.lower()
     try:
         if ext in (".xlsx", ".xlsm"):
-            import openpyxl
-            wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
-            sheets = []
-            # Порядок листов не является бизнес-смыслом. Профилируем достаточно широкий набор,
-            # чтобы Строитель не принял первый попавшийся лист за нужный реестр (кейс 20.07),
-            # но ограничиваем строки/колонки для предсказуемого контекста Qwen.
-            for ws in wb.worksheets[:12]:
-                rows = []
-                for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row or 1, 30), values_only=True):
-                    rows.append([_clip(v, 180) for v in list(row)[:30]])
-                header_row, best = 0, -1
-                for index, row in enumerate(rows):
-                    filled = sum(1 for value in row if str(value or "").strip())
-                    textual = sum(1 for value in row if str(value or "").strip() and
-                                  not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", str(value).strip()))
-                    score = filled + textual
-                    if score > best:
-                        best, header_row = score, index
-                sheets.append({"title": _nfc(ws.title), "max_row": ws.max_row, "max_column": ws.max_column,
-                               "header_row": header_row + 1,
-                               "columns": [_nfc(v) for v in (rows[header_row] if rows else []) if str(v).strip()],
-                               "sample_rows": rows})
-            wb.close()
-            out["workbook"] = sheets
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+                sheets = []
+                # Порядок листов не является бизнес-смыслом. Профилируем достаточно широкий набор,
+                # чтобы Строитель не принял первый попавшийся лист за нужный реестр (кейс 20.07),
+                # но ограничиваем строки/колонки для предсказуемого контекста Qwen.
+                for ws in wb.worksheets[:12]:
+                    rows = []
+                    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row or 1, 30), values_only=True):
+                        rows.append([_clip(v, 180) for v in list(row)[:30]])
+                    header_row, best = 0, -1
+                    for index, row in enumerate(rows):
+                        filled = sum(1 for value in row if str(value or "").strip())
+                        textual = sum(1 for value in row if str(value or "").strip() and
+                                      not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", str(value).strip()))
+                        score = filled + textual
+                        if score > best:
+                            best, header_row = score, index
+                    sheets.append({"title": _nfc(ws.title), "max_row": ws.max_row,
+                                   "max_column": ws.max_column, "header_row": header_row + 1,
+                                   "columns": [_nfc(v) for v in
+                                               (rows[header_row] if rows else []) if str(v).strip()],
+                                   "sample_rows": rows})
+                wb.close()
+                out["workbook"] = sheets
+            except (ImportError, ModuleNotFoundError):
+                out["workbook"] = _xlsx_profile_ooxml(p)
         elif ext == ".csv":
             import csv
             with p.open("r", encoding="utf-8", errors="replace", newline="") as fh:
