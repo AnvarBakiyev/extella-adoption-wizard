@@ -3591,6 +3591,7 @@ function universalProcessHTML(p){
   const active=steps.filter(x=>x.status==='running'||x.status==='repairing').length;
   const rows=steps.map((s,i)=>{
     const impl=s.implementation||{}, gate=s.human_gate||{}, err=s.error||{}, ctl=s.controller_decision||{};
+    const decision=s.execution_decision||{};
     const attempts=(s.attempts||[]).length, deps=(s.dependencies||[]);
     const detail=gate.question||err.message||s.status_reason||'';
     const request=(gate.permission_request&&typeof gate.permission_request==='object')?gate.permission_request:{};
@@ -3609,6 +3610,7 @@ function universalProcessHTML(p){
         ${deps.length?`<div style="margin-top:3px;color:var(--silver)">После: ${deps.map(esc).join(', ')}</div>`:''}
         ${impl.capability_ref?`<div style="margin-top:3px;color:var(--silver)">Capability: <code>${esc(impl.capability_ref)}</code></div>`:''}
         ${impl.expert_ref?`<div style="margin-top:3px;color:var(--silver)">Эксперт: <code>${esc(impl.expert_ref)}</code></div>`:''}
+        ${decision.route?`<div style="margin-top:5px;padding:6px 8px;border-radius:7px;background:#f3f7f3;color:var(--nav)"><b>Решение Qwen до создания эксперта:</b> ${esc(decision.route)}${decision.reason?' · '+esc(decision.reason):''}</div>`:''}
         ${impl.rejected_reuse_ref?`<div style="margin-top:4px;color:#a9701a">Reuse <code>${esc(impl.rejected_reuse_ref)}</code> отклонён проверкой совместимости → создаётся подходящий эксперт.</div>`:''}
         ${ctl.action?`<div style="margin-top:5px;padding:6px 8px;border-radius:7px;background:#fdf6e7;color:#7f5b16"><b>Контроллер сбоя:</b> ${esc(ctl.failure_class||'')} → ${esc(ctl.action)}${Number(ctl.duration_seconds)>0?` · ${esc(ctl.duration_seconds)} сек`:''}${(s.implementation||{}).subgraph_ref?' · шаг раздроблен, принятые соседи сохранены':''}</div>`:''}
         ${s.checkpoint?`<div style="margin-top:4px;color:var(--ok)">Checkpoint принят · вход, контракт, код и артефакты зафиксированы</div>`:''}

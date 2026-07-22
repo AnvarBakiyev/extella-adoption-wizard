@@ -1,8 +1,8 @@
 """Агентная стройка Визарда: решить задачу целиком -> прогнать -> исправить -> доказать.
 
-Этот слой намеренно НЕ дробит бизнес-задачу на экспертов заранее. Qwen получает полный Task Package
-и профили всех образцов, создаёт одного исполняемого эксперта, а харнесс независимо запускает его и
-проверяет факты результата. Декомпозиция остаётся оптимизацией после работающего решения.
+Этот слой не назначает тип эксперта заранее. Qwen сначала получает Task Contract и фактические профили,
+выбирает task-first маршрут (reuse/build/llm_worker/split/replan), и лишь затем харнесс материализует
+исполняемого эксперта, независимо запускает его и проверяет факты результата.
 """
 import ast
 import hashlib
@@ -44,6 +44,7 @@ EXPERT_KWARGS = {
 REPORT_KEYS = ("report_md", "report_xlsx", "report_pdf", "report_docx", "report_pptx")
 SOURCE_STATUSES = ("ready", "need_human", "acquire")
 BUILD_STRATEGIES = ("reuse", "compose", "build", "holistic_build", "acquire", "need_human")
+EXECUTION_ROUTES = ("reuse", "build", "llm_worker", "split_step", "replan", "need_human", "acquire")
 MEMORY_KINDS = ("evidence", "lesson", "concept", "rule", "artifact")
 MEMORY_STATUSES = ("candidate", "verified", "rejected", "superseded")
 
@@ -614,6 +615,7 @@ def _builder_brief(task_package):
         "task_contract": p.get("task_contract"),
         "upc_step": p.get("upc_step"),
         "source_model": p.get("source_model"),
+        "execution_decision": p.get("execution_decision"),
         "process_source_context": {
             "manifest": p.get("global_source_manifest"),
             "accepted_source_model": p.get("global_source_model"),
@@ -699,7 +701,9 @@ def _source_model_prompt(package, previous_error=""):
     correction = ("\n\nПРЕДЫДУЩАЯ МОДЕЛЬ НЕ ПРОШЛА ДЕТЕРМИНИРОВАННУЮ ПРОВЕРКУ:\n" +
                   _clip(previous_error, 1200)) if previous_error else ""
     return ("Ты — архитектор источников универсального Builder Extella. До написания кода построй "
-            "явную модель фактических входов и выбери стратегию. Не угадывай роль файла/листа по позиции "
+            "явную модель фактических входов и выбери способ выполнения САМОЙ ЗАДАЧИ. На этом этапе "
+            "технического имени будущего эксперта ещё нет: не проектируй эксперта по заранее заданному "
+            "типу, сначала реши, какой маршрут нужен задаче. Не угадывай роль файла/листа по позиции "
             "или одному названию: опирайся на колонки, выборку, Task Contract и приводи evidence. "
             "Идентичность задаёт харнесс: для КАЖДОГО физического входа верни ровно его source_id, "
             "для раздела — section_id, а operations.inputs заполняй ТОЛЬКО этими ID. Не объединяй "
@@ -709,9 +713,18 @@ def _source_model_prompt(package, previous_error=""):
             "как обязательные правила и не задавай тот же вопрос повторно. "
             "Нормализацию идентификаторов предлагай только с доказательством; сомнительную помечай "
             "requires_owner=true. reuse/compose допустимы только для явно подходящей capability из списка. "
-            "acquire означает лишь предложение недостающей способности, не установку.\n\n"
+            "acquire означает лишь предложение недостающей способности, не установку. "
+            "execution_route выбирай так: reuse — есть точная проверенная capability; build — задача "
+            "детерминирована и решается кодом; llm_worker — смысловое решение нужно принимать при каждом "
+            "запуске; split_step — в одном шаге несколько независимо проверяемых действий; replan — неверна "
+            "сама граница/последовательность шагов; need_human — только реальная бизнес-неоднозначность или "
+            "недостающий доступ; acquire — отсутствует внешняя способность. Не выбирай need_human из-за "
+            "технической трудности.\n\n"
             "Верни ТОЛЬКО JSON:\n"
             '{"status":"ready|need_human|acquire","strategy":"reuse|compose|build|holistic_build|acquire|need_human",'
+            '"execution_route":"reuse|build|llm_worker|split_step|replan|need_human|acquire",'
+            '"decision_record":{"goal":"что должно быть достигнуто","basis":["факт из ТЗ/входов"],'
+            '"next_action":"что материализовать после решения"},'
             '"reason":"...","sources":[{"source_id":"source_001","name":"точное имя входа","role":"...","entities":["..."],'
             '"sections":[{"section_id":"source_001_section_001","name":"точное имя листа/раздела","role":"...","entities":["..."],'
             '"identifier_fields":["..."],"date_fields":["..."],"numeric_fields":["..."],'
@@ -744,6 +757,7 @@ def _normalize_source_model(raw, package):
                 break
     status = str(raw.get("status") or "").lower()
     strategy = str(raw.get("strategy") or "").lower()
+    execution_route = str(raw.get("execution_route") or raw.get("route") or "").lower()
     question_hint = str(raw.get("question") or "").strip()
     missing_hint = str(raw.get("missing_capability") or "").strip()
     has_model_body = (isinstance(raw.get("sources"), list) and bool(raw.get("sources")) and
@@ -780,6 +794,28 @@ def _normalize_source_model(raw, package):
         return {"ok": False, "why": "need_human требует одноимённую strategy"}
     if status == "acquire" and strategy != "acquire":
         return {"ok": False, "why": "acquire требует одноимённую strategy"}
+    route_aliases = {
+        "generate": "build", "create": "build", "code": "build", "deterministic": "build",
+        "reason": "llm_worker", "reasoning": "llm_worker", "semantic": "llm_worker",
+        "human": "need_human", "split": "split_step", "compose": "reuse",
+        "holistic_build": "build",
+    }
+    execution_route = route_aliases.get(execution_route, execution_route)
+    if not execution_route:
+        if status in ("need_human", "acquire"):
+            execution_route = status
+        elif strategy in ("reuse", "compose"):
+            execution_route = "reuse"
+        else:
+            execution_route = "build"
+        contract_repairs.append("execution_route:<missing>→" + execution_route)
+    if execution_route not in EXECUTION_ROUTES:
+        return {"ok": False, "why": "неизвестный execution_route Source Model: " + execution_route}
+    if status in ("need_human", "acquire") and execution_route != status:
+        return {"ok": False, "why": "status=%s несовместим с execution_route=%s" %
+                                     (status, execution_route)}
+    if status == "ready" and execution_route in ("need_human", "acquire"):
+        return {"ok": False, "why": "ready несовместим с execution_route=" + execution_route}
     question = str(raw.get("question") or "").strip()
     if status == "need_human" and not question:
         return {"ok": False, "why": "need_human без конкретного вопроса владельцу"}
@@ -931,7 +967,29 @@ def _normalize_source_model(raw, package):
         return {"ok": False, "why": "выбраны неизвестные capabilities: " + ", ".join(unknown)}
     if status == "ready" and strategy in ("reuse", "compose") and not selected:
         return {"ok": False, "why": strategy + " требует хотя бы одну доступную capability"}
+    if status == "ready" and execution_route == "reuse" and not selected:
+        return {"ok": False, "why": "execution_route=reuse требует выбранную проверенную capability"}
+    decision_raw = raw.get("decision_record") if isinstance(raw.get("decision_record"), dict) else {}
+    decision_record = {
+        "goal": _clip(decision_raw.get("goal") or
+                      ((package.get("task_contract") or {}).get("business_goal") if
+                       isinstance(package.get("task_contract"), dict) else "") or
+                      package.get("original_request"), 500),
+        "route": execution_route,
+        "basis": _as_text_list(decision_raw.get("basis"), 12) or
+                 _as_text_list(raw.get("reason"), 1),
+        "next_action": _clip(decision_raw.get("next_action") or {
+            "reuse": "материализовать единый wrapper над выбранной capability",
+            "build": "создать детерминированного исполняемого эксперта",
+            "llm_worker": "создать исполняемого эксперта с Qwen внутри runtime",
+            "split_step": "разделить шаг на независимо проверяемые подшаги",
+            "replan": "перестроить границы графа до создания эксперта",
+            "need_human": "получить один ответ владельца",
+            "acquire": "предложить недостающую способность владельцу",
+        }.get(execution_route, "остановиться безопасно"), 500),
+    }
     model = {"version": 1, "status": status, "strategy": strategy,
+             "execution_route": execution_route, "decision_record": decision_record,
              "reason": _clip(raw.get("reason"), 600), "sources": clean_sources,
              "operations": operations,
              "acceptance_criteria": criteria,
@@ -1176,6 +1234,32 @@ def derive_step_context(prepared_context, sample_files, step_contract):
     model["strategy"] = "build"
     model["reason"] = ("Локальный вид выведен из принятой глобальной Source Model; соседние входы "
                        "принадлежат другим узлам runtime и не являются отсутствующими данными.")
+    implementation = ((step_contract or {}).get("implementation")
+                      if isinstance((step_contract or {}).get("implementation"), dict) else {})
+    mode = str(implementation.get("mode") or "generate").casefold()
+    execution_role = str((step_contract or {}).get("execution_role") or "").casefold()
+    capability_ref = str(implementation.get("capability_ref") or "")
+    available_ids = {str(x.get("expert") or "") for x in
+                     (root_package.get("available_plugins_and_experts") or []) if isinstance(x, dict)}
+    if mode == "reuse" and capability_ref and capability_ref in available_ids:
+        route, selected = "reuse", [capability_ref]
+    elif mode == "llm_worker" or execution_role == "reasoning":
+        route, selected = "llm_worker", []
+    else:
+        route, selected = "build", []
+    model["execution_route"] = route
+    model["selected_capabilities"] = selected
+    model["decision_record"] = {
+        "goal": str((step_contract or {}).get("purpose") or (step_contract or {}).get("title") or ""),
+        "route": route,
+        "basis": ["UPC implementation.mode=%s" % mode,
+                  "execution_role=%s" % (execution_role or "data")],
+        "next_action": ({
+            "reuse": "материализовать wrapper над " + capability_ref,
+            "llm_worker": "создать runtime Qwen worker для смыслового решения",
+            "build": "создать детерминированного code-expert",
+        })[route],
+    }
     model.setdefault("contract_repairs", []).append("derived:process_source_model→" + scope)
     if scope == "map_partition":
         ids = [str(row.get("source_id")) for row in model.get("sources") or [] if row.get("source_id")]
@@ -1461,6 +1545,22 @@ def _llm_json(llm, prompt, max_tokens=3800, timeout=260):
 
 def _build_prompt(expert_name, task_package, feedback, agent_id):
     brief_json = json.dumps(_builder_brief(task_package), ensure_ascii=False, indent=2, default=str)
+    decision = (task_package.get("execution_decision")
+                if isinstance(task_package.get("execution_decision"), dict) else {})
+    route = str(decision.get("route") or "build")
+    selected_caps = [str(x) for x in (decision.get("selected_capabilities") or []) if str(x)]
+    route_directives = {
+        "reuse": ("Маршрут уже выбран: REUSE. Не изобретай замену выбранной способности. Создай одну "
+                  "стабильную точку входа, которая вызывает только выбранные verified capabilities " +
+                  json.dumps(selected_caps, ensure_ascii=False) +
+                  " и приводит их результат к acceptance_contract."),
+        "build": ("Маршрут уже выбран: BUILD. Создай детерминированный кодовый эксперт. Не вызывай Qwen "
+                  "во время runtime, если Task Contract не требует смыслового решения."),
+        "llm_worker": ("Маршрут уже выбран: LLM_WORKER. Создай исполняемого эксперта, который вызывает "
+                       "платформенную Qwen при каждом запуске для смысловой части, но детерминированно "
+                       "проверяет JSON-схему, обязательные поля и acceptance evidence."),
+    }
+    route_directive = route_directives.get(route, "Маршрут выполнения зафиксирован: " + route + ".")
     upc_step = task_package.get("upc_step") if isinstance(task_package.get("upc_step"), dict) else None
     step_directive = ""
     if upc_step:
@@ -1507,11 +1607,15 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
             repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
                       "под конкретные строки образца. Обнови и снова сохрани того же эксперта. "
                       "Диагностика харнесса:\n" + _repair_context(feedback, task_package))
-    return f"""Ты — Строитель Extella. Твоя задача — не описать решение, а СОЗДАТЬ ИЛИ ОБНОВИТЬ
-одного реально исполняемого эксперта `{expert_name}` действием платформы.
+    return f"""Ты — Строитель Extella. Task-first архитектор уже изучил задачу БЕЗ технического имени
+эксперта и сохранил execution_decision. Теперь не выбирай другой тип решения: материализуй выбранный
+маршрут в одном реально исполняемом эксперте `{expert_name}` действием платформы.
+
+{route_directive}
 
 	Сначала молча составь для себя цепочку «требование владельца → реализация → наблюдаемое доказательство».
-	Решай ТЗ и ВСЕ профили файлов как одну бизнес-задачу. Сам выбери алгоритм, библиотеки и внутренние этапы.
+	Решай ТЗ и ВСЕ профили файлов как одну бизнес-задачу. Внутри выбранного маршрута сам выбери алгоритм,
+	библиотеки и внутренние этапы.
 	Не переноси в код догадки из образца и не восстанавливай старый план стадий: источник истины — BUILD_BRIEF
 	в указанном там порядке авторитетности. Если требования действительно противоречат друг другу, верни
 	status=error с точным противоречием вместо выдуманного правила.
@@ -2108,6 +2212,19 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                  len((package.get("working_memory") or {}).get("entries") or []),
                  sum(1 for x in (package.get("working_memory") or {}).get("entries") or []
                      if x.get("status") == "rejected")))
+    execution_route = str(source_model.get("execution_route") or "build")
+    execution_decision = dict(source_model.get("decision_record") or {})
+    execution_decision.update({
+        "route": execution_route,
+        "reason": str(source_model.get("reason") or ""),
+        "selected_capabilities": list(source_model.get("selected_capabilities") or []),
+        "decided_before_expert_name": True,
+        "source": "task_first_source_model",
+    })
+    package["execution_decision"] = execution_decision
+    _refresh_package(package)
+    (bdir / "task_package.json").write_text(
+        json.dumps(package, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     if source_model.get("status") in ("need_human", "acquire"):
         code = "needs_owner_input" if source_model["status"] == "need_human" else "capability_missing"
         progress("agentic_source",
@@ -2118,8 +2235,37 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                 "detail": source_model.get("reason") or source_model.get("missing_capability") or "",
                 "owner_question": source_model.get("question") or "", "attempts": [],
                 "task_contract": package.get("task_contract"), "source_model": source_model,
+                "execution_decision": execution_decision,
                 "working_memory": package.get("working_memory"), "verified_memory": [], "draft_created": False,
                 "expert_ran": False, "package_sha256": package.get("package_sha256")}
+    _persist_agentic_state(sess_dir, session_id, bdir, package, source_model,
+                           "execution_route_" + execution_route, build_id)
+    route_titles = {
+        "reuse": "Использовать проверенную способность",
+        "build": "Создать детерминированного эксперта",
+        "llm_worker": "Создать эксперта с Qwen внутри",
+        "split_step": "Разделить задачу на проверяемые шаги",
+        "replan": "Перестроить границы процесса",
+    }
+    progress("agentic_route", "Qwen выбрала способ выполнения: " +
+             route_titles.get(execution_route, execution_route), "success",
+             str(execution_decision.get("reason") or
+                 "; ".join(execution_decision.get("basis") or []))[:600])
+    if execution_route in ("split_step", "replan"):
+        action = "split_step" if execution_route == "split_step" else "replan"
+        detail = str(execution_decision.get("reason") or execution_decision.get("next_action") or
+                     "граница текущего шага требует изменения до создания эксперта")
+        return {"ok": False, "code": "execution_" + action + "_required",
+                "failure_kind": "decomposition", "detail": detail, "owner_question": "",
+                "attempts": [], "control_action": action,
+                "failure_decision": {"failure_class": "task_boundary", "action": action,
+                                     "evidence": execution_decision.get("basis") or [detail],
+                                     "owner_question": ""},
+                "task_contract": package.get("task_contract"), "source_model": source_model,
+                "execution_decision": execution_decision,
+                "working_memory": package.get("working_memory"), "verified_memory": [],
+                "draft_created": False, "expert_ran": False,
+                "package_sha256": package.get("package_sha256")}
 
     expert_name = str(expert_name_override or (namespace + "_run_process"))
     draft_name = expert_name + "__draft_" + hashlib.sha256(str(build_id).encode("utf-8")).hexdigest()[:8]
@@ -2335,6 +2481,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             evidence = {"contract_version": 2, "built_at": datetime.now(timezone.utc).isoformat(),
                         "package_sha256": package.get("package_sha256"), "expert": expert_name,
                         "draft_expert": draft_name, "source_model": source_model,
+                        "execution_decision": execution_decision,
                         "task_contract": package.get("task_contract"), "verified_memory": verified_memory,
                         "source_files": [{"name": Path(p).name, "sha256": _sha256(p)} for p in sample_files],
                         "attempts": attempts, "accepted_attempt": total_calls}
@@ -2344,6 +2491,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
                     "source_file": source_file, "summary": validation.get("summary") or {},
                     "result": result, "validation": validation, "judge": judge, "attempts": attempts,
                     "task_contract": package.get("task_contract"), "source_model": source_model,
+                    "execution_decision": execution_decision,
                     "strategy": source_model.get("strategy"), "working_memory": package.get("working_memory"),
                     "verified_memory": verified_memory, "draft_created": True, "expert_ran": True,
                     "last_applied_lesson": last_applied_lesson, "last_unapplied_lesson": "",
@@ -2451,6 +2599,7 @@ def build_agentic_solution(session_id, build_id, namespace, sample_files, sess_d
             "control_action": control_action, "failure_decision": last_controller,
             "controller_history": controller_history,
             "task_contract": package.get("task_contract"), "source_model": source_model,
+            "execution_decision": execution_decision,
             "strategy": source_model.get("strategy"), "working_memory": package.get("working_memory"),
             "verified_memory": [], "draft_created": draft_created, "expert_ran": expert_ran,
             "files_processed": (last.get("validation") or {}).get("files_used") or [],

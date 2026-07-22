@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="AnvarBakiyev/extella-adoption-wizard"
 BRANCH="codex/prod-hardening"
-EXPECTED_VERSION="5.19"
+EXPECTED_VERSION="5.20"
 APP_DIR="$HOME/extella_wizard/app"
 CAT_DIR="$HOME/extella_wizard/catalog"
 WS_DIR="$HOME/extella-plugins/workspace"

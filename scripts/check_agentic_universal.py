@@ -165,7 +165,29 @@ def assert_matrix(mod):
 
     # 5. Смысловой LLM-шаг и 6. ветвление/объединение выбирают стратегию, а не жёсткую цепочку.
     semantic = source_for(docs, strategy="holistic_build", operation="Qwen semantic decision")
-    assert mod._normalize_source_model(semantic, docs)["model"]["strategy"] == "holistic_build"
+    semantic["execution_route"] = "llm_worker"
+    semantic["decision_record"] = {
+        "goal": "Классифицировать документ по смыслу",
+        "basis": ["категория не выводится из фиксированной схемы"],
+        "next_action": "создать runtime Qwen worker",
+    }
+    semantic_checked = mod._normalize_source_model(semantic, docs)
+    assert semantic_checked["model"]["strategy"] == "holistic_build"
+    assert semantic_checked["model"]["execution_route"] == "llm_worker"
+    assert semantic_checked["model"]["decision_record"]["route"] == "llm_worker"
+    semantic_pkg = copy.deepcopy(docs)
+    semantic_pkg["execution_decision"] = dict(semantic_checked["model"]["decision_record"],
+                                               selected_capabilities=[])
+    semantic_pkg["execution_decision"]["route"] = "llm_worker"
+    prompt = mod._build_prompt("semantic_worker_v1", semantic_pkg, "", "agent_qwen")
+    assert "Task-first архитектор уже изучил задачу БЕЗ технического имени" in prompt
+    assert "Маршрут уже выбран: LLM_WORKER" in prompt and "semantic_worker_v1" in prompt
+    invalid_route = source_for(docs, strategy="build", operation="invalid route")
+    invalid_route["execution_route"] = "invented"
+    assert mod._normalize_source_model(invalid_route, docs)["ok"] is False
+    invalid_reuse = source_for(docs, strategy="build", operation="unproven reuse")
+    invalid_reuse["execution_route"] = "reuse"
+    assert mod._normalize_source_model(invalid_reuse, docs)["ok"] is False
     branches = package([profile("a.xlsx", [("A", ["id", "a"], ["x", 1])]),
                         profile("b.xlsx", [("B", ["id", "b"], ["x", 2])]),
                         profile("c.xlsx", [("C", ["id", "c"], ["x", 3])])], "Объединить независимые ветки")
@@ -590,6 +612,15 @@ def scoped_step_context_is_local_and_zero_llm(mod, root):
     assert not gate["ask"] and gate["classification"] == "partition_contract_defect"
     genuine = mod.owner_question_gate(local_pkg, "Какое бизнес-правило применять к записи без даты?")
     assert genuine["ask"] and genuine["classification"] == "business_ambiguity"
+
+    semantic_step = copy.deepcopy(step)
+    semantic_step.update({"id": "semantic_partition", "title": "Classify meaning",
+                          "purpose": "Classify the document by meaning", "execution_role": "reasoning",
+                          "implementation": {"mode": "llm_worker"}})
+    semantic_derived = mod.derive_step_context(prepared, [pdf], semantic_step)
+    assert semantic_derived["ok"]
+    assert semantic_derived["source_model"]["execution_route"] == "llm_worker"
+    assert semantic_derived["source_model"]["decision_record"]["goal"] == semantic_step["purpose"]
 
     runtime_pkg = copy.deepcopy(local_pkg)
     runtime_pkg["upc_step"] = {"execution_role": "runtime_setup", "input_contract": {"scope": "runtime_config"}}

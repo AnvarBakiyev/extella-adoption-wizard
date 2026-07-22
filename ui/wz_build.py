@@ -2180,6 +2180,8 @@ def _run_build(session_id, build_id):
                         max_total_attempts=step_limit,
                         max_elapsed_seconds=3600, prepared_context=step_context,
                         step_contract=step_contract, expert_name_override=stable_expert)
+                    if isinstance(solution.get("execution_decision"), dict):
+                        step["execution_decision"] = dict(solution["execution_decision"])
                     controller_history = [row for row in (solution.get("controller_history") or [])
                                           if isinstance(row, dict)]
                     if controller_history:
