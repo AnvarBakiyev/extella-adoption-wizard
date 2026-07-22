@@ -59,8 +59,9 @@ def main():
     assert 'params.setdefault("session_path", str(SESS_DIR / (_sid_plan + ".json")))' in SERVER
     assert 'params.setdefault("output_path", str(SESS_DIR / (_sid_plan + "_blueprint.json")))' in SERVER
     assert 'wz_llm.py wz_platform.py wz_process.py wizard.html' in DELTA
-    assert 'experts/wz_generate_blueprint.py,experts/wz_build_plan.py,experts/wz_auto_compose.py' in DELTA
-    print("локальные эксперты: target текущего Listener + явные пути + полная дельта модулей ✓")
+    assert 'check_required_global_experts.py' in DELTA
+    assert '"$PY" "$SRC/install.py"' not in DELTA
+    print("локальные эксперты: target текущего Listener + явные пути + read-only release gate ✓")
 
 
 if __name__ == "__main__":

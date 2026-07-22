@@ -29,20 +29,22 @@ def main():
     for name in ("server.py", "wz_agentic.py", "wz_build.py", "wz_llm.py",
                  "wz_platform.py", "wz_process.py", "wizard.html"):
         assert name in delta, f"QA-дельта не переносит runtime-файл {name}"
-    for name in ("wz_generate_blueprint.py", "wz_build_plan.py", "wz_auto_compose.py"):
-        assert f"experts/{name}" in delta, f"QA-дельта не обновляет изменённого эксперта {name}"
-    assert 'parts < (5, 14)' in delta
-    assert 'UPC_EXPERT_MARKER="$APP_DIR/.upc-system-experts-v1"' in delta
-    assert '[ ! -f "$UPC_EXPERT_MARKER" ]' in delta
-    assert ': > "$UPC_EXPERT_MARKER"' in delta
-    assert 'подтверждено маркером миграции' in delta
+    assert 'check_required_global_experts.py' in delta
+    assert '--config "$APP_DIR/config.json"' in delta
+    assert 'EXTELLA_DELTA_FILES=' not in delta
+    assert '"$PY" "$SRC/install.py"' not in delta
+    assert '.upc-system-experts-v1' not in delta
+    checker = (ROOT / "scripts" / "check_required_global_experts.py").read_text(encoding="utf-8")
+    assert '"/api/expert/get"' in checker
+    assert '"/api/expert/save"' not in checker
+    assert 'ThreadPoolExecutor' in checker
     install_text = INSTALL.read_text(encoding="utf-8")
     assert 'SYSTEM_AGENT_ID = cfg.get("system_agent_id") or "agent_extella_default"' in install_text
     assert '"X-Agent-Id": SYSTEM_AGENT_ID' in install_text
     assert '"X-Agent-Id": cfg.get("agent_id"' not in install_text
     for name in ("dist/workspace/$name", "WS_DIR", "Workspace v1.1.0", "EXTELLA_QA_SHA"):
         assert name in delta, f"QA-дельта не обновляет общий Workspace-адаптер: {name}"
-    print("QA-дельта: изменённые артефакты выбраны, полный режим сохранён ✓")
+    print("QA-дельта: клиент только проверяет общих экспертов и не публикует их ✓")
 
 
 if __name__ == "__main__":
