@@ -38,11 +38,12 @@ def load_build(saved):
 
 
 class Response:
-    def __init__(self, value):
+    def __init__(self, value, as_string=False):
         self.value = value
+        self.as_string = as_string
 
     def json(self):
-        return {"result": self.value}
+        return {"result": repr(self.value) if self.as_string else self.value}
 
 
 def main():
@@ -52,8 +53,11 @@ def main():
         "schema": "upc/1.0", "process_id": "proc_test", "version": 1, "title": "DAG",
         "steps": [
             {"id": "left", "title": "Left", "dependencies": [], "version": 1,
-             "implementation": {"mode": "generate", "expert_ref": "left_v1"}, "permissions": {}},
+             "input_contract": {"required": True, "data_schema": {"format": "json"}},
+             "implementation": {"mode": "generate", "expert_ref": "left_v1",
+                                "capability_ref": None}, "permissions": {}},
             {"id": "right", "title": "Right", "dependencies": [], "version": 1,
+             "input_contract": {"required": True, "data_schema": {"format": "pdf"}},
              "implementation": {"mode": "llm_worker", "expert_ref": "right_v1"}, "permissions": {}},
             {"id": "merge", "title": "Merge", "dependencies": ["left", "right"], "version": 1,
              "implementation": {"mode": "generate", "expert_ref": "merge_v1"}, "permissions": {}},
@@ -75,15 +79,46 @@ def main():
             fail_merge_once["value"] = False
             return Response("[Execution Error] merge failed")
         out = Path(json["params"]["output_dir"])
+        assert out.is_dir(), "orchestrator must create output_dir before expert run"
         out.mkdir(parents=True, exist_ok=True)
+        source_path = Path(json["params"]["source_file"])
+        if expert == "left_v1":
+            assert source_path.name == "input.json", source_path
+        elif expert == "right_v1":
+            assert source_path.name == "certificate.pdf", source_path
         artifact = out / "step_result.json"
         artifact.write_text(json_module.dumps({"expert": expert}), encoding="utf-8")
-        return Response({"status": "success", "summary": {"expert": expert, "processed_files": 1},
-                         "output": {"expert": expert},
+        artifacts = [{"kind": "step_result_json", "path": str(artifact)}]
+        summary = {"expert": expert, "processed_files": 1}
+        output = {"expert": expert}
+        if expert == "right_v1":
+            output_only = out / "right_rows.json"
+            output_only.write_text('[{"right": true}]', encoding="utf-8")
+            output["right_rows_json"] = str(output_only)
+            # The comparison worker owns business counters; the terminal formatter below
+            # deliberately returns only report paths.
+            summary["counts"] = {
+                "match_count": 1, "only_excel_count": 1, "only_pdf_count": 1}
+        if expert == "merge_v1":
+            dependency_dir = Path(json["params"]["source_file"])
+            dependency_names = {path.name for path in dependency_dir.iterdir() if path.is_file()}
+            assert any(name.endswith("right_rows.json") for name in dependency_names), dependency_names
+            assert (dependency_dir / "right_rows.json").read_text() == '[{"right": true}]'
+            left_canonical = json_module.loads(
+                (dependency_dir / "001_left__canonical_step_result.json").read_text())
+            assert left_canonical["structured_data"]["expert"] == "left_v1", left_canonical
+            assert left_canonical["summary"]["expert"] == "left_v1", left_canonical
+            report_md = out / "report.md"; report_md.write_text("# report", encoding="utf-8")
+            report_xlsx = out / "report.xlsx"; report_xlsx.write_bytes(b"xlsx")
+            artifacts.append({"kind": "report_md", "path": str(report_md)})
+            # Deliberately expose XLSX only through output and with a domain-specific key.
+            output["discrepancy_report_xlsx"] = str(report_xlsx)
+        return Response({"status": "success", "summary": summary,
+                         "output": output,
                          "evidence": {"files_used": [Path(json["params"]["source_file"]).name],
                                       "acceptance_checks": [{"criterion": "ran", "passed": True,
                                                              "evidence": expert}]},
-                         "artifacts": [{"kind": "step_result_json", "path": str(artifact)}]})
+                         "artifacts": artifacts}, as_string=(expert == "left_v1"))
 
     fake_requests = types.ModuleType("requests")
     fake_requests.post = post
@@ -95,35 +130,45 @@ def main():
         run = namespace[name]
         with tempfile.TemporaryDirectory(prefix="upc_orch_") as td:
             root = Path(td)
-            inp = root / "input.json"
+            inp = root / "source"
+            inp.mkdir()
+            (inp / "certificate.pdf").write_bytes(b"%PDF-1.7")
+            inp = inp / "input.json"
             inp.write_text("{}", encoding="utf-8")
-            first = run(str(inp), str(root), "token", run_id="r1")
+            source_dir = inp.parent
+            first = run(str(source_dir), str(root), "token", run_id="r1")
             assert first["status"] == "error" and first["failed_step"] == "merge", first
             assert calls == ["left_v1", "right_v1", "merge_v1"], calls
             calls.clear()
-            resumed = run(str(inp), str(root), "token", run_id="r1")
+            resumed = run(str(source_dir), str(root), "token", run_id="r1")
             assert resumed["status"] == "success", resumed
             assert calls == ["merge_v1"], calls
+            assert resumed["summary"]["processed_files"] == 2
+            assert resumed["summary"]["matches"] == 1, resumed["summary"]
+            assert resumed["summary"]["only_excel"] == 1, resumed["summary"]
+            assert resumed["summary"]["only_pdf"] == 1, resumed["summary"]
+            assert resumed["report_md"].endswith("report.md")
+            assert resumed["report_xlsx"].endswith("report.xlsx")
             calls.clear()
-            again = run(str(inp), str(root), "token", run_id="r1")
+            again = run(str(source_dir), str(root), "token", run_id="r1")
             assert again["status"] == "success" and calls == [], (again, calls)
             checkpoint = json.loads((root / "upc_runs" / "r1" / "checkpoint.json").read_text(
                 encoding="utf-8"))
             assert all(row.get("input_sha256") and row.get("step_contract_sha256") and
                        row.get("checkpoint_sha256") for row in checkpoint["accepted"].values())
-            # Changing the root input invalidates roots and their merge; no stale success survives.
+            # Changing one scoped root input invalidates only that branch and its merge.
             inp.write_text('{"changed":true}', encoding="utf-8")
             calls.clear()
-            changed = run(str(inp), str(root), "token", run_id="r1")
+            changed = run(str(source_dir), str(root), "token", run_id="r1")
             assert changed["status"] == "success"
-            assert calls == ["left_v1", "right_v1", "merge_v1"], calls
+            assert calls == ["left_v1", "merge_v1"], calls
             # Tampering one branch artifact replays only that branch and its dependent merge.
             checkpoint = json.loads((root / "upc_runs" / "r1" / "checkpoint.json").read_text(
                 encoding="utf-8"))
             left_artifact = Path(checkpoint["accepted"]["left"]["artifacts"][0]["path"])
             left_artifact.write_text("tampered", encoding="utf-8")
             calls.clear()
-            repaired = run(str(inp), str(root), "token", run_id="r1")
+            repaired = run(str(source_dir), str(root), "token", run_id="r1")
             assert repaired["status"] == "success"
             assert calls == ["left_v1", "merge_v1"], calls
     finally:

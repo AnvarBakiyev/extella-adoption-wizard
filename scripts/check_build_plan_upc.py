@@ -33,7 +33,9 @@ class Requests:
                            "cspl": "bad", "depends_on": [],
                            "permissions": {"read": ["Downloads"], "move": ["quarantine"]},
                            "acceptance": {"deterministic_checks": ["manifest exists"],
-                                          "semantic_criteria": [], "required_artifacts": ["manifest.json"]},
+                                          "semantic_criteria": [
+                                              "A-101 присутствует как во входе; D-404 тоже обязана присутствовать"],
+                                          "required_artifacts": ["manifest.json"]},
                            "retry_policy": {"max_attempts": 99}},
                           {"id": "run_all", "expert_name": "qa_run_pipeline", "action": "build",
                            "implementation_mode": "generate", "purpose": "Оркестратор процесса",
@@ -57,7 +59,10 @@ def main():
         session = root / "wz_plan.json"
         bp = root / "wz_plan_blueprint.json"
         out = root / "wz_plan_build_plan.json"
-        session.write_text(json.dumps({"session_id": "wz_plan", "blueprint_path": str(bp)}), encoding="utf-8")
+        session.write_text(json.dumps({
+            "session_id": "wz_plan", "blueprint_path": str(bp),
+            "answers": {"result": {"answer": "A-101 присутствует во входе"}},
+        }), encoding="utf-8")
         bp.write_text(json.dumps({"blueprint": {"process_name": "Downloads", "goal": "cleanup",
                                                 "stages": [{"id": "cleanup", "title": "Cleanup"}]}}),
                       encoding="utf-8")
@@ -83,6 +88,10 @@ def main():
         assert task["expert_name"].startswith("qa_") and task["cspl"] == "fython"
         assert task["permissions"]["move"] == ["quarantine"]
         assert task["acceptance"]["required_artifacts"] == ["manifest.json"]
+        assert "D-404" not in json.dumps(task["acceptance"], ensure_ascii=False)
+        assert any("synthetic record claims removed" in warning for warning in saved["warnings"])
+        assert task["acceptance"]["semantic_criteria"] == [
+            "Результат соответствует фактическим данным текущих входов и заявленной бизнес-логике шага"]
         assert task["retry_policy"]["max_attempts"] == 10
     print("wz_build_plan: catalog miss survives as bounded generate step ✓")
 

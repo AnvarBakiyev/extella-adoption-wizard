@@ -113,6 +113,10 @@ Universal Process Runtime сам скомпилирует оркестратор
 Опасные действия не скрывай внутри generate: они будут остановлены human approval gate.
 12. Acceptance раздели на deterministic_checks (файлы, хэши, schema, counts, side-effect journal) и
 semantic_criteria (только смысл, который проверит независимая Qwen). Transport completed не является успехом.
+13. Синтетика из acceptance_test — только изолированный тест реализации. Никогда не переноси придуманные
+идентификаторы, строки, количества или ожидаемые результаты синтетики в acceptance/semantic_criteria реального
+прогона. Там допустимы только общие инварианты либо конкретные факты, уже явно присутствующие в Blueprint или
+ответах владельца. Отсутствующий в исходной фактуре пример не является обязательной записью пользовательских данных.
 
 ФОРМАТ (строго):
 {{
@@ -193,6 +197,45 @@ semantic_criteria (только смысл, который проверит не
     IMPLEMENTATION_MODES = {"reuse", "generate", "llm_worker", "acquire", "human", "delegate"}
     PERMISSIONS = ("read", "create", "move", "modify", "delete", "install", "send", "external_write")
     name_re = re.compile("^" + namespace + r"_[a-z0-9_]+$")
+    # Record-level examples are useful inside acceptance_test, but they must never silently become
+    # facts required from the user's real files.  Qwen sometimes writes a synthetic D-404 next to
+    # owner-provided A-101/B-202/C-303 and then the independent judge correctly rejects the real
+    # output for not containing the invented row.  Keep only record identifiers grounded in the
+    # authoritative interview/Blueprint; replace the whole mixed claim with a source-grounded
+    # invariant so the synthetic fixture stays an implementation test, not production truth.
+    record_re = re.compile(
+        r"(?<![\w])(?:[A-Za-zА-Яа-яЁё]{1,16}[-_/]\d[A-Za-zА-Яа-яЁё0-9._/-]{0,48})(?![\w])")
+    authoritative_text = json.dumps({
+        "answers": session.get("answers") or {},
+        "questionnaire_task": session.get("questionnaire_task") or "",
+        "blueprint": bp,
+    }, ensure_ascii=False, default=str).casefold()
+    authoritative_records = {x.casefold() for x in record_re.findall(authoritative_text)}
+    grounded_semantic = (
+        "Результат соответствует фактическим данным текущих входов и заявленной бизнес-логике шага"
+        if str(language or "ru").lower().startswith("ru") else
+        "The result matches the actual current inputs and the stated business logic of the step")
+
+    def sanitize_semantic(criteria, task_id):
+        safe = []
+        replaced = False
+        for raw in criteria or []:
+            text = str(raw).strip()
+            if not text:
+                continue
+            found = {x.casefold() for x in record_re.findall(text)}
+            unsupported = sorted(found - authoritative_records)
+            if unsupported:
+                warnings.append("task " + str(task_id or "?") +
+                                ": synthetic record claims removed from semantic acceptance: " +
+                                ", ".join(unsupported[:5]))
+                replaced = True
+                continue
+            safe.append(text)
+        if replaced and grounded_semantic not in safe:
+            safe.insert(0, grounded_semantic)
+        return safe
+
     task_ids = set()
     plan["tasks"] = [t for t in plan["tasks"][:40] if isinstance(t, dict)]
     orchestrator_name = str((plan.get("orchestrator") or {}).get("expert_name") or "")
@@ -242,7 +285,8 @@ semantic_criteria (только смысл, который проверит не
         acceptance = t.get("acceptance") if isinstance(t.get("acceptance"), dict) else {}
         t["acceptance"] = {
             "deterministic_checks": [str(x) for x in (acceptance.get("deterministic_checks") or []) if str(x)],
-            "semantic_criteria": [str(x) for x in (acceptance.get("semantic_criteria") or []) if str(x)],
+            "semantic_criteria": sanitize_semantic(
+                acceptance.get("semantic_criteria") or [], t.get("id")),
             "required_artifacts": [str(x) for x in (acceptance.get("required_artifacts") or []) if str(x)],
             "minimum_confidence": acceptance.get("minimum_confidence", 0.7),
         }

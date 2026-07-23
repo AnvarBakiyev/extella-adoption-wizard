@@ -42,6 +42,95 @@ RUNS_DIR = Path.home() / "extella_wizard" / "runs"
 HOST_TARGET = "85800354-f7b7-449f-b526-9357cd91f780"  # managed-хостинг VPS (PS.kz)
 
 
+def _declared_input_extensions(step):
+    """Return trustworthy physical file extensions declared by an atomic step.
+
+    The process-wide source manifest remains available to the reasoning model, but a root worker
+    must only receive the files it owns.  Otherwise a PDF reader can silently inspect a sibling
+    XLSX input and both semantic acceptance and local repairs lose their step boundary.
+    """
+    contract = step.get("input_contract") if isinstance(step, dict) and \
+        isinstance(step.get("input_contract"), dict) else {}
+    values = []
+
+    def collect(value, key=""):
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                normalized_key = str(child_key).casefold().replace("-", "_")
+                if normalized_key in ("format", "file_format", "mime_type", "media_type",
+                                      "extension", "file_extension"):
+                    values.append(str(child))
+                else:
+                    # Blueprint contracts often express the physical type in a schema key instead
+                    # of a dedicated format field: ``excel_path``, ``pdf_file``.  Those tokens are
+                    # still an explicit declaration, unlike a vague ``source_file``.
+                    if normalized_key.endswith(("_path", "_file", "_files")):
+                        values.append(normalized_key)
+                    collect(child, normalized_key)
+        elif isinstance(value, (list, tuple, set)):
+            for child in value:
+                collect(child, key)
+        elif key in ("artifacts", "files", "inputs", "source_files"):
+            values.append(str(value))
+
+    collect(contract)
+    aliases = {
+        "pdf": {"pdf"}, "application/pdf": {"pdf"},
+        "xlsx": {"xlsx"}, "xls": {"xls"}, "xlsm": {"xlsm"},
+        "excel": {"xlsx", "xls", "xlsm"},
+        "spreadsheet": {"xlsx", "xls", "xlsm", "csv", "tsv"},
+        "csv": {"csv"}, "tsv": {"tsv"},
+        "json": {"json"}, "jsonl": {"jsonl", "ndjson"}, "ndjson": {"jsonl", "ndjson"},
+        "text": {"txt", "md"}, "txt": {"txt"}, "markdown": {"md"}, "md": {"md"},
+        "docx": {"docx"}, "doc": {"doc"}, "word": {"docx", "doc"},
+        "pptx": {"pptx"}, "ppt": {"ppt"}, "powerpoint": {"pptx", "ppt"},
+        "image": {"png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp", "heic"},
+        "audio": {"mp3", "wav", "m4a", "aac", "flac", "ogg"},
+        "video": {"mp4", "mov", "mkv", "avi", "webm", "m4v"},
+    }
+    extensions = set()
+    for raw in values:
+        text = str(raw or "").strip().casefold()
+        if not text:
+            continue
+        if text in aliases:
+            extensions.update(aliases[text])
+        for suffix in re.findall(r"[a-z0-9]+", text):
+            if suffix in aliases:
+                extensions.update(aliases[suffix])
+    return extensions
+
+
+def _select_root_step_inputs(step, sample_files):
+    """Scope a dependency-free step to declared physical formats, failing closed on no match."""
+    extensions = _declared_input_extensions(step)
+    if not extensions:
+        return list(sample_files)
+    return [Path(path) for path in sample_files
+            if Path(path).suffix.casefold().lstrip(".") in extensions]
+
+
+def _output_file_refs(value, kind="output"):
+    """Return existing files named by a structured expert output.
+
+    Experts are allowed to expose a produced file through ``output`` even when they forgot to
+    repeat it in ``artifacts``.  Downstream steps still need that physical file, so promote only
+    paths that demonstrably exist; ordinary strings and imagined paths remain ignored.
+    """
+    refs = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            refs.extend(_output_file_refs(child, str(key or kind)))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            refs.extend(_output_file_refs(child, kind))
+    elif isinstance(value, (str, Path)):
+        path = Path(str(value))
+        if path.exists() and path.is_file():
+            refs.append({"kind": kind or "output", "path": str(path)})
+    return refs
+
+
 def _dependency_input_bundle(step, by_id, bdir):
     """Materialize dependency outputs as one explicit, collision-free input package.
 
@@ -55,31 +144,86 @@ def _dependency_input_bundle(step, by_id, bdir):
     version = max(1, int(step.get("version") or 1))
     bundle = Path(bdir) / "process" / "dependency_inputs" / (safe_step + "_v" + str(version))
     bundle.mkdir(parents=True, exist_ok=True)
-    manifest = {"schema": "upc-dependency-bundle/1.1", "step_id": step.get("id"),
-                "step_version": version, "dependencies": []}
+    for stale in list(bundle.iterdir()):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        else:
+            stale.unlink()
+    manifest = {"schema": "upc-dependency-bundle/1.3", "step_id": step.get("id"),
+                "step_version": version, "dependencies": [], "aliases": []}
     copied = []
+    alias_candidates = []
     for dep_position, dep_id in enumerate(dependencies, 1):
         dep = by_id.get(dep_id) or {}
         dep_token = re.sub(r"[^a-zA-Z0-9_-]+", "_", dep_id)[:64] or ("dep_%03d" % dep_position)
         dep_row = {"step_id": dep_id, "version": dep.get("version"),
-                   "status": dep.get("status"), "output": dep.get("output"), "artifacts": []}
-        for artifact_position, raw in enumerate(dep.get("artifact_refs") or [], 1):
+                   "status": dep.get("status"), "output": dep.get("output"),
+                   "summary": dep.get("summary"), "artifacts": []}
+        canonical = bundle / ("%03d_%s__canonical_step_result.json" % (
+            dep_position, dep_token))
+        canonical.write_text(json.dumps({
+            "schema": "upc-dependency-result/1.0",
+            "status": "success",
+            "step_id": dep_id,
+            "step_version": dep.get("version"),
+            "output": dep.get("output"),
+            "summary": dep.get("summary"),
+            # Compatibility for generated experts built against extella.step_result.v1.
+            "structured_data": dep.get("output"),
+            "evidence": dep.get("evidence") or [],
+        }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        copied.append(canonical)
+        dep_row["artifacts"].append({
+            "kind": "canonical_step_result_json", "path": str(canonical),
+            "source_path": "accepted:" + dep_id, "bytes": canonical.stat().st_size,
+            "sha256": universal_file_sha256(canonical),
+        })
+        raw_refs = list(dep.get("artifact_refs") or []) + _output_file_refs(dep.get("output"))
+        seen_sources = set()
+        for artifact_position, raw in enumerate(raw_refs, 1):
             item = raw if isinstance(raw, dict) else {"path": str(raw)}
             source = Path(str(item.get("path") or ""))
             if not source.exists() or not source.is_file():
                 continue
+            if (str(item.get("kind") or "").casefold() == "step_result_json" or
+                    source.name.casefold() == "step_result.json"):
+                continue
+            source_key = str(source.resolve())
+            if source_key in seen_sources:
+                continue
+            seen_sources.add(source_key)
             local_name = "%03d_%s__%03d__%s" % (
                 dep_position, dep_token, artifact_position, source.name)
             target = bundle / local_name
             if source.resolve() != target.resolve():
                 shutil.copy2(str(source), str(target))
             copied.append(target)
+            alias_candidates.append((source.name, target))
             dep_row["artifacts"].append({
                 "kind": item.get("kind") or "artifact", "path": str(target),
                 "source_path": str(source), "bytes": target.stat().st_size,
                 "sha256": universal_file_sha256(target),
             })
         manifest["dependencies"].append(dep_row)
+    # Preserve an artifact's declared basename when it is unambiguous across all dependencies.
+    # Generated experts are built against semantic contracts such as ``records.json`` and may
+    # legitimately open that exact name.  Prefixed copies remain the collision-safe canonical
+    # representation; the basename is only a convenience alias and is omitted on collisions.
+    basename_counts = {}
+    for basename, _target in alias_candidates:
+        key = basename.casefold()
+        basename_counts[key] = basename_counts.get(key, 0) + 1
+    for basename, target in alias_candidates:
+        if basename_counts.get(basename.casefold()) != 1:
+            continue
+        alias = bundle / basename
+        if alias.resolve() != target.resolve():
+            shutil.copy2(str(target), str(alias))
+        copied.append(alias)
+        manifest["aliases"].append({
+            "name": basename, "path": str(alias), "target_path": str(target),
+            "bytes": alias.stat().st_size, "sha256": universal_file_sha256(alias),
+        })
     manifest_path = bundle / "dependency_manifest.json"
     temporary = manifest_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, default=str),
@@ -1330,15 +1474,19 @@ include("import requests", ["extella-pip install requests"])
 
 def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", api_base: str = "https://api.extella.ai", target: str = "", source_key: str = "", rules_json: str = "", fields_json: str = "", run_id: str = "", placement_json: str = "", adapter_json: str = "", report_spec_json: str = "", approval_json: str = "") -> dict:
     """Universal Process Contract v1 DAG runner with durable per-run checkpoints."""
+    import ast
     import json
     import hashlib
+    import re
     import shutil
     import uuid
     import requests
     from pathlib import Path
     from datetime import datetime, timezone
 
-    GRAPH = __GRAPH__
+    # Embedded contracts are JSON, not Python literals.  Loading the quoted JSON keeps true/false/
+    # null valid at runtime; injecting raw json.dumps output here compiles but crashes on ``true``.
+    GRAPH = json.loads(__GRAPH_JSON__)
     ERROR_MARKERS = ("[execution error]", "traceback (most recent call last)", "nameerror:",
                      "typeerror:", "valueerror:", "eoferror", "syntaxerror:", "runtimeerror:")
     DANGEROUS = ("move", "modify", "delete", "install", "send", "external_write")
@@ -1357,6 +1505,24 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
         except Exception:
             text = str(value).casefold()
         return next((marker for marker in ERROR_MARKERS if marker in text), "")
+
+    def parse_expert_response(envelope):
+        """Recover the actual step result from platform JSON or Python-repr transport wrappers."""
+        if not isinstance(envelope, dict):
+            return {"status": "error", "message": "unexpected expert response type"}
+        raw = envelope.get("result", envelope)
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    parsed = loader(raw)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    continue
+            return {"status": envelope.get("status") or "error", "raw": raw[:2000]}
+        return envelope
 
     def stable_hash(value):
         raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str,
@@ -1380,6 +1546,68 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
                 rows.append({"name": str(child.relative_to(path)), "bytes": child.stat().st_size,
                              "sha256": file_hash(child)})
         return stable_hash(rows)
+
+    def output_file_artifacts(value, kind="output"):
+        """Promote real files exposed through output into observable artifacts."""
+        rows = []
+        if isinstance(value, dict):
+            for key, child in value.items():
+                rows.extend(output_file_artifacts(child, str(key or kind)))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                rows.extend(output_file_artifacts(child, kind))
+        elif isinstance(value, str):
+            path = Path(value)
+            if path.exists() and path.is_file() and path.stat().st_size > 0:
+                rows.append({"kind": kind or "output", "path": str(path)})
+        return rows
+
+    def declared_input_extensions(step):
+        """Infer only explicit physical formats from the root step contract."""
+        contract = step.get("input_contract")
+        try:
+            text = json.dumps(contract or {}, ensure_ascii=False, default=str).casefold()
+        except Exception:
+            text = str(contract or "").casefold()
+        aliases = {
+            "pdf": {".pdf"},
+            "excel": {".xlsx", ".xls", ".xlsm"},
+            "xlsx": {".xlsx"},
+            "xlsm": {".xlsm"},
+            "csv": {".csv"},
+            "json": {".json"},
+            "xml": {".xml"},
+            "docx": {".docx"},
+            "pptx": {".pptx"},
+        }
+        found = set()
+        for token, suffixes in aliases.items():
+            if token in text:
+                found.update(suffixes)
+        return found
+
+    def scoped_root_source(step, step_dir):
+        """Give a root expert only files matching its declared physical format."""
+        suffixes = declared_input_extensions(step)
+        if not suffixes:
+            return source
+        if source.is_file():
+            return source if source.suffix.casefold() in suffixes else None
+        matches = [path for path in source.rglob("*")
+                   if path.is_file() and not path.name.startswith(".")
+                   and path.suffix.casefold() in suffixes]
+        matches.sort(key=lambda path: str(path))
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        bundle = step_dir / "root_inputs"
+        bundle.mkdir(parents=True, exist_ok=True)
+        for index, path in enumerate(matches, 1):
+            dest = bundle / ("%03d_%s" % (index, path.name))
+            if not dest.exists() or file_hash(dest) != file_hash(path):
+                shutil.copy2(str(path), str(dest))
+        return bundle
 
     def contract_hash(step):
         return stable_hash({k: step.get(k) for k in (
@@ -1430,7 +1658,6 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
 
     # A checkpoint is trusted only while inputs, contract, code, dependencies and artifact bytes
     # still match. Removal is iterative so only descendants of an invalid step replay.
-    root_input_sha256 = path_fingerprint(source)
     changed = True
     while changed:
         changed = False
@@ -1439,9 +1666,14 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
             step = steps.get(sid) or {}
             deps = [str(x) for x in step.get("dependencies") or []]
             dep_hashes = [str((accepted.get(dep) or {}).get("checkpoint_sha256") or "") for dep in deps]
+            current_root_sha256 = ""
+            if not deps:
+                current_root = scoped_root_source(
+                    step, root / ("step_" + sid) / ("v" + str(int(step.get("version") or 1))))
+                current_root_sha256 = path_fingerprint(current_root) if current_root is not None else ""
             invalid = (int(row.get("step_version") or 0) != int(step.get("version") or 0) or
                        row.get("step_contract_sha256") != contract_hash(step) or
-                       (not deps and row.get("input_sha256") != root_input_sha256) or
+                       (not deps and row.get("input_sha256") != current_root_sha256) or
                        list(row.get("dependency_checkpoint_sha256") or []) != dep_hashes or
                        (row.get("expert_code_sha256") and row.get("expert_code_sha256") !=
                         str((step.get("implementation") or {}).get("expert_code_sha256") or "")))
@@ -1492,27 +1724,87 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
             step_dir.mkdir(parents=True, exist_ok=True)
             deps = [str(x) for x in step.get("dependencies") or []]
             if not deps:
-                step_source = source
+                step_source = scoped_root_source(step, step_dir)
+                if step_source is None:
+                    detail = "no root input matches declared contract: " + ", ".join(
+                        sorted(declared_input_extensions(step)))
+                    checkpoint["events"].append({"at": stamp(), "type": "step_failed",
+                                                 "step_id": sid, "detail": detail})
+                    atomic_json(checkpoint_path, checkpoint)
+                    return {"status": "error", "run_id": run_id, "failed_step": sid,
+                            "step_version": version, "detail": detail,
+                            "accepted_steps": sorted(accepted), "resumable": True}
             else:
                 bundle = step_dir / "inputs"
                 bundle.mkdir(parents=True, exist_ok=True)
-                manifest = {"schema": "upc-dependency-bundle/1.0", "step_id": sid, "dependencies": []}
-                for dep in deps:
+                for stale in list(bundle.iterdir()):
+                    if stale.is_dir():
+                        shutil.rmtree(str(stale))
+                    else:
+                        stale.unlink()
+                manifest = {"schema": "upc-dependency-bundle/1.3", "step_id": sid,
+                            "dependencies": [], "aliases": []}
+                alias_candidates = []
+                for dep_position, dep in enumerate(deps, 1):
                     dep_row = accepted.get(dep) or {}
-                    dep_copy = {"step_id": dep, "output": dep_row.get("output"), "artifacts": []}
-                    for index, raw in enumerate(dep_row.get("artifacts") or []):
+                    dep_token = re.sub(r"[^a-zA-Z0-9_-]+", "_", dep)[:64] or (
+                        "dep_%03d" % dep_position)
+                    dep_copy = {"step_id": dep, "output": dep_row.get("output"),
+                                "summary": dep_row.get("summary"), "artifacts": []}
+                    canonical = bundle / ("%03d_%s__canonical_step_result.json" % (
+                        dep_position, dep_token))
+                    atomic_json(canonical, {
+                        "schema": "upc-dependency-result/1.0",
+                        "status": "success",
+                        "step_id": dep,
+                        "step_version": dep_row.get("step_version"),
+                        "output": dep_row.get("output"),
+                        "summary": dep_row.get("summary"),
+                        # Generated experts created during build commonly read structured_data.
+                        "structured_data": dep_row.get("output"),
+                        "evidence": dep_row.get("evidence") or [],
+                    })
+                    dep_copy["artifacts"].append({
+                        "kind": "canonical_step_result_json", "path": str(canonical)})
+                    dep_refs = list(dep_row.get("artifacts") or [])
+                    dep_refs.extend(output_file_artifacts(dep_row.get("output")))
+                    seen_dep_paths = set()
+                    for artifact_position, raw in enumerate(dep_refs, 1):
                         item = raw if isinstance(raw, dict) else {"path": str(raw)}
                         src = Path(str(item.get("path") or ""))
                         if src.exists() and src.is_file():
-                            dest = bundle / (dep + "_" + str(index) + "_" + src.name)
+                            if (str(item.get("kind") or "").casefold() == "step_result_json" or
+                                    src.name.casefold() == "step_result.json"):
+                                continue
+                            src_key = str(src.resolve())
+                            if src_key in seen_dep_paths:
+                                continue
+                            seen_dep_paths.add(src_key)
+                            dest = bundle / ("%03d_%s__%03d__%s" % (
+                                dep_position, dep_token, artifact_position, src.name))
                             if not dest.exists():
                                 shutil.copy2(str(src), str(dest))
+                            alias_candidates.append((src.name, dest))
                             dep_copy["artifacts"].append({"kind": item.get("kind") or "artifact",
                                                           "path": str(dest)})
                     manifest["dependencies"].append(dep_copy)
+                basename_counts = {}
+                for basename, _target in alias_candidates:
+                    key = basename.casefold()
+                    basename_counts[key] = basename_counts.get(key, 0) + 1
+                for basename, target_path in alias_candidates:
+                    if basename_counts.get(basename.casefold()) != 1:
+                        continue
+                    alias = bundle / basename
+                    if alias.resolve() != target_path.resolve():
+                        shutil.copy2(str(target_path), str(alias))
+                    manifest["aliases"].append({
+                        "name": basename, "path": str(alias), "target_path": str(target_path)})
                 atomic_json(bundle / "dependency_manifest.json", manifest)
                 step_source = bundle
-            params = {"source_file": str(step_source), "output_dir": str(step_dir / "outputs"),
+            step_output_dir = step_dir / "outputs"
+            step_output_dir.mkdir(parents=True, exist_ok=True)
+            params = {"source_file": str(step_source), "output_dir": str(step_output_dir),
                       "api_token": api_token, "api_base": api_base, "target": target,
                       "rules_json": rules_json, "fields_json": fields_json,
                       "run_id": run_id + ":" + sid + ":v" + str(version)}
@@ -1523,17 +1815,19 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
             try:
                 response = requests.post(api_base.rstrip("/") + "/api/expert/run", headers=headers,
                                          json=body, timeout=900)
-                envelope = response.json()
-                result = envelope.get("result", envelope)
+                result = parse_expert_response(response.json())
             except Exception as exc:
                 result = {"status": "error", "message": "transport: " + str(exc)}
             marker = result_error(result)
             if not isinstance(result, dict) or result.get("status") != "success" or marker:
+                detail = (str(result.get("raw"))[:800]
+                          if marker and isinstance(result, dict) and result.get("raw")
+                          else (marker or str(result)[:800]))
                 checkpoint["events"].append({"at": stamp(), "type": "step_failed", "step_id": sid,
-                                             "detail": marker or str(result)[:500]})
+                                             "detail": detail[:500]})
                 atomic_json(checkpoint_path, checkpoint)
                 return {"status": "error", "run_id": run_id, "failed_step": sid,
-                        "step_version": version, "detail": marker or str(result)[:800],
+                        "step_version": version, "detail": detail,
                         "accepted_steps": sorted(accepted), "resumable": True}
             evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
             checks = evidence.get("acceptance_checks") or result.get("acceptance_checks") or []
@@ -1548,6 +1842,15 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
                 if path.exists() and path.is_file() and path.stat().st_size > 0:
                     artifacts.append({"kind": item.get("kind") or "artifact", "path": str(path),
                                       "bytes": path.stat().st_size, "sha256": file_hash(path)})
+            known_artifact_paths = {str(Path(item["path"]).resolve()) for item in artifacts}
+            for item in output_file_artifacts(result.get("output")):
+                path = Path(item["path"])
+                path_key = str(path.resolve())
+                if path_key in known_artifact_paths:
+                    continue
+                known_artifact_paths.add(path_key)
+                artifacts.append({"kind": item.get("kind") or "output", "path": str(path),
+                                  "bytes": path.stat().st_size, "sha256": file_hash(path)})
             if not artifacts:
                 return {"status": "error", "run_id": run_id, "failed_step": sid,
                         "detail": "step did not create an observable artifact", "accepted_steps": sorted(accepted),
@@ -1562,6 +1865,8 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
                             "package_sha256": str((step.get("implementation") or {}).get(
                                 "package_sha256") or ""),
                             "output": result.get("output") or result.get("summary"),
+                            "summary": (result.get("summary")
+                                        if isinstance(result.get("summary"), dict) else {}),
                             "artifacts": artifacts, "evidence": checks, "accepted_at": stamp()}
             accepted_row["checkpoint_sha256"] = stable_hash({
                 k: v for k, v in accepted_row.items() if k != "accepted_at"})
@@ -1580,15 +1885,99 @@ def __NAME__(source_file: str = "", output_dir: str = "", api_token: str = "", a
         lines.append("- ✓ " + str(step.get("title") or step.get("id")) + " · v" +
                      str(row.get("step_version") or step.get("version") or 1))
     report.write_text("\n".join(lines), encoding="utf-8")
+
+    # The cabinet consumes the business result, not merely a scheduler receipt.  Project the
+    # terminal step output and its report artifacts while keeping the UPC process report as an
+    # additional audit artifact.  ``processed_files`` describes the original source bundle; a
+    # dependency bundle or a generated report must not change that number.
+    depended_on = {str(dep) for step in GRAPH.get("steps") or []
+                   for dep in step.get("dependencies") or []}
+    terminal_ids = [str(step.get("id")) for step in GRAPH.get("steps") or []
+                    if str(step.get("id")) not in depended_on]
+    summary = {}
+    business_artifacts = []
+    for sid in terminal_ids:
+        row = accepted.get(sid) or {}
+        output = row.get("output")
+        if isinstance(output, dict):
+            nested = output.get("summary") if isinstance(output.get("summary"), dict) else output
+            summary.update(nested)
+        if isinstance(row.get("summary"), dict):
+            summary.update(row.get("summary"))
+        business_artifacts.extend(row.get("artifacts") or [])
+    # A terminal formatter may report only its output paths and row count while the upstream
+    # comparison/classification step owns the actual verdict counters.  Recover only count-like
+    # business metrics from the accepted chain; terminal values above always retain priority.
+    for step in reversed(GRAPH.get("steps") or []):
+        row_summary = (accepted.get(str(step.get("id"))) or {}).get("summary")
+        if not isinstance(row_summary, dict):
+            continue
+        candidates = [row_summary]
+        for container_key in ("counts", "verdict_breakdown", "breakdown", "metrics"):
+            nested_counts = row_summary.get(container_key)
+            if isinstance(nested_counts, dict):
+                candidates.append(nested_counts)
+        for candidate in candidates:
+            for key, value in candidate.items():
+                token = str(key).casefold()
+                if (not isinstance(value, (dict, list, tuple)) and
+                        ("match" in token or token.startswith("only_"))):
+                    summary.setdefault(str(key), value)
+    # Models use business-role labels (for example ``only_registry``) as readily as physical
+    # format labels (``only_excel``).  Keep the original vocabulary, but also expose a small,
+    # stable cabinet vocabulary so downstream UI and acceptance checks do not depend on the
+    # wording selected by one generated expert.
+    breakdown = summary.get("verdict_breakdown")
+    if isinstance(breakdown, dict):
+        for key, value in breakdown.items():
+            summary.setdefault(str(key), value)
+    if "matches" not in summary:
+        for key in ("matches_count", "matched_count", "match_count", "matched", "match"):
+            if key in summary:
+                summary["matches"] = summary.get(key)
+                break
+    if "matches" not in summary:
+        for key, value in list(summary.items()):
+            token = str(key).casefold()
+            if "match" in token and "mismatch" not in token and not token.startswith("only_"):
+                summary["matches"] = value
+                break
+    for canonical, markers in (
+            ("only_excel", ("only_excel", "only_xlsx", "only_registry", "only_spreadsheet")),
+            ("only_pdf", ("only_pdf", "only_certificate", "only_document"))):
+        if canonical in summary:
+            continue
+        for key, value in list(summary.items()):
+            token = str(key).casefold()
+            if any(marker in token for marker in markers):
+                summary[canonical] = value
+                break
+    if source.is_dir():
+        processed_files = len([path for path in source.rglob("*")
+                               if path.is_file() and not path.name.startswith(".")])
+    else:
+        processed_files = 1
+    summary["processed_files"] = processed_files
+    report_md = next((str(item.get("path")) for item in business_artifacts
+                      if isinstance(item, dict) and (
+                          str(item.get("kind") or "").casefold().endswith("report_md") or
+                          Path(str(item.get("path") or "")).suffix.casefold() in (".md", ".markdown")
+                      )), str(report))
+    report_xlsx = next((str(item.get("path")) for item in business_artifacts
+                        if isinstance(item, dict) and (
+                            str(item.get("kind") or "").casefold().endswith("report_xlsx") or
+                            Path(str(item.get("path") or "")).suffix.casefold() == ".xlsx"
+                        )), "")
+    audit_artifacts = [{"kind": "process_report_md", "path": str(report)},
+                       {"kind": "process_checkpoint_json", "path": str(checkpoint_path)}]
     return {"status": "success", "run_id": run_id,
-            "summary": {"processed_files": 1, "accepted_steps": len(accepted), "total_steps": len(steps)},
+            "summary": summary,
             "output": {"accepted_steps": sorted(accepted)},
             "evidence": {"files_used": [source.name], "acceptance_checks": [
                 {"criterion": "all UPC steps accepted", "passed": len(accepted) == len(steps),
                  "evidence": str(len(accepted)) + "/" + str(len(steps))}]},
-            "artifacts": [{"kind": "process_report_md", "path": str(report)},
-                          {"kind": "process_checkpoint_json", "path": str(checkpoint_path)}],
-            "report_md": str(report)}
+            "artifacts": business_artifacts + audit_artifacts,
+            "report_md": report_md, "report_xlsx": report_xlsx}
 '''
 
 
@@ -1604,8 +1993,9 @@ def _make_upc_orchestrator(ns, graph, work_dir):
                    if step.get(k) is not None}
                   for step in graph.get("steps") or []],
     }
+    graph_json = json.dumps(public_graph, ensure_ascii=False, default=str)
     code = (_UPC_ORCH_TEMPLATE.replace("__NAME__", name)
-            .replace("__GRAPH__", json.dumps(public_graph, ensure_ascii=False, default=str))
+            .replace("__GRAPH_JSON__", json.dumps(graph_json, ensure_ascii=False))
             .replace("__WORKDIR__", json.dumps(str(work_dir), ensure_ascii=False)))
     saved = api("/api/expert/save", {
         "name": name,
@@ -2036,7 +2426,7 @@ def _run_build(session_id, build_id):
                     # Failure-driven map children must never silently receive the original full set.
                     return list(dict.fromkeys(selected_sources))
                 if not deps:
-                    return list(sample_files)
+                    return _select_root_step_inputs(step, sample_files)
                 return _dependency_input_bundle(step, by_id, bdir)
 
             while True:
@@ -2142,12 +2532,17 @@ def _run_build(session_id, build_id):
                     if float(budgets.get("max_cost_usd") or 0) > 0 and rate > 0:
                         step_limit = min(step_limit, max(0, int(remaining_cost // (24 * rate))))
                     generated_reserve = 1 if mode in ("generate", "llm_worker", "delegate") else 0
-                    reserve = {"attempts": max(3, step_limit), "llm_calls": 2 * max(3, step_limit),
-                               "tokens": 24000 * max(3, step_limit),
-                               "cost_usd": 24 * rate * max(3, step_limit),
+                    # A step retry policy may intentionally allow one creation plus one repair.
+                    # build_agentic_solution internally reserves its build/run/accept phases, so
+                    # ``step_limit < 3`` is not evidence of exhausted process budget.  Only the
+                    # global preflight below may stop the process for resources.
+                    reserve_attempts = max(3, step_limit)
+                    reserve = {"attempts": reserve_attempts, "llm_calls": 2 * reserve_attempts,
+                               "tokens": 24000 * reserve_attempts,
+                               "cost_usd": 24 * rate * reserve_attempts,
                                "generated_experts": generated_reserve}
                     gate = universal_budget_preflight(process_graph, reserve=reserve)
-                    if step_limit < 3 or not gate.get("ok"):
+                    if not gate.get("ok"):
                         detail = gate.get("message") or "недостаточно бюджета хотя бы для build/run/verify"
                         question = ("Лимит процесса исчерпан перед шагом «%s»: %s. "
                                     "Подтвердите один дополнительный ограниченный цикл или отмените шаг." %
@@ -2160,6 +2555,20 @@ def _run_build(session_id, build_id):
                         return
 
                     step_files = input_files_for(step)
+                    if not step_files:
+                        declared = sorted(_declared_input_extensions(step))
+                        detail = ("для корневого шага не найден обязательный вход объявленного типа: " +
+                                  (", ".join(declared) if declared else "<не указан>"))
+                        universal_transition_step(process_graph, step_id, "failed", detail,
+                                                  {"error": {"code": "source_model_failed",
+                                                             "message": detail}})
+                        sync_process({"type": "step_failed", "step_id": step_id,
+                                      "code": "source_model_failed", "detail": detail})
+                        prog["status"] = "error"; prog["build_mode"] = "universal_process"
+                        prog["error_struct"] = _build_error("source_model_failed", detail,
+                                                             failure_kind="input_contract")
+                        prog["error"] = prog["error_struct"]["message"]
+                        save(); _unlock(); return
                     step_input_sha256 = universal_input_fingerprint(step_files)
                     universal_transition_step(process_graph, step_id, "running",
                                               "resolving and building step implementation")
@@ -2433,7 +2842,11 @@ def _run_build(session_id, build_id):
             (bdir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2,
                                                             default=str), encoding="utf-8")
             prog.update({"audit": aud, "built_experts": built_names, "orchestrator": orchestrator,
-                         "build_mode": "universal_process", "manifest": manifest,
+                         # Compatibility: the public build class remains agentic; the explicit
+                         # runtime_mode tells newer surfaces that this agentic build is per-step UPC.
+                         "build_mode": "agentic", "runtime_mode": "universal_process",
+                         "source_files": [Path(path).name for path in sample_files],
+                         "manifest": manifest,
                          "verified_memory": all_verified_memory})
             stage("package", "Граф упакован в возобновляемый процесс", "success",
                   expert=orchestrator, detail="шагов: %d · checkpoint: да" % len(built_steps),

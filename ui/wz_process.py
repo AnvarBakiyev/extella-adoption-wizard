@@ -606,13 +606,18 @@ def make_step(stage, task=None, index=1):
     title = str(task.get("title") or stage.get("title") or task.get("purpose") or
                 stage.get("business_description") or ("Шаг %d" % index)).strip()
     purpose = str(task.get("purpose") or stage.get("business_description") or title).strip()
-    acceptance = task.get("acceptance") if isinstance(task.get("acceptance"), dict) else {}
+    has_modern_acceptance = isinstance(task.get("acceptance"), dict)
+    acceptance = task.get("acceptance") if has_modern_acceptance else {}
     legacy_accept = task.get("acceptance_test") if isinstance(task.get("acceptance_test"), dict) else {}
     deterministic = acceptance.get("deterministic_checks") or task.get("deterministic_checks") or []
     semantic = acceptance.get("semantic_criteria") or task.get("semantic_criteria") or []
-    if not semantic and legacy_accept.get("expected"):
+    # A modern plan deliberately separates a synthetic acceptance_test from production acceptance.
+    # Falling back from an explicitly empty semantic_criteria to the synthetic expected value makes
+    # invented fixture rows mandatory in the user's real data.  Preserve the fallback only for old
+    # plans that predate the structured acceptance object.
+    if not semantic and not has_modern_acceptance and legacy_accept.get("expected"):
         semantic = [legacy_accept.get("expected")]
-    if not semantic and legacy_accept.get("description"):
+    if not semantic and not has_modern_acceptance and legacy_accept.get("description"):
         semantic = [legacy_accept.get("description")]
     permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else None
     permissions = permissions or (stage.get("permissions") if isinstance(stage.get("permissions"), dict) else None)

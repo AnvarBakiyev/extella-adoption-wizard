@@ -89,12 +89,26 @@ def main():
         package["available_plugins_and_experts"] = selected
         prompt = mod._build_prompt("pc_run_process", package, "", "agent_test")
         assert "Не запускай его сам" in prompt and "явными source_file и output_dir" in prompt
+        assert "PDF INPUT CONTRACT — ОБЯЗАТЕЛЬНО" in prompt
+        assert "FlateDecode" in prompt and "extella-pip install pypdf" in prompt
         assert "LEGACY_PLAN_MUST_NOT_REACH_QWEN" not in prompt
         assert "CHAT_TRANSCRIPT_MUST_NOT_REACH_QWEN" not in prompt
         assert "authority_order" in prompt and "relevant_capabilities" in prompt
         assert "weather" not in prompt and len(prompt) < 18000, len(prompt)
         repair = mod._repair_context({"issue": "hardcoded A-101", "file": str(pdf)}, package)
         assert "A-101" not in repair and "<sample_value>" in repair and "certificate.pdf" in repair
+        enum_package = {
+            "inputs": [{"workbook": [{"sample_rows": [
+                ["status"], ["Only Excel"], ["Quantity Mismatch"],
+                ["extella.step_result.v1"], ["A-101"], ["Acme Corp"]]}]}],
+            "task_contract": {"required_result": {
+                "status_codes": ["only_excel", "quantity_mismatch"],
+                "schema": "extella.step_result.v1"}},
+        }
+        enum_literals = mod._sample_literals(enum_package)
+        assert "Only Excel" not in enum_literals and "Quantity Mismatch" not in enum_literals
+        assert "extella.step_result.v1" not in enum_literals
+        assert "A-101" in enum_literals and "Acme Corp" in enum_literals
 
         out = root / "out"
         out.mkdir()
@@ -119,14 +133,45 @@ def main():
         assert rejected["ok"] is False
         assert any("certificate.pdf" in issue for issue in rejected["issues"])
 
-        code = ('def pc_run_process(source_file="", output_dir="", api_token="", api_base="", target="", '
+        raw_code = ('def pc_run_process(source_file="", output_dir="", api_token="", api_base="", target="", '
                 'source_key="", rules_json="", fields_json="", run_id="", placement_json="", '
                 'adapter_json="", report_spec_json=""):\n    return {}\n')
+        assert any("PDF-вход требует" in x
+                   for x in mod._validate_code("pc_run_process", raw_code, package))
+        nested_include = raw_code.replace(
+            "    return {}",
+            '    include("from pypdf import PdfReader", ["extella-pip install pypdf"])\n'
+            "    return {}")
+        assert any("module-level" in x
+                   for x in mod._validate_code("pc_run_process", nested_include, package))
+        code = ('$extens("include.py")\n'
+                'include("from pypdf import PdfReader", ["extella-pip install pypdf"])\n' + raw_code)
         assert mod._validate_code("pc_run_process", code, package) == []
+        failed_pdf = {
+            "returned_summary": {"processed_files": 1, "records": 0,
+                                 "extraction_methods": ["basic_regex"]},
+            "business_issues": ["0 записей извлечено из certificate.pdf"],
+            "required_next_action": "repair_output_contract",
+            "previous_expert_code": raw_code,
+        }
+        repair_prompt = mod._build_prompt(
+            "pc_run_process", package, failed_pdf, "agent_test")
+        assert "СМЕНА PDF-МЕТОДА ОБЯЗАТЕЛЬНА" in repair_prompt
+        assert "РЕМОНТ ТОЛЬКО ВЫХОДНОГО КОНТРАКТА" not in repair_prompt
         leaked = code.replace("return {}", "return {'seal': 'A-101'}")
         assert any("значения образца" in x for x in mod._validate_code("pc_run_process", leaked, package))
         escaped = code.replace("return {}", "return list(Path.home().rglob('*.xlsx'))")
         assert any("Path.home(" in x for x in mod._validate_code("pc_run_process", escaped, package))
+        dependency_package = {"inputs": [{
+            "name": "dependency_manifest.json", "extension": ".json",
+            "text_sample": '{"sha256":"abc123","seal_number":"A-101"}',
+        }]}
+        schema_code = raw_code.replace("return {}", "return {'digest': hashlib.sha256(b'x').hexdigest()}")
+        assert not any("sha256" in x for x in mod._validate_code(
+            "pc_run_process", schema_code, dependency_package))
+        assert any("значения образца" in x for x in mod._validate_code(
+            "pc_run_process", raw_code.replace("return {}", "return {'seal': 'A-101'}"),
+            dependency_package))
 
         # Быстрый платформенный путь совпадает с Chat: одно нативное действие создания эксперта.
         # JSON code-artifact остаётся контролируемым fallback, а не вторым обязательным кругом.
@@ -291,6 +336,8 @@ def main():
     assert 'llm["task_context"] = _builder_brief(task_package)' in source
     assert "build_agentic_solution(" in source
     assert "max_creation_attempts=4" in source and "max_acceptance_repairs=2" in source
+    assert "reserve_attempts = max(3, step_limit)" in source
+    assert "if step_limit < 3" not in source
     assert source.index("build_agentic_solution(") < source.index("# KNOWLEDGE-СТАДИЯ")
     assert '"agentic_events": []' in source and 'event = {"at": now()' in source
     assert '"updated_at": stamp' in source

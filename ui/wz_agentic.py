@@ -1639,6 +1639,69 @@ def _llm_json(llm, prompt, max_tokens=3800, timeout=260):
     return _json_object(_agent_text(response))
 
 
+PDF_LIBRARY_MARKERS = ("pypdf", "pypdf2", "pdfminer", "pdfplumber", "pymupdf", "fitz")
+
+
+def _task_has_pdf_input(task_package):
+    """True only when the current executable step physically receives a PDF."""
+    for profile in (task_package or {}).get("inputs") or []:
+        if not isinstance(profile, dict):
+            continue
+        extension = str(profile.get("extension") or profile.get("format") or "").strip().casefold()
+        name = str(profile.get("name") or "").strip().casefold()
+        if extension in (".pdf", "pdf") or name.endswith(".pdf"):
+            return True
+    return False
+
+
+def _pdf_uses_verified_reuse(task_package):
+    """A verified PDF capability owns parsing on a REUSE route; generated BUILD code does not."""
+    decision = ((task_package or {}).get("execution_decision")
+                if isinstance((task_package or {}).get("execution_decision"), dict) else {})
+    if str(decision.get("route") or "").casefold() != "reuse":
+        return False
+    selected = json.dumps(decision.get("selected_capabilities") or [],
+                          ensure_ascii=False, default=str).casefold()
+    return any(marker in selected for marker in PDF_LIBRARY_MARKERS + ("ocr",))
+
+
+def _pdf_library_include_present(code):
+    """Fython loads dependencies only from module-level includes after the include extension."""
+    source = str(code or "")
+    first_line = next((line.strip() for line in source.splitlines() if line.strip()), "")
+    if first_line != '$extens("include.py")':
+        return False
+    top_function = re.search(r"^def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", source, flags=re.M)
+    prefix = source[:top_function.start()] if top_function else source
+    for match in re.finditer(r"\binclude\s*\((.*?)\)", prefix, flags=re.I | re.S):
+        body = match.group(1).casefold()
+        if "extella-pip install" in body and any(marker in body for marker in PDF_LIBRARY_MARKERS):
+            return True
+    return False
+
+
+def _pdf_extraction_repair_required(feedback, task_package):
+    """Escalate a rejected empty/raw PDF attempt to a different extraction method."""
+    if not feedback or not _task_has_pdf_input(task_package):
+        return False
+    text = (feedback if isinstance(feedback, str) else
+            json.dumps(_compact(feedback), ensure_ascii=False, default=str))
+    folded = str(text).casefold()
+    method_markers = (
+        "basic_regex", "raw pdf", "raw byte", "сырым байт", "сырых байт",
+        "flate", "pdf-вход требует библиотеч", "pdf input requires",
+        "pdf library", "pdf-библиотек",
+    )
+    if any(marker in folded for marker in method_markers):
+        return True
+    zero_records = re.search(
+        r"(?:\b0\s+(?:records?|rows?|entries?)\b|\b0\s+(?:запис|строк|объект)[а-яё]*\b)",
+        folded)
+    extraction_context = any(marker in folded for marker in (
+        "extract", "извлеч", "прочитан", "обработ", "processed_files", "files_confirmed"))
+    return bool(zero_records and extraction_context)
+
+
 def _build_prompt(expert_name, task_package, feedback, agent_id):
     brief_json = json.dumps(_builder_brief(task_package), ensure_ascii=False, indent=2, default=str)
     decision = (task_package.get("execution_decision")
@@ -1657,6 +1720,27 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
                        "проверяет JSON-схему, обязательные поля и acceptance evidence."),
     }
     route_directive = route_directives.get(route, "Маршрут выполнения зафиксирован: " + route + ".")
+    pdf_contract = ""
+    if _task_has_pdf_input(task_package):
+        if _pdf_uses_verified_reuse(task_package):
+            pdf_contract = (
+                "\n\nPDF INPUT CONTRACT. Разбор PDF принадлежит выбранной verified PDF/OCR capability: "
+                "вызови именно её и зафиксируй capability evidence. Даже на REUSE-маршруте запрещено "
+                "искать текст регулярным выражением в сырых байтах PDF: content streams могут быть сжаты.")
+        else:
+            pdf_contract = (
+                "\n\nPDF INPUT CONTRACT — ОБЯЗАТЕЛЬНО. Физический .pdf извлекай настоящим PDF-парсером, "
+                "объявленным через каноническую зависимость Fython. ПЕРВАЯ непустая строка исходника должна "
+                'быть $extens("include.py"); затем на уровне модуля ДО def размести include. '
+                "Никогда не вызывай include внутри функции — в runtime это даст name 'include' is not defined. "
+                "Например: "
+                'include("from pypdf import PdfReader", ["extella-pip install pypdf"]) или '
+                'include("import pdfplumber", ["extella-pip install pdfplumber"]). '
+                "Bare import без include не гарантирует библиотеку в чистом runtime. ЗАПРЕЩЕНО читать PDF "
+                "как сырые bytes и искать текст/записи regex или decode: PDF content streams часто сжаты "
+                "(FlateDecode), поэтому такой метод ложно возвращает 0 записей. Если библиотечное извлечение "
+                "вернуло пустой текст и профиль доказывает скан, используй библиотечный renderer/OCR либо "
+                "верни точную техническую ошибку; не выдавай пустой разбор за success.")
     upc_step = task_package.get("upc_step") if isinstance(task_package.get("upc_step"), dict) else None
     step_directive = ""
     if upc_step:
@@ -1691,7 +1775,14 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
         action = str(feedback.get("required_next_action") or "") if isinstance(feedback, dict) else ""
         previous_code = str(feedback.get("previous_expert_code") or "") \
             if isinstance(feedback, dict) else ""
-        if action == "repair_output_contract" and previous_code:
+        replace_pdf_method = _pdf_extraction_repair_required(feedback, task_package)
+        pdf_repair = (
+            "\nСМЕНА PDF-МЕТОДА ОБЯЗАТЕЛЬНА: предыдущая попытка не извлекла записи или использовала "
+            "сырой byte/regex-подход. Не сохраняй эту вычислительную часть, даже если контроллер ранее "
+            "назвал ремонт выходным. Замени извлечение на PDF-библиотеку через include(...), а для "
+            "доказанного скана — на renderer/OCR; затем заново посчитай evidence."
+            if replace_pdf_method else "")
+        if action == "repair_output_contract" and previous_code and not replace_pdf_method:
             repair = ("\n\nРЕМОНТ ТОЛЬКО ВЫХОДНОГО КОНТРАКТА. Вычислительная логика прошлого эксперта "
                       "уже отработала: не меняй выбор входов, чтение, нормализацию, сопоставление и расчёты. "
                       "Сделай минимальное изменение упаковки summary/output/evidence/artifacts и записи "
@@ -1702,7 +1793,7 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
         else:
             repair = ("\n\nПРЕДЫДУЩИЙ РЕАЛЬНЫЙ ПРОГОН НЕ ПРОШЁЛ. Исправь первопричину, не подгоняя решение "
                       "под конкретные строки образца. Обнови и снова сохрани того же эксперта. "
-                      "Диагностика харнесса:\n" + _repair_context(feedback, task_package))
+                      "Диагностика харнесса:\n" + _repair_context(feedback, task_package) + pdf_repair)
     return f"""Ты — Строитель Extella. Task-first архитектор уже изучил задачу БЕЗ технического имени
 эксперта и сохранил execution_decision. Теперь не выбирай другой тип решения: материализуй выбранный
 маршрут в одном реально исполняемом эксперте `{expert_name}` действием платформы.
@@ -1756,7 +1847,7 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
 После действия ответь кратко, но источником истины будет сохранённый эксперт и его реальный прогон.
 
 BUILD_BRIEF:
-{brief_json}{step_directive}{repair}"""
+{brief_json}{pdf_contract}{step_directive}{repair}"""
 
 
 def _code_artifact_prompt(build_prompt, expert_name):
@@ -1780,22 +1871,54 @@ def _code_artifact_prompt(build_prompt, expert_name):
 def _sample_literals(task_package):
     """Отличительные значения СТРОК образца, которым запрещено просачиваться в исходник решения."""
     values = set()
+    declared = json.dumps(
+        {key: value for key, value in (task_package or {}).items() if key != "inputs"},
+        ensure_ascii=False, default=str).casefold()
+
+    def is_declared_schema_literal(value):
+        """Allow output enum labels that are merely humanized spellings of the contract.
+
+        A downstream report legitimately maps ``only_excel`` to ``Only Excel``.  It must not,
+        however, embed a concrete sample identifier such as ``A-101`` merely because the owner's
+        acceptance example also mentions it.
+        """
+        text = str(value or "").strip()
+        if text.casefold().startswith(("extella.", "upc-")):
+            return True
+        if re.search(r"\d", text):
+            return False
+        snake = re.sub(r"\s+", "_", text.casefold())
+        return len(snake) >= 4 and re.search(
+            r"(?<![a-z0-9])" + re.escape(snake) + r"(?![a-z0-9])", declared) is not None
+
     for profile in (task_package or {}).get("inputs") or []:
         for sheet in profile.get("workbook") or []:
             rows = sheet.get("sample_rows") or []
             for row in rows[1:]:  # первая строка — схема; имена колонок коду знать разрешено
                 for cell in row:
                     s = str(cell or "").strip()
-                    if 4 <= len(s) <= 100 and (re.search(r"\d", s) or len(s.split()) >= 2):
+                    if (4 <= len(s) <= 100 and
+                            (re.search(r"\d", s) or len(s.split()) >= 2) and
+                            not is_declared_schema_literal(s)):
                         values.add(s)
         rows = profile.get("sample_rows") or []
         for row in rows[1:]:
             for cell in row:
                 s = str(cell or "").strip()
-                if 4 <= len(s) <= 100 and (re.search(r"\d", s) or len(s.split()) >= 2):
+                if (4 <= len(s) <= 100 and
+                        (re.search(r"\d", s) or len(s.split()) >= 2) and
+                        not is_declared_schema_literal(s)):
                     values.add(s)
         text = str(profile.get("text_sample") or "")
-        for token in re.findall(r"(?<!\w)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_.\-/]{3,}(?!\w)", text):
+        for match in re.finditer(
+                r"(?<!\w)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_.\-/]{3,}(?!\w)", text):
+            token = match.group(0)
+            # Dependency envelopes and JSON fixtures contain technical schema keys such as
+            # ``sha256``.  A generated expert must be free to implement that schema; only values
+            # (for example a real seal number) are sample literals.  Treating a key as client data
+            # exhausted the t4 creation budget after the PDF steps had already passed live E2E.
+            if re.match(r"""["']?\s*:""", text[match.end():]):
+                continue
             if re.search(r"\d", token):
                 values.add(token)
     return sorted(values, key=lambda x: (-len(x), x))[:120]
@@ -1818,6 +1941,12 @@ def _validate_code(expert_name, code, task_package=None):
     leaked = [v for v in _sample_literals(task_package or {}) if v.casefold() in (code or "").casefold()]
     if leaked:
         issues.append("в код зашиты значения образца: " + ", ".join(leaked[:8]))
+    if (_task_has_pdf_input(task_package) and not _pdf_uses_verified_reuse(task_package) and
+            not _pdf_library_include_present(code)):
+        issues.append(
+            'PDF-вход требует $extens("include.py") первой строкой и библиотечный парсер в module-level '
+            "include(... pypdf/PyPDF2/pdfminer/pdfplumber/PyMuPDF ...) до def; include внутри функции и "
+            "regex/decode сырых PDF-байтов запрещены")
     return issues
 
 
