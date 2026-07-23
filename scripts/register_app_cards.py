@@ -35,8 +35,35 @@ APPS = [
 ]
 
 
+# Хостинговые карточки: сервер на VPS команды, открывается в панели по ui.url.
+HOSTED = [
+    ("extella_kz_grocery", "Бага — цены на продукты Казахстана",
+     "Цены продуктов — общий сервер команды (хостинг Extella)",
+     "Матрица 100 × 6 сетей, честное сравнение и история цен. Общая база на "
+     "хостинге Extella: все смотрят одни и те же данные, ставить ничего не нужно.",
+     "https://baga.82-115-42-21.sslip.io"),
+]
+
+
+def register_hosted(reg):
+    import json
+    for pid, name, tagline, desc, url in HOSTED:
+        manifest = {
+            "id": pid, "name": name, "tagline": tagline, "description": desc,
+            "category": "analytics", "type": "custom", "version": "1.0.0",
+            "source": "hosted://extella-vps", "mode": "repo_ui",
+            "ui": {"type": "local_server", "url": url, "openInBrowser": False,
+                   "mainFile": "index.html"},
+            "service": {"isApp": True, "hosted": True, "ready": True},
+        }
+        (reg / (pid + ".json")).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("зарегистрирована хостинговая карточка:", pid, "->", url)
+
+
 def main():
     REG.mkdir(parents=True, exist_ok=True)
+    register_hosted(REG)
     for pid, name, tagline, desc, mainfile in APPS:
         manifest = {
             "id": pid, "name": name, "tagline": tagline, "description": desc,
