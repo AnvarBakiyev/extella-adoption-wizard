@@ -1939,11 +1939,12 @@ def _sample_literals(task_package):
                 s = str(cell or "").strip()
                 if _flagged(s):
                     values.add(s)
-        # text_sample производных артефактов — это НАШИ step_result'ы: технические имена
-        # (t2_d1_execute), sha и даже фрагменты сгенерённого кода (regex «A-Za-z0-9») — они
-        # ложно банились как «данные образца» (E2E 23.07). Текстовую добычу ведём только по
-        # КОРНЕВЫМ клиентским файлам; данные в производных ловит цифровое правило таблиц выше.
-        text = "" if derived_bundle else str(profile.get("text_sample") or "")
+        # text_sample производных артефактов — НАШИ step_result'ы: клиентские данные там всё ещё
+        # запрещены (A-101 из манифеста — по-прежнему хардкод; регресс check_agentic_builder), но
+        # ТЕХНИЧЕСКИЙ словарь конвейера банился ложно (E2E 23.07): id схем upc-*/extella.*,
+        # внутренние имена шагов (t2_d1_execute, __draft_), hex-дайджесты и regex-диапазоны
+        # («A-Za-z0-9») из встроенных фрагментов кода. Их отфильтровываем адресно.
+        text = str(profile.get("text_sample") or "")
         for match in re.finditer(
                 r"(?<!\w)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_.\-/]{3,}(?!\w)", text):
             token = match.group(0)
@@ -1953,6 +1954,14 @@ def _sample_literals(task_package):
             # exhausted the t4 creation budget after the PDF steps had already passed live E2E.
             if re.match(r"""["']?\s*:""", text[match.end():]):
                 continue
+            if is_declared_schema_literal(token):                       # upc-*/extella.* и enum контракта
+                continue
+            if re.match(r"^[a-z][a-z0-9]{0,11}_t\d+_", token) or "__draft_" in token:
+                continue                                                # внутренние имена шагов/draft'ов
+            if len(token) >= 32 and re.fullmatch(r"[0-9a-f]+", token):
+                continue                                                # hex-дайджест (sha256 и т.п.)
+            if re.fullmatch(r"(?:[A-Za-zА-ЯЁа-яё]-[A-Za-zА-ЯЁа-яё]|0-9)+", token):
+                continue                                                # regex-диапазон из кода
             if re.search(r"\d", token):
                 values.add(token)
     return sorted(values, key=lambda x: (-len(x), x))[:120]
