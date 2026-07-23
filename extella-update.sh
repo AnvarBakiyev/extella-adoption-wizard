@@ -52,6 +52,14 @@ fi
 # ── 3. ТУЛБАР (приватный репо — только если есть доступ/клон) ───────────────
 say "Тулбар: обновляю (если есть доступ к приватному репо)"
 if [ -d "$TB_DIR/.git" ]; then
+  # Канон тулбара — main. Старые клоны коллег могли остаться на технической
+  # ветке (репо долго имел её дефолтной) и «обновлялись», не получая main.
+  tb_branch="$(git -C "$TB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if [ "$tb_branch" != "main" ]; then
+    git -C "$TB_DIR" checkout --quiet main 2>/dev/null \
+      && ok "клон тулбара переключён на main (был: ${tb_branch:-?})" \
+      || warn "не удалось переключить клон тулбара на main (локальные правки?) — обновляю текущую ветку"
+  fi
   if git -C "$TB_DIR" pull --ff-only --quiet 2>/dev/null; then
     # В репо лежит ГОТОВЫЙ детерминированный toolbar/toolbar.js (обновляется
     # релизной сборкой `node build.js --release-artifacts`, SHA воспроизводим) —
