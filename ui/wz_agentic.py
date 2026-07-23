@@ -1555,14 +1555,25 @@ def _agent_headers(agent_id):
 
 
 def _post_agent(agent_id, payload, timeout=700):
-    req = urllib.request.Request(BASE.rstrip("/") + "/api/agent/run",
-                                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                                 headers=_agent_headers(agent_id), method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        return {"status": "error", "message": _clip(exc, 400)}
+    """Канон: HTTP 5xx/timeout ≠ провал — это флап шлюза (ngrok/бэкенд Qwen). Без ретрая одиночный
+    502 сжигал ПОПЫТКУ КОДОГЕНА, а с ней и repair budget (E2E 23.07: смысловой цикл сходился,
+    убил его Bad Gateway на 4-й попытке). Транзиенты ретраим с бэкоффом; 4xx — честная ошибка."""
+    req_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    last = None
+    for attempt in range(3):
+        req = urllib.request.Request(BASE.rstrip("/") + "/api/agent/run", data=req_body,
+                                     headers=_agent_headers(agent_id), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last = {"status": "error", "message": _clip(exc, 400)}
+            if exc.code < 500:          # 4xx детерминирован (404 нет агента и т.п.) — не ретраим
+                return last
+        except Exception as exc:        # timeout/обрыв — транзиент
+            last = {"status": "error", "message": _clip(exc, 400)}
+        time.sleep(3 * (attempt + 1))   # 3s, 6s
+    return last
 
 
 def _agent_text(response):
