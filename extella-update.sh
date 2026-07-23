@@ -53,13 +53,25 @@ fi
 say "Тулбар: обновляю (если есть доступ к приватному репо)"
 if [ -d "$TB_DIR/.git" ]; then
   if git -C "$TB_DIR" pull --ff-only --quiet 2>/dev/null; then
+    # В репо лежит ГОТОВЫЙ детерминированный toolbar/toolbar.js (обновляется
+    # релизной сборкой `node build.js --release-artifacts`, SHA воспроизводим) —
+    # коллеге Node не обязателен. Node-сборка остаётся предпочтительной, готовая
+    # копия — фолбэк, чтобы «нет node» больше не оставлял на старом тулбаре.
+    tb_done=0
     if command -v node >/dev/null 2>&1; then
       ( cd "$TB_DIR/toolbar" && node build.js >/dev/null 2>&1 ) \
         && cp "$TB_DIR/toolbar/build/toolbar.js" "$TB_DEPLOY" \
-        && ok "тулбар собран и выложен → Extella Desktop" \
-        || warn "сборка тулбара не удалась (node build.js)"
-    else
-      warn "нет node — тулбар не собрать. Установите Node.js и повторите."
+        && ok "тулбар собран и выложен → Extella Desktop" && tb_done=1 \
+        || warn "сборка тулбара не удалась (node build.js) — пробую готовую копию"
+    fi
+    if [ "$tb_done" != "1" ]; then
+      if [ -s "$TB_DIR/toolbar/toolbar.js" ]; then
+        cp "$TB_DIR/toolbar/toolbar.js" "$TB_DEPLOY" \
+          && ok "тулбар выложен из готовой сборки репо (Node не потребовался)" \
+          || warn "не удалось выложить готовый тулбар — проверьте права на $TB_DEPLOY"
+      else
+        warn "готовой сборки toolbar/toolbar.js в репо нет — установите Node.js и повторите."
+      fi
     fi
   else
     warn "git pull тулбара не прошёл (нет доступа/расхождение) — обновите вручную"
