@@ -37,12 +37,44 @@ APPS = [
 
 # Хостинговые карточки: сервер на VPS команды, открывается в панели по ui.url.
 HOSTED = [
+    ("extella_targetolog_hosted", "Таргетолог AI (команда)",
+     "Рекламные брифы, медиапланы и кампании — общий контур команды",
+     "Командный Таргетолог на хостинге Extella: брифы, медиапланы, черновики "
+     "кампаний и отчёты в одной базе. Подключения рекламных кабинетов "
+     "настраиваются владельцем; внешние отправки — только после approval.",
+     "https://targetolog.82-115-42-21.sslip.io"),
     ("extella_kz_grocery", "Бага — цены на продукты Казахстана",
      "Цены продуктов — общий сервер команды (хостинг Extella)",
      "Матрица 100 × 6 сетей, честное сравнение и история цен. Общая база на "
      "хостинге Extella: все смотрят одни и те же данные, ставить ничего не нужно.",
      "https://baga.82-115-42-21.sslip.io"),
 ]
+
+
+# Инфо-карточки: создать, если нет (у владельца может жить полноценная
+# локальная версия под тем же id — её не перезаписываем).
+INFO = [
+    ("extella_1c_agent", "Агент 1С", "Безопасная работа с 1С — только чтение",
+     "Читает живую 1С 8.3 через выделенного Qwen-агента (остатки, регистры, "
+     "документы). Ставится на Windows-машину с 1С: скачайте релиз из "
+     "репозитория и запустите INSTALL_AGENT_1C.cmd — инструкция в DISTRIBUTION.md.",
+     "https://github.com/AnvarBakiyev/extella-1c-agent"),
+]
+
+
+def register_info(reg):
+    import json
+    for pid, name, tagline, desc, source in INFO:
+        path = reg / (pid + ".json")
+        if path.exists():
+            continue
+        manifest = {
+            "id": pid, "name": name, "tagline": tagline, "description": desc,
+            "category": "analytics", "type": "custom", "version": "1.0.0",
+            "source": source, "mode": "info",
+        }
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("зарегистрирована инфо-карточка:", pid)
 
 
 def register_hosted(reg):
@@ -64,6 +96,7 @@ def register_hosted(reg):
 def main():
     REG.mkdir(parents=True, exist_ok=True)
     register_hosted(REG)
+    register_info(REG)
     for pid, name, tagline, desc, mainfile in APPS:
         manifest = {
             "id": pid, "name": name, "tagline": tagline, "description": desc,
