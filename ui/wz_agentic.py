@@ -1939,7 +1939,11 @@ def _sample_literals(task_package):
                 s = str(cell or "").strip()
                 if _flagged(s):
                     values.add(s)
-        text = str(profile.get("text_sample") or "")
+        # text_sample производных артефактов — это НАШИ step_result'ы: технические имена
+        # (t2_d1_execute), sha и даже фрагменты сгенерённого кода (regex «A-Za-z0-9») — они
+        # ложно банились как «данные образца» (E2E 23.07). Текстовую добычу ведём только по
+        # КОРНЕВЫМ клиентским файлам; данные в производных ловит цифровое правило таблиц выше.
+        text = "" if derived_bundle else str(profile.get("text_sample") or "")
         for match in re.finditer(
                 r"(?<!\w)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_.\-/]{3,}(?!\w)", text):
             token = match.group(0)
