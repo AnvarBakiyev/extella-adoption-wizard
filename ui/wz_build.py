@@ -2456,6 +2456,89 @@ def _run_build(session_id, build_id):
                     sync_process({"type": "process_stalled", "detail": detail})
                     _unlock(); return
 
+                # ── Перф №1: ПАРАЛЛЕЛЬНАЯ ВОЛНА. Независимые ready-шаги гоняют ТЯЖЁЛУЮ сетевую
+                # часть (кодоген → прогон → приёмка) одновременно в кэш prebuilt; вся машина
+                # состояний ниже остаётся последовательной и НЕТРОНУТОЙ — она берёт готовое решение
+                # из кэша вместо повторного вызова. Паузы/вопросы/бюджеты обрабатываются в прежнем
+                # порядке. Изоляция доказана: bdir per-step, эксперты уникальны, сессия под flock.
+                # Бюджет честный: в волну включается только префикс, влезающий в консервативный
+                # резерв (кратный residual-гейту последовательного цикла). Кэш живёт один проход.
+                prebuilt = {}
+                _wave = []
+                for _cand in ready:
+                    if str((_cand.get("implementation") or {}).get("mode") or "generate") \
+                            not in ("generate", "llm_worker", "delegate"):
+                        continue   # reuse/human/acquire — только прежним последовательным путём
+                    _cf = input_files_for(_cand)
+                    if _cf:
+                        _wave.append((_cand, _cf))
+                if len(_wave) >= 2:
+                    _wrate = max(0.0, float((process_graph.get("budgets") or {}).get(
+                        "estimated_cost_per_1k_tokens_usd") or 0))
+                    _fit = []
+                    for _wi, _wpair in enumerate(_wave, start=1):
+                        _wres = {"attempts": 4 * _wi, "llm_calls": 8 * _wi, "tokens": 96000 * _wi,
+                                 "cost_usd": 96 * _wrate * _wi, "generated_experts": _wi}
+                        if universal_budget_preflight(process_graph, reserve=_wres).get("ok"):
+                            _fit.append(_wpair)
+                        else:
+                            break   # хвост волны построится последовательно под обычным гейтом
+                    if len(_fit) >= 2:
+                        import threading as _th
+                        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _asc
+                        _plock = _th.Lock()
+
+                        def _wave_prep(_s, _f):
+                            _contract = dict(_s)
+                            _contract["global_source_manifest"] = [
+                                {"name": Path(p).name, "path": str(p),
+                                 "format": Path(p).suffix.casefold().lstrip(".") or "unknown",
+                                 "sha256": universal_file_sha256(p)}
+                                for p in sample_files if Path(p).is_file()]
+                            _contract["process_memory"] = [
+                                {k: r.get(k) for k in ("id", "kind", "text", "scope", "confidence",
+                                                       "step_id", "step_version")}
+                                for r in (process_graph.get("memory") or [])
+                                if isinstance(r, dict) and r.get("status") == "verified"]
+                            _ctx = derive_step_context(prepared, _f, _contract)
+                            return (_contract, _ctx) if _ctx.get("ok") else (None, None)
+
+                        def _wave_build(_s, _f, _contract, _ctx):
+                            _sid2 = str(_s.get("id"))
+                            _safe2 = re.sub(r"[^a-z0-9]+", "_", _sid2.casefold()).strip("_")[:28] or "step"
+                            _stable2 = (ns + "_" + _safe2 + "_v" + str(_s.get("version")))[:64]
+
+                            def _lp(pid, title, state="running", detail=""):
+                                with _plock:
+                                    step_progress(_s, pid, title, state, detail)
+                            return build_agentic_solution(
+                                session_id=session_id, build_id=build_id, namespace=ns,
+                                sample_files=_f, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
+                                llm=llm, progress=_lp,
+                                max_creation_attempts=2, max_run_repairs=2, max_acceptance_repairs=2,
+                                max_total_attempts=4, max_elapsed_seconds=3600,
+                                prepared_context=_ctx, step_contract=_contract,
+                                expert_name_override=_stable2)
+
+                        stage("wave", "Параллельная волна: строю %d независимых шагов одновременно"
+                              % len(_fit), "running", build_mode="universal_process")
+                        _futs = {}
+                        with _TPE(max_workers=min(3, len(_fit))) as _ex:
+                            for _s, _f in _fit:
+                                _contract, _ctx = _wave_prep(_s, _f)
+                                if _contract is None:
+                                    continue   # контекст не сошёлся — последовательный цикл разберётся честно
+                                _futs[_ex.submit(_wave_build, _s, _f, _contract, _ctx)] = str(_s.get("id"))
+                            for _fut in _asc(_futs):
+                                try:
+                                    _sol = _fut.result()
+                                    if isinstance(_sol, dict):
+                                        prebuilt[_futs[_fut]] = _sol
+                                except Exception:
+                                    pass   # шаг построится последовательно; молча не глотаем — цикл сам покажет
+                        stage("wave", "Параллельная волна готова: решений %d из %d"
+                              % (len(prebuilt), len(_fit)), "success", build_mode="universal_process")
+
                 for step in ready:
                     step_id = str(step.get("id"))
                     mode = str((step.get("implementation") or {}).get("mode") or "generate")
@@ -2625,7 +2708,9 @@ def _run_build(session_id, build_id):
                     def agentic_progress(sid, title, state="running", detail="", _step=step):
                         step_progress(_step, sid, title, state, detail)
 
-                    solution = build_agentic_solution(
+                    # Перф №1: решение волны берём из кэша (контракт/контекст детерминированы и
+                    # совпадают с только что пересчитанными); нет в кэше — прежний прямой вызов.
+                    solution = prebuilt.pop(step_id, None) or build_agentic_solution(
                         session_id=session_id, build_id=build_id, namespace=ns,
                         sample_files=step_files, sess_dir=SESS_DIR, runs_dir=RUNS_DIR,
                         llm=llm, progress=agentic_progress,
