@@ -10,11 +10,13 @@
 
 Запуск: python3 scripts/smoke_e2e.py
 """
+import atexit
 import json
 import re
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 BR = "http://127.0.0.1:8765"
@@ -59,10 +61,23 @@ def pick_built_session():
 
 SID = ""
 TMP = ""
+UPC_SID = ""
+UPC_FILES = []
+
+
+def cleanup_upc_fixture():
+    for path in UPC_FILES:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+atexit.register(cleanup_upc_fixture)
 
 
 def main():
-    global SID, TMP
+    global SID, TMP, UPC_SID
     print("F6 СКВОЗНОЙ СМОУК ФУНДАМЕНТА\n")
 
     print("Мост и данные")
@@ -71,6 +86,55 @@ def main():
     def _():
         d = call("/x/sessions")
         return bool(d.get("sessions") is not None), "сессий: %d" % len(d.get("sessions") or [])
+
+    @check("мост запущен на ожидаемой UPC-версии")
+    def _():
+        d = call("/x/health")
+        return d.get("version") == "5.14", "версия: %s" % d.get("version")
+
+    print("\nUniversal Process API")
+    UPC_SID = "wz_smoke_upc_" + uuid.uuid4().hex[:12]
+    sp = SESS / (UPC_SID + ".json")
+    pp = SESS / (UPC_SID + "_process.json")
+    ep = SESS / (UPC_SID + "_process_events.jsonl")
+    UPC_FILES.extend((sp, pp, ep))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
+    from wz_process import checkpoint, process_from_blueprint, process_status
+    graph = process_from_blueprint(
+        UPC_SID,
+        {"process_name": "UPC live smoke", "goal": "Проверить общий процесс",
+         "stages": [{"id": "unknown_step", "title": "Новая способность вне каталога",
+                     "business_description": "Создать результат неизвестной заранее задачи"}]},
+        origin="smoke")
+    sp.write_text(json.dumps({
+        "session_id": UPC_SID, "schema": 1, "client_name": "UPC live smoke",
+        "stage": "blueprint", "answers": {},
+        "process_contract": {"schema": graph["schema"], "path": str(pp),
+                             "process_id": graph["process_id"], "active_version": 1,
+                             "status": process_status(graph)}}, ensure_ascii=False), encoding="utf-8")
+    checkpoint(graph, pp, ep, {"type": "smoke_fixture_created"})
+
+    @check("живой мост читает единый UPC sidecar")
+    def _():
+        d = call("/x/process?session_id=" + UPC_SID + "&surface=chat")
+        steps = (d.get("process") or {}).get("steps") or []
+        ok = (d.get("status") == "success" and d.get("surface") == "chat" and len(steps) == 1
+              and (steps[0].get("implementation") or {}).get("mode") == "generate")
+        return ok, "unknown capability → %s" % ((steps[0].get("implementation") or {}).get("mode") if steps else "нет шага")
+
+    @check("общий action seam атомарно пишет решение и событие")
+    def _():
+        step_id = graph["steps"][0]["id"]
+        out = call("/x/process_action", {"session_id": UPC_SID, "step_id": step_id,
+                                          "action": "approve", "permission": "create",
+                                          "target": "smoke-output", "payload": {"dry_run": True},
+                                          "approved": True, "surface": "workspace"})
+        read = call("/x/process?session_id=" + UPC_SID + "&surface=wizard")
+        stored = read.get("process") or {}
+        events = read.get("events") or []
+        ok = (out.get("status") == "success" and bool(stored.get("approvals"))
+              and any(e.get("surface") == "workspace" for e in events))
+        return ok, "approval + append-only event сохранены" if ok else "решение не сохранилось"
 
     SID = pick_built_session()
 

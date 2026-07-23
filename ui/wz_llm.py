@@ -9,7 +9,9 @@
 Правило канона: клиентский LLM — ТОЛЬКО Qwen, никогда Claude (agent_extella_default).
 """
 import time
+import json
 from wz_platform import CONFIG, api, run_expert, qwen_agent, qwen_agents
+from wz_local_experts import local_system_expert_available, run_local_system_expert
 
 
 def gen_panel_manifest(goal, stages):
@@ -80,7 +82,25 @@ def _llm_backend_down(res):
     return any(k in m for k in ("llm empty output", "endpoint", "ngrok", "offline", "err_ngrok", "platform llm"))
 
 
-def run_llm_expert(expert_name, params, wait=660, agents=None):
+def llm_transient_error(res):
+    """Only transport/backend failures are retryable; bad contracts and parse errors are final."""
+    if not isinstance(res, dict):
+        return True
+    status = str(res.get("status") or "").lower()
+    if status in ("timeout", "timed_out", "temporarily_unavailable"):
+        return True
+    if status not in ("error", "failed"):
+        return False
+    blob = json.dumps(res, ensure_ascii=False, default=str).lower()[:1200]
+    code = int(res.get("http_code") or 0) if str(res.get("http_code") or "").isdigit() else 0
+    return (_llm_backend_down(res) or code in (408, 429, 500, 502, 503, 504) or any(
+        marker in blob for marker in (
+            "timeout", "timed out", "read operation timed out", "connection reset",
+            "connection aborted", "connection refused", "remote end closed", "temporary failure",
+            "temporarily unavailable", "network is unreachable", "service unavailable")))
+
+
+def run_llm_expert(expert_name, params, wait=660, agents=None, target=None):
     """LLM-эксперт с ретраем и ФОЛБЭКОМ по цепочке Qwen-агентов (config.llm_agents): основной моргнул →
     следующий. Делает keyless-путь устойчивым к падению бэкенда одного агента. Возвращает первый НЕ-LLM-ошибочный
     результат либо последнюю ошибку. agents — явная цепочка (напр. design-агент первым), иначе qwen_agents()."""
@@ -91,13 +111,17 @@ def run_llm_expert(expert_name, params, wait=660, agents=None):
             seen.add(a)
             agents.append(a)
     agents = agents or [""]
+    local = local_system_expert_available(expert_name)
     last = None
     for aid in agents:
         p = dict(params)
         p["agent_id"] = aid
         for attempt in range(2):   # флап обычно отпускает за секунды → короткий ретрай
-            r = run_expert(expert_name, p, wait=wait, glob=True)
-            if not _llm_backend_down(r):
+            # Bridge-owned planning harnesses ship with the signed local release. Qwen reasoning
+            # remains remote, but no account-scoped registry/Listener round-trip is needed here.
+            r = (run_local_system_expert(expert_name, p) if local else
+                 run_expert(expert_name, p, wait=wait, glob=True, target=target))
+            if not llm_transient_error(r):
                 return r
             last = r
             time.sleep(2)

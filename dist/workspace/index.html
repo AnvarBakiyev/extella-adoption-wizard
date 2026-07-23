@@ -206,6 +206,8 @@ h2.pt{margin:0 0 4px;font-size:21px;font-weight:700}
           <div class="digest" style="margin-top:14px"><b>Что дальше:</b> <span id="nextTxt">—</span></div>
           <div class="sechead">Воркспейс спрашивает <span class="c" id="qC"></span></div>
           <div id="quests"><div class="tiny">вопросов нет</div></div>
+          <div class="sechead">Процессы Extella <span class="c">тот же граф, что в Wizard и Chat</span></div>
+          <div id="upcProcesses"><div class="tiny">загружаю процессы…</div></div>
         </div>
       </div>
 
@@ -272,7 +274,7 @@ h2.pt{margin:0 0 4px;font-size:21px;font-weight:700}
 </div>
 
 <script>
-var WS=null, WSID=null, PICK='', SEL=[], toastT=null;
+var WS=null, WSID=null, PICK='', SEL=[], toastT=null, UPC=[];
 var INF_PATH='M25,25 C25,11 43,11 50,25 C57,39 75,39 75,25 C75,11 57,11 50,25 C43,39 25,39 25,25 Z';
 function INF(w){w=w||56;return '<span class="inf" style="width:'+w+'px"><svg viewBox="0 0 100 50" width="'+w+'" height="'+(w/2)+'">'+
  '<defs><linearGradient id="infg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--orange)"/><stop offset="1" stop-color="#E8B36A"/></linearGradient></defs>'+
@@ -366,13 +368,13 @@ async function openWs(id,fresh){
   var d=await ws({op:'get',ws_id:id});
   var _wl=$('wsLoad');if(_wl)_wl.remove();
   if(d.status!=='success'){toast('воркспейс не найден');showList();return}
-  WS=d.workspace;renderHead();renderAll();
+  WS=d.workspace;renderHead();renderAll();loadProcesses();
   if(!fresh){ // живой проект: дайджест + подхват новых файлов
     ws({op:'digest',ws_id:id}).then(function(g){if(g.status==='success')renderDigest(g)});
     ws({op:'sync_sources',ws_id:id}).then(function(s){if(s.new_count){toast('↻ подхватил новых файлов: '+s.new_count);refresh()}});
   }
 }
-async function refresh(){var d=await ws({op:'get',ws_id:WSID});if(d.status==='success'){WS=d.workspace;renderHead();renderAll()}}
+async function refresh(){var d=await ws({op:'get',ws_id:WSID});if(d.status==='success'){WS=d.workspace;renderHead();renderAll();loadProcesses()}}
 function renderHead(){
   $('hTitle').textContent=WS.name||'Воркспейс';
   var t=WS.project_type?(' · '+WS.project_type.name):'';
@@ -441,6 +443,37 @@ function renderAll(){
   $('exclList').textContent=((WS.scope_exclude||[]).join(', ')||'стандартный набор (паспорта, пароли, ключи)');
 }
 function factChips(f,scope){var h='';Object.keys(f).forEach(function(k){h+='<span class="fact"><span class="k">'+esc(k)+'</span><b>'+esc(String(f[k]).slice(0,40))+'</b><span class="ed" onclick="factEdit(\''+esc(k)+'\',\''+scope+'\')">✎</span></span>'});return h||'<span class="tiny">—</span>'}
+
+/* Canonical Universal Process Contract: Workspace is a read/action adapter, not another runtime. */
+async function loadProcesses(){
+  var box=$('upcProcesses');if(!box)return;
+  try{var d=await api('/processes',{limit:10});UPC=d.processes||[];renderProcesses(d)}
+  catch(e){UPC=[];box.innerHTML='<div class="tiny">Wizard не ответил — процессы остались сохранены у него</div>'}
+}
+function processBadge(st){var cls=st==='succeeded'?'ok':(st==='blocked_human'?'you':((st==='failed'||st==='repairing')?'q':'wk'));return '<span class="badge '+cls+'">'+esc(st||'pending')+'</span>'}
+function renderProcesses(d){
+  var box=$('upcProcesses');if(!box)return;
+  if(d&&d.status==='error'){box.innerHTML='<div class="tiny">'+esc(d.message||'Wizard недоступен')+'</div>';return}
+  if(!UPC.length){box.innerHTML='<div class="tiny">процессов Wizard на этом устройстве пока нет</div>';return}
+  box.innerHTML=UPC.map(function(p){
+    var steps=(p.steps||[]).map(function(s){
+      var act='';
+      if(['failed','repairing','stale'].indexOf(s.status)>=0)act='<button class="btn tan sm" data-sid="'+esc(p.session_id)+'" data-step="'+esc(s.id)+'" onclick="processRepair(this)">Починить шаг</button>';
+      if(s.status==='blocked_human')act='<button class="btn sm" data-sid="'+esc(p.session_id)+'" data-step="'+esc(s.id)+'" data-q="'+esc((s.human_gate&&s.human_gate.question)||'Введите ответ')+'" onclick="processAnswer(this)">Ответить</button>';
+      var arts=(s.artifacts||[]).filter(function(a){return a&&a.path}).map(function(a){return '<button class="btn tan sm" data-path="'+esc(a.path)+'" onclick="reveal(this.dataset.path,\'file\')">'+esc(a.kind||a.path.split('/').pop())+'</button>'}).join(' ');
+      var err=s.error&&s.error.message?'<div class="tiny" style="color:var(--red)">'+esc(s.error.message)+'</div>':'';
+      return '<div class="row" style="align-items:flex-start"><span class="nchip">'+esc(s.version||1)+'</span><span style="flex:1"><b>'+esc(s.title||s.id)+'</b> '+processBadge(s.status)+'<div class="tiny">'+esc(s.id)+' · '+esc(s.mode||'')+' · эксперт: '+esc(s.expert_ref||'ещё не выбран')+' · попыток: '+esc(s.attempts_count||0)+'</div>'+err+(arts?'<div style="margin-top:6px">'+arts+'</div>':'')+'</span><span>'+act+'</span></div>';
+    }).join('');
+    return '<details class="gate"><summary style="cursor:pointer"><b>'+esc(p.title||p.client_name||p.process_id)+'</b> '+processBadge(p.process_status)+' <span class="tiny">v'+esc(p.process_version||1)+' · '+esc((p.steps||[]).length)+' шагов</span></summary><div class="tiny" style="margin:7px 0">'+esc(p.goal||'')+'</div>'+steps+'</details>';
+  }).join('');
+}
+async function processRepair(btn){
+  btn.disabled=true;try{var d=await api('/process_action',{session_id:btn.dataset.sid,step_id:btn.dataset.step,action:'repair',reason:'точечный ремонт из Workspace'});toast(d.status==='success'?'✓ ремонт запущен: '+btn.dataset.step:(d.message||'ремонт не запущен'),1);loadProcesses()}finally{btn.disabled=false}
+}
+async function processAnswer(btn){
+  var answer=prompt(btn.dataset.q||'Введите ответ');if(!answer)return;btn.disabled=true;
+  try{var d=await api('/process_action',{session_id:btn.dataset.sid,step_id:btn.dataset.step,action:'answer',answer:answer});toast(d.status==='success'?'✓ ответ принят, процесс продолжен':(d.message||'ответ не принят'),1);loadProcesses()}finally{btn.disabled=false}
+}
 
 /* actions */
 async function goalAdd(){var v=prompt('Новая цель:');if(!v)return;var d=await ws({op:'set_goal',ws_id:WSID,n:'new',value:v});if(d.status==='success'){WS=d.workspace;renderAll();toast('✓ цель добавлена')}}

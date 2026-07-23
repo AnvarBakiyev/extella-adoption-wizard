@@ -7,6 +7,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+branch="$(git branch --show-current)"
+# Разделение ролей (утверждено 20.07): скрипт пушит ТОЛЬКО текущую ветку, поэтому hardening-ветка
+# физически не может отправить main. Прежний тотальный запрет релиза из main ломал канонический
+# релиз владельца (main — мой путь выпуска) — снят, полный preflight ниже остаётся обязательным.
+
+echo "── ПОЛНЫЙ PREFLIGHT ──"
+if ! bash scripts/preflight_ui.sh; then
+  echo
+  echo "РЕЛИЗ ОТМЕНЁН: preflight красный. Ничего не закоммичено и не отправлено."
+  exit 1
+fi
+
 echo "── СМОУК ФУНДАМЕНТА ──"
 if ! python3 scripts/smoke_e2e.py; then
   echo
@@ -24,5 +36,5 @@ else
   echo; echo "закоммичено: $(git log --oneline -1)"
 fi
 
-git push origin "$(git branch --show-current)" -q
+git push origin "$branch" -q
 echo "отправлено: $(git log --oneline -1)"

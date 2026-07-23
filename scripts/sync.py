@@ -24,6 +24,9 @@ EXPERTS_DIR = REPO / "experts"
 # Эксперты, которым НЕ место в клиентском визард-репо (решения Анвара 07.07.2026).
 # diff их не считает дрейфом, pull/push их не трогает.
 EXCLUDE = {
+    # Внутренний harness подписанного Wizard-релиза; с v5.25 запускается локально и одинаков для
+    # всех аккаунтов. Platform `global` account-scoped, поэтому публикация туда только создаёт drift.
+    "wz_auto_compose", "wz_build_plan", "wz_generate_blueprint",
     # CLI-витрина живёт в toolbar; визард подхватывает её оттуда — не домен этого репо
     "wz_cli_capability_factory", "wz_cli_installer", "wz_cli_capability_pack",
     # Демо для клиента (оценка колл-центра по эталонному чек-листу) — не продуктовая часть визарда

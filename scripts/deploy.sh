@@ -20,8 +20,14 @@ fi
 echo
 echo "── ДЕПЛОЙ ──"
 cp ui/*.py ui/wizard.html ~/extella_wizard/app/
-echo "   файлы скопированы"
-launchctl kickstart -k gui/501/ai.extella.wizard-bridge
+# Локальный bundle системных экспертов (UPC): без него мост отвечает local_system_expert_failed
+# на создание сессии. Штатно его кладёт install.py — дев-деплой обязан класть так же (найдено
+# живым E2E 21.07: репо знал про bundle, деплой — нет).
+mkdir -p ~/extella_wizard/app/system_experts
+cp experts/wz_auto_compose.py experts/wz_build_plan.py experts/wz_generate_blueprint.py experts/wz_session.py \
+   ~/extella_wizard/app/system_experts/
+echo "   файлы скопированы (+ system_experts 4/4)"
+launchctl kickstart -k "gui/$(id -u)/ai.extella.wizard-bridge"
 sleep 3
 V=$(curl -s --max-time 10 http://127.0.0.1:8765/x/health | python3 -c 'import sys,json;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "нет ответа")
 echo "   мост поднялся, версия: $V"

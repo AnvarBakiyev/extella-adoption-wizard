@@ -3,7 +3,7 @@
 Запускать ИЗ КАТАЛОГА репозитория:  python3 install.py
 Читает токен из ~/extella_wizard/app/config.json (тот же, что у моста), сохраняет все эксперты
 (global, cspl=fython), правила и концепты, и создаёт запись плагина в тулбаре. Секреты не печатает."""
-import json, os, re, sys, glob, urllib.request
+import json, os, re, sys, glob, shutil, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.expanduser("~/extella_wizard/app/config.json")
@@ -12,10 +12,46 @@ if not os.path.exists(CFG_PATH):
 cfg = json.load(open(CFG_PATH, encoding="utf-8"))
 TOKEN = cfg.get("auth_token", "")
 BASE = cfg.get("api_base", "https://api.extella.ai")
+# `config.agent_id` is the user's Qwen reasoning agent. It belongs in the BODY of
+# /api/agent/run, but it is not the owner of the shared expert registry. Supplying it as
+# X-Agent-Id while saving a global system expert produces HTTP 401 on linked/copied Qwen
+# agents. Keep the storage scope identical to ui/wz_platform.py and scripts/sync.py.
+SYSTEM_AGENT_ID = cfg.get("system_agent_id") or "agent_extella_default"
 HDR = {"X-Auth-Token": TOKEN, "Content-Type": "application/json",
-       "X-Profile-Id": "default", "X-Agent-Id": cfg.get("agent_id", "agent_extella_default")}
+       "X-Profile-Id": "default", "X-Agent-Id": SYSTEM_AGENT_ID}
 if not TOKEN:
     print("В config.json нет auth_token."); sys.exit(1)
+
+# ---- 0. ЛОКАЛЬНЫЙ КАТАЛОГ ВОЗМОЖНОСТЕЙ ----
+# План строится по этому файлу до начала стройки. Чистая установка раньше копировала только ui/*,
+# поэтому новый Mac падал на шаге «План». Держим canonical-копию и резерв рядом с server.py:
+# мост сможет сам восстановить первую из второй.
+cat_src = os.path.join(HERE, "catalog", "catalog.json")
+cat_dir = os.path.expanduser("~/extella_wizard/catalog")
+app_dir = os.path.expanduser("~/extella_wizard/app")
+if not os.path.isfile(cat_src):
+    print("НЕТ catalog/catalog.json в пакете — установка остановлена."); sys.exit(1)
+os.makedirs(cat_dir, exist_ok=True); os.makedirs(app_dir, exist_ok=True)
+shutil.copy2(cat_src, os.path.join(cat_dir, "catalog.json"))
+shutil.copy2(cat_src, os.path.join(app_dir, "catalog.json"))
+print("== Каталог возможностей ==\n  ✅ canonical + резерв в app")
+
+# Три bridge-owned эксперта являются частью подписанного локального runtime. Они по-прежнему
+# вызывают выбранный Qwen, но не зависят от account-scoped global registry и не требуют Listener.
+system_dir = os.path.join(app_dir, "system_experts")
+os.makedirs(system_dir, exist_ok=True)
+for system_name in ("wz_auto_compose.py", "wz_build_plan.py", "wz_generate_blueprint.py", "wz_session.py"):
+    shutil.copy2(os.path.join(HERE, "experts", system_name), os.path.join(system_dir, system_name))
+print("  ✅ локальный bundle системных экспертов: 4")
+
+# QA-дельта: без переменной ставим полный пакет как раньше; с ней — только перечисленные
+# repo-relative файлы (experts/..., concepts/..., rules/...). UI копирует быстрый shell-обновлятор.
+DELTA_FILES = {x.strip().replace("\\", "/") for x in os.environ.get("EXTELLA_DELTA_FILES", "").split(",") if x.strip()}
+BRIDGE_OWNED_EXPERTS = {"wz_auto_compose", "wz_build_plan", "wz_generate_blueprint", "wz_session"}
+
+def selected(path):
+    rel = os.path.relpath(path, HERE).replace(os.sep, "/")
+    return not DELTA_FILES or rel in DELTA_FILES
 
 def api(path, payload, timeout=120):
     req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode("utf-8"), headers=HDR, method="POST")
@@ -34,7 +70,11 @@ def header(src):
 print("== Эксперты ==")
 ok = fail = 0
 for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
+    if not selected(f): continue
     name = os.path.basename(f)[:-3]
+    if name in BRIDGE_OWNED_EXPERTS:
+        print("  ⏭  " + name + " — поставлен в локальный signed bundle")
+        continue
     src = open(f, encoding="utf-8").read()
     desc, kwargs = header(src)
     try:
@@ -46,6 +86,9 @@ for f in sorted(glob.glob(os.path.join(HERE, "experts", "*.py"))):
     except Exception as e:
         print("  ❌ " + name + " — " + str(e)[:80]); fail += 1
 print(f"  Итог: сохранено {ok}, ошибок {fail}")
+if fail:
+    print("  Установка остановлена: обязательные эксперты сохранились не полностью.")
+    sys.exit(2)
 
 # проверка ключевого эксперта
 try:
@@ -58,6 +101,7 @@ except Exception:
 # ---- 2. ПРАВИЛА (best-effort) ----
 print("== Правила ==")
 for f in glob.glob(os.path.join(HERE, "rules", "*.md")):
+    if not selected(f): continue
     for blk in re.split(r"(?m)^##\s*rule_id:", open(f, encoding="utf-8").read()):
         blk = blk.strip()
         if not blk or blk.startswith("#"): continue
@@ -70,6 +114,7 @@ for f in glob.glob(os.path.join(HERE, "rules", "*.md")):
 # ---- 3. КОНЦЕПТЫ (best-effort; вектор создаётся при наличии api_key эмбеддинга) ----
 print("== Концепты ==")
 for f in glob.glob(os.path.join(HERE, "concepts", "*.md")):
+    if not selected(f): continue
     if os.path.basename(f).startswith("README"): continue
     body = "\n".join(l for l in open(f, encoding="utf-8").read().splitlines()
                      if not l.startswith("# concept_id:") and not l.startswith("# tag:")).strip()

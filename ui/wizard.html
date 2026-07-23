@@ -200,9 +200,12 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 /* ---------- modal + toasts (замена prompt/alert: работают и внутри Extella) ---------- */
 .mod-back{position:fixed;inset:0;background:rgba(10,10,10,.35);display:none;align-items:center;justify-content:center;z-index:100000}/* #3 выше оверлея кабинета (wz_cab z-index:99998) — иначе диалоги «Привязать источник»/«Входящие» открывались ПОД кабинетом */
 .mod-back.open{display:flex}
-.mod{background:var(--paper);border-radius:14px;padding:24px 26px;width:min(430px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.25)}
-.mod h3{font-size:16px;margin-bottom:6px}
-.mod .mhint{color:var(--silver);font-size:12.5px;margin-bottom:12px}
+.mod{background:var(--paper);border-radius:14px;padding:24px 26px;width:min(430px,92vw);max-height:calc(100vh - 40px);box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden;position:relative}
+.mod h3{font-size:16px;margin-bottom:6px;padding-right:30px;flex:none}
+.mod .mhint{color:var(--silver);font-size:12.5px;margin-bottom:12px;max-height:32vh;min-height:0;overflow-y:auto;overflow-wrap:anywhere}
+.mod-content{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+.mod-close{position:absolute;right:12px;top:10px;z-index:2;border:0;background:transparent;color:var(--silver);font-size:23px;line-height:1;cursor:pointer;padding:4px 7px;border-radius:7px}
+.mod-close:hover{background:var(--cream);color:var(--ink)}
 .mod input:not([type=radio]):not([type=checkbox]){width:100%;border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;background:#fff;margin-bottom:14px}
 .mod input:not([type=radio]):not([type=checkbox]):focus{outline:none;border-color:var(--gold)}
 .mod input[type=radio],.mod input[type=checkbox]{width:auto;margin:0;padding:0;border:0;background:none;accent-color:var(--gold)}
@@ -210,7 +213,7 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 .mod label.opt input{margin-top:2px;flex:none}
 .mod label.opt span{flex:1}
 .mod label.opt:hover{color:var(--gold)}
-.mod .mrow{display:flex;gap:10px;justify-content:flex-end}
+.mod .mrow{display:flex;gap:10px;justify-content:flex-end;flex:none;padding-top:12px;background:var(--paper)}
 .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;display:flex;flex-direction:column;gap:8px;z-index:100050;align-items:center}/* #3 выше модалок (.mod-back 100000), чтобы тосты не прятались за диалогом */
 .toast{background:var(--ink);color:#fff;border-radius:10px;padding:10px 18px;font-size:13.5px;box-shadow:0 8px 30px rgba(0,0,0,.3);animation:tin .2s ease}
 .toast.err{background:var(--bad)}
@@ -508,11 +511,14 @@ ul.plain li::before{content:"—";position:absolute;left:0;color:var(--gold)}
 </div>
 
 <!-- MODAL + TOASTS -->
-<div class="mod-back" id="modBack">
+<div class="mod-back" id="modBack" onclick="if(event.target===this)modCancel()">
   <div class="mod">
+    <button class="mod-close" type="button" aria-label="Закрыть" title="Закрыть" onclick="modCancel()">×</button>
     <h3 id="modTitle"></h3>
     <div class="mhint" id="modHint"></div>
-    <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
+    <div class="mod-content" id="modContent">
+      <input id="modInput" onkeydown="if(event.key==='Enter')modOk()">
+    </div>
     <div class="mrow">
       <button class="btn ghost" onclick="modCancel()">Отмена</button>
       <button class="btn gold" id="modOkBtn" onclick="modOk()">OK</button>
@@ -550,6 +556,7 @@ async function genQuestions(){
   el('stQGen').innerHTML='<span class="spin"></span> подбираю вопросы под задачу…';
   var r=await jpost('/x/gen_questions',{session_id:S.sessionId, task:t});
   if(r&&r.status==='success'){
+    S._dcAuto=false;  // новый смысл задачи делает прежний аудит файла устаревшим
     await reloadSession();
     el('stQGen').textContent='✓ конспект перестроен: '+r.count+' вопросов под вашу задачу';
     render();
@@ -562,6 +569,14 @@ async function genQuestions(){
 const STAGE2VIEW = {interview:"interview", intake:"interview", blueprint:"blueprint", spec:"spec", audited:"spec", test:"test", slice_accepted:"test", launch:"launch", built:"test", launched:"launch"};
 const STEPS = [["interview","Интервью"],["blueprint","План"],["spec","ТЗ"],["test","Стройка"],["launch","Запуск"]];
 let S = {sessionId:null, session:null, blueprint:null, spec:null, view:"interview", chatRespId:null, openThreads:{}, openBrief:{}, drafts:{}, mode:"composer"};
+
+function usableBlueprintDoc(doc){
+  const bp=doc&&doc.blueprint, su=bp&&bp.suitability, score=su&&Number(su.score);
+  return !!(bp && typeof bp==="object" && String(bp.process_name||"").trim()
+    && Array.isArray(bp.stages) && bp.stages.length
+    && bp.stages.every(x=>x&&typeof x==="object"&&(x.id||x.title))
+    && Number.isFinite(score) && score>=0 && score<=100);
+}
 
 const jget = (u)=>fetch(u).then(r=>r.json());
 // #12 CSRF double-submit: тянем токен моста один раз и шлём его в заголовке всех POST (свой UI same-origin —
@@ -599,6 +614,11 @@ var _agentGateShown=false;
 async function agentGate(force){
   if(_agentGateShown && !force) return;
   var st; try{ st=await jget('/x/agents'); }catch(e){ st=null; }
+  if(st && st.platform_ready===false){
+    _agentGateShown=true;
+    _agentGateUnavailable(st.why||'Нет связи с платформой Extella.', !!st.auth_required);
+    return;
+  }
   var cur=(st&&st.current)||'';
   var list=(st&&st.agents)||[];
   if(cur){
@@ -611,6 +631,26 @@ async function agentGate(force){
   }
   _agentGateShown=true;
   _agentGateRender(list, '', '');
+}
+function _agentGateUnavailable(why, authRequired){
+  resetModInput();
+  el("modTitle").textContent = authRequired ? "Сначала запустите Extella" : "Платформа временно недоступна";
+  el("modHint").textContent = why;
+  el("modInput").outerHTML = '<input id="modInput" type="hidden">'
+    + '<div style="padding:12px;border-radius:10px;background:#fff5ef;color:#8d352a;font-size:13px;line-height:1.5">'
+    + (authRequired
+       ? 'Существующий агент не удалён. Не создавайте и не привязывайте его повторно.'
+       : 'Список агентов сохранён на платформе; повторите проверку после восстановления связи.')
+    + '</div><button class="btn gold" style="width:100%;margin-top:12px" onclick="agentGateRetry()">↻ Проверить снова</button>';
+  el("modBack").classList.add("open");
+  var ob=el("modOkBtn"); if(ob) ob.textContent="Позже";
+  _modCb=null;
+}
+async function agentGateRetry(){
+  var ob=el("modOkBtn"); if(ob) ob.disabled=true;
+  _agentGateShown=false;
+  await agentGate(true);
+  if(ob) ob.disabled=false;
 }
 function _agentGateRender(list, broken, why){
   var rows=(list||[]).map(function(a){
@@ -695,6 +735,11 @@ async function agentGateLink(){
 async function refreshAgentBadge(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){ _agents={agents:[],current:""}; }
   const b=el("agentBadge"); if(!b) return;
+  if(_agents && _agents.platform_ready===false){
+    b.textContent = _agents.auth_required ? "⚠ Запустите Extella" : "⚠ Нет связи";
+    b.style.color="#a33b2f"; b.style.fontWeight="700";
+    return;
+  }
   const cur=(_agents.agents||[]).find(a=>a.id===_agents.current);
   b.textContent = cur ? ("🤖 "+cur.name) : "🤖 Выбрать агента";
   b.style.color = cur ? "" : "#a97e35"; b.style.fontWeight = cur ? "" : "700";
@@ -707,6 +752,10 @@ async function refreshAgentBadge(){
 }
 async function openAgentManager(){
   try{ _agents = await fetch("/x/agents").then(r=>r.json()); }catch(e){}
+  if(_agents && _agents.platform_ready===false){
+    _agentGateUnavailable(_agents.why||'Нет связи с платформой Extella.', !!_agents.auth_required);
+    return;
+  }
   const list=(_agents.agents||[]).map(function(a){
     const on=a.id===_agents.current;
     return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+(on?'var(--gold,#c9a35c)':'var(--cream-dark,#e5e0d5)')+';border-radius:9px;margin-bottom:6px;background:'+(on?'#c9a35c14':'transparent')+'">'+
@@ -730,7 +779,7 @@ async function openAgentManager(){
 }
 async function agentCreate(){
   modCancel();
-  ask("Имя нового агента","Создам keyless-Qwen агента (копию платформенной Qwen 3.7). В его мозг пойдут концепты и правила этого клиента.","",async (nm)=>{
+  ask("Имя нового агента","Создам копию доступного Qwen. Подойдёт любая рабочая версия, провайдер, пользовательский ключ и API-endpoint; перед выбором проверю фактический ответ.","",async (nm)=>{
     if(!nm) return; busy("Создаю агента (копия Qwen)…");
     const r=await jpost("/x/agent_create",{name:nm}); busyOff();
     if(r.status==="success"){ toast("✓ Агент создан и выбран","ok"); await refreshAgentBadge(); openAgentManager(); }
@@ -756,15 +805,29 @@ async function agentUnlink(id){
   if(r.status==="success"){ await refreshAgentBadge(); openAgentManager(); }
 }
 /* ============ Ф3: кабинет-мозг агента (Знания / Правила — читать и править словами) ============ */
-function _brainRender(res){
-  if(!res || res.status!=="success"){ toast(res&&res.message||"Мозг недоступен","err"); return; }
+let _brainOpenSeq=0;
+function _brainRender(res, seq){
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(!res || res.status!=="success"){
+    resetModInput();
+    el("modTitle").textContent="Мозг агента временно недоступен";
+    el("modHint").textContent=(res&&res.message)||"Нет связи с мозгом агента. Wizard продолжает работать.";
+    el("modInput").outerHTML='<input id="modInput" type="hidden"><button class="btn ghost" onclick="openBrain()">↻ Повторить загрузку</button>';
+    var errOk=el("modOkBtn"); if(errOk) errOk.textContent="Закрыть";
+    _modCb=null;
+    return;
+  }
   const cs=res.concepts||[], rs=res.rules||[];
   const sec=(title,hint,items,delOp,addOp)=>
     '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px">'+title+' <span style="color:var(--silver,#889);font-weight:400">'+items.length+'</span></div>'+
     '<div style="font-size:11.5px;color:var(--silver,#889);margin:2px 0 6px">'+hint+'</div>'+
     (items.map(function(it){
+      var text=String(it.text||"");
+      var body=text.length>320
+        ? '<details style="min-width:0;flex:1"><summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;word-break:break-word">'+esc(text.slice(0,260))+'… <span style="color:var(--gold)">развернуть</span></summary><div style="font-size:12px;color:var(--ink-soft);white-space:pre-wrap;word-break:break-word;margin-top:6px;max-height:240px;overflow:auto">'+esc(text)+'</div></details>'
+        : '<div style="flex:1;min-width:0;font-size:12px;color:var(--ink-soft);white-space:pre-wrap;word-break:break-word">'+esc(text)+'</div>';
       return '<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:7px;margin-bottom:4px">'+
-        '<div style="flex:1;font-size:12px;color:var(--ink-soft);white-space:pre-wrap">'+esc(it.text)+'</div>'+
+        body+
         '<button class="btn ghost" style="padding:2px 7px;font-size:11px" onclick="brainDel(\''+delOp+'\','+JSON.stringify(it.id)+')">✕</button></div>';
     }).join('') || '<div style="font-size:12px;color:var(--silver,#889);padding:2px 0 4px">пусто</div>')+
     '<button class="btn ghost" style="padding:5px 10px;font-size:12px;margin-top:2px" onclick="brainAdd(\''+addOp+'\')">＋ добавить словами</button></div>';
@@ -801,13 +864,23 @@ function _brainRender(res){
         (ex.length?ex.map(function(e){return '<div style="font-size:11.5px;color:var(--ink-soft);padding:2px 8px;border:1px solid var(--cream-dark,#e5e0d5);border-radius:6px;margin-bottom:3px;display:inline-block;margin-right:4px"><b>'+esc(e.name)+'</b></div>';}).join(''):
           '<div style="font-size:12px;color:var(--silver,#889)">пока нет процессов у этого агента — умения появятся, когда соберёте для него автоматизацию</div>')+'</div>';
     })();
-  el("modBack").classList.add("open");
   const ob=el("modOkBtn"); if(ob) ob.textContent="Закрыть";
   _modCb=null;
 }
 async function openBrain(){
+  const seq=++_brainOpenSeq;
+  resetModInput();
+  el("modTitle").textContent="🧠 Мозг агента";
+  el("modHint").textContent="Загружаю знания, правила, голос и умения. Окно можно закрыть — загрузка не заблокирует Wizard.";
+  el("modInput").outerHTML='<input id="modInput" type="hidden"><div style="padding:18px 4px;font-size:13px;color:var(--ink-soft)"><span class="spin"></span> Читаю мозг агента…</div>';
+  el("modBack").classList.add("open");
+  var loadingOk=el("modOkBtn"); if(loadingOk) loadingOk.textContent="Закрыть";
+  _modCb=null;
   let r; try{ r=await fetch("/x/brain").then(x=>x.json()); }catch(e){ r=null; }
-  if(!r || (r.status==="error" && /не выбран|агент/.test(r.message||""))){
+  // Пользователь закрыл окно или открыл новое — запоздавший сетевой ответ не имеет права
+  // снова раскрывать/перезаписывать модалку.
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r && r.status==="error" && /не выбран|агент/.test(r.message||"")){
     // Объясняем, ЧТО такое мозг и почему он пока пуст, а не выдаём «Мозг недоступен».
     resetModInput();
     el("modTitle").textContent="🧠 Мозг агента";
@@ -821,19 +894,22 @@ async function openBrain(){
     _modCb=null;
     return;
   }
-  _brainRender(r);
+  if(!r) r={status:"error",message:"Мост не ответил на запрос мозга агента. Закройте окно или повторите загрузку."};
+  _brainRender(r,seq);
 }
 async function brainAdd(op){
   const isC=op==="add_concept";
   ask(isC?"Новое знание (концепт)":"Новое правило", isC?"Факт/определение для мозга агента, напр.: «CPL считаем как бюджет ÷ лиды»":"Правило поведения/голоса, напр.: «Всегда отвечать на языке клиента»","",async (t)=>{
     if(!t) return; busy("Записываю в мозг…");
     const r=await jpost("/x/brain_edit",{op:op,text:t}); busyOff();
-    if(r.status==="success"){ toast("✓ Записано","ok"); _brainRender(r); } else toast("Не удалось: "+(r.message||""),"err");
+    if(r.status==="success"){ toast("✓ Записано","ok"); openBrain(); } else toast("Не удалось: "+(r.message||""),"err");
   });
 }
 async function brainDel(op,id){
+  const seq=_brainOpenSeq;
   const r=await jpost("/x/brain_edit",{op:op,id:id});
-  if(r.status==="success"){ _brainRender(r); } else toast("Не удалось удалить","err");
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r.status==="success"){ openBrain(); } else toast("Не удалось удалить","err");
 }
 async function voiceLearn(){
   askBig("🎙 Примеры голоса клиента","Вставьте 2–4 реальных сообщения/письма, как пишет клиент (каждое с новой строки, разделяйте пустой строкой). Агент выучит стиль.","",async (txt)=>{
@@ -864,7 +940,7 @@ async function knowledgeLearn(){
     const res=(r&&r.result)||{};
     if(r.status==="success"){
       toast("✓ Запомнено фактов: "+(res.saved||0),"ok");
-      _brainRender(await fetch("/x/brain").then(x=>x.json()));
+      openBrain();
     } else toast("Не удалось: "+(r.message||res.err||""),"err");
   });
 }
@@ -879,22 +955,26 @@ async function knowledgeFromSource(){
         const res=(r&&r.result)||{};
         if(r.status==="success"){
           toast("✓ Запомнено фактов: "+(res.saved||0)+(res.saved_source?(" · обновление каждые "+res.saved_source.interval_hours+"ч"):""),"ok");
-          _brainRender(await fetch("/x/brain").then(x=>x.json()));
+          openBrain();
         } else toast("Не удалось: "+(r.message||res.err||"источник не отдал данных"),"err");
       });
     });
   });
 }
 async function knowledgeRefresh(gid){
+  const seq=_brainOpenSeq;
   busy("Обновляю знание из источника…");
   const r=await jpost("/x/knowledge_refresh",{gen_id:gid}); busyOff();
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
   const res=(r&&r.result)||{};
-  if(r.status==="success"){ toast("✓ Обновлено фактов: "+(res.saved||0),"ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
+  if(r.status==="success"){ toast("✓ Обновлено фактов: "+(res.saved||0),"ok"); openBrain(); }
   else toast("Не удалось: "+(r.message||res.err||""),"err");
 }
 async function knowledgeSourceRemove(gid){
+  const seq=_brainOpenSeq;
   const r=await jpost("/x/knowledge_source_remove",{gen_id:gid});
-  if(r.status==="success"){ toast("Источник снят с обновления (факты в мозге остались)","ok"); _brainRender(await fetch("/x/brain").then(x=>x.json())); }
+  if(seq!==_brainOpenSeq || !el("modBack").classList.contains("open")) return;
+  if(r.status==="success"){ toast("Источник снят с обновления (факты в мозге остались)","ok"); openBrain(); }
 }
 
 /* ================= modal + toast (замена prompt/alert) ================= */
@@ -902,16 +982,12 @@ let _modCb = null;
 function _modClearExtras(){
   // убрать кастомные поля прошлой модалки (всё между #modHint и .mrow, включая скрытый #modInput
   // и осиротевшие textarea/select/radio, в т.ч. с секретами) и вернуть ЧИСТОЕ видимое текстовое #modInput.
-  const mod = el("modBack") && el("modBack").querySelector(".mod");
-  const hint = el("modHint");
-  if(!mod || !hint) return;
-  const row = mod.querySelector(".mrow");
-  let n = hint.nextElementSibling;
-  while(n && n !== row){ const nx = n.nextElementSibling; n.remove(); n = nx; }
+  const content = el("modContent");
+  if(!content) return;
   const inp = document.createElement("input");
   inp.id = "modInput";
   inp.setAttribute("onkeydown", "if(event.key==='Enter')modOk()");
-  hint.after(inp);
+  content.replaceChildren(inp);
 }
 function resetModInput(){ _modClearExtras(); var ob=el("modOkBtn"); if(ob) ob.textContent="OK"; }   // чистый инпут + дефолтная кнопка
 /* ================= EN/RU (демо на английский) ================= */
@@ -1208,7 +1284,7 @@ var _I18N_DICT = {
   "поддерживает частично": "partially supports",
   "Можно посчитать из файла:": "Can be computed from the file:",
   "Нельзя (нет данных):": "Not possible (no data):",
-  "Не хватает полей:": "Missing fields:",
+  "Не хватает в исходных данных:": "Missing from source data:",
   "↻ Перепроверить": "↻ Re-check",
   "сверяю файл с процессом…": "checking the file against the process…",
   "План ещё не собран. Завершите интервью и нажмите «Собрать план».": "The plan isn't assembled yet. Finish the interview and click «Assemble plan».",
@@ -1826,8 +1902,8 @@ function ask(title, hint, def, cb, opts){
   _modCb = cb;
   setTimeout(()=>mi.focus(), 50);
 }
-function modOk(){ const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; if(mi) mi.value=""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
-function modCancel(){ el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
+function modOk(){ _brainOpenSeq++; const mi = el("modInput"); const v = (mi && mi.value != null) ? String(mi.value).trim() : ""; if(mi) mi.value=""; el("modBack").classList.remove("open"); const cb=_modCb; _modCb=null; if(cb) cb(v); }
+function modCancel(){ _brainOpenSeq++; el("modBack").classList.remove("open"); _modCb = null; _modClearExtras(); }
 function busy(text){ el("busyText").textContent = text; el("busyBack").classList.add("open"); }
 function busyOff(){ el("busyBack").classList.remove("open"); }
 function toast(text, kind){
@@ -1897,6 +1973,7 @@ async function loadSession(sid){
   if(!sid){ S.sessionId=null; render(); return; }
   if(S.demoTimer) clearTimeout(S.demoTimer);
   S.demoRunId = null; S.demoDone = false;
+  S._dcAuto = false;
   S.sessionId = sid;
   // Селектор в шапке — единственный указатель «где я сейчас». При заходе не из него (карточка рабочего
   // стола, deep-link, «Открыть в Мастере») он оставался на «— выбрать сессию —»: процесс открыт, а шапка
@@ -1906,7 +1983,7 @@ async function loadSession(sid){
   await loadChatHistory(sid);                 // подтянуть стенограмму разговора этой сессии
   S.session = await jget("/x/session?id="+encodeURIComponent(sid));
   S.blueprint = null; S.spec = null;
-  try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(bp && bp.blueprint) S.blueprint = bp; }catch(e){}
+  try{ const bp = await jget("/x/blueprint?session_id="+encodeURIComponent(sid)); if(usableBlueprintDoc(bp)) S.blueprint = bp; }catch(e){}
   try{ const sp = await jget("/x/spec?session_id="+encodeURIComponent(sid)); if(sp && sp.markdown) S.spec = sp.markdown; }catch(e){}
   var st = S.session && S.session.stage;
   // собранный/запущенный процесс живёт в КАБИНЕТЕ «Автоматизаций» — открываем его (а не пустое интервью
@@ -2099,7 +2176,7 @@ function closeCompStudio(){
   var st=el('comp_studio'); if(!st||st.style.display==='none') return;
   st.style.display='none'; document.body.style.overflow='';
 }
-document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeCompStudio(); closeCsplStudio(); closeTeam(); } });
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ if(el('modBack').classList.contains('open')) modCancel(); closeCompStudio(); closeCsplStudio(); closeTeam(); } });
 // ── Команда v0: приглашение = именной токен контура; отзыв в один клик; роли позже ──
 function openTeam(){ var st=el('team_studio'); if(!st) return; st.style.display='block'; document.body.style.overflow='hidden'; renderTeam(); var n=el('teamName'); if(n) n.focus(); }
 function closeTeam(){ var st=el('team_studio'); if(!st||st.style.display==='none') return; st.style.display='none'; document.body.style.overflow=''; }
@@ -2728,7 +2805,7 @@ async function saveAnswers(){
   if(!Object.keys(payload).length){ setStatus("stInterview","конспект пуст — поговорите с Помощником или заполните пункт"); return; }
   setStatus("stInterview","<span class='spin'></span>сохраняю через платформу…");
   const r = await jpost("/x/expert",{expert_name:"wz_session",params:{action:"save_answers",session_id:S.sessionId,payload_json:JSON.stringify(payload)}});
-  if(r.status==="success") S.drafts = {};
+  if(r.status==="success"){ S.drafts = {}; S._dcAuto = false; }
   await reloadSession();
   setStatus("stInterview", r.status==="success" ? `✓ сохранено (${r.answers_count} ответов)` : "ошибка: "+esc(r.message||""));
   render(); refreshSessions(S.sessionId);
@@ -2780,6 +2857,7 @@ async function uploadFiles(fileList){
     const b64 = await new Promise(res=>{ const rd=new FileReader(); rd.onload=()=>res(rd.result.split(",")[1]); rd.readAsDataURL(f); });
     const r = await jpost("/x/upload",{session_id:S.sessionId, filename:f.name, content_base64:b64});
     if(r.status!=="success"){ toast("Не удалось загрузить "+f.name+": "+(r.message||""), "err"); continue; }
+    S._dcAuto = false;
     toast("✓ "+f.name+" приложен", "ok");
     // помощник узнаёт о файле
     sendChatSilent(`[К сессии приложен файл-образец: ${r.path}. Посмотри при проектировании; если это выгрузка/шаблон — учти структуру.]`);
@@ -2795,12 +2873,31 @@ async function generateBlueprint(){
   const r = await jpost("/x/expert",{expert_name:"wz_generate_blueprint",params:{session_id:S.sessionId}});
   el("genBtn").disabled = false;
   if(r.status!=="success"){ setStatus("stBlueprint","ошибка: "+esc(r.message||JSON.stringify(r).slice(0,200))); return; }
-  setStatus("stBlueprint",`✓ готово · пригодность ${r.suitability_score}/100`);
-  S.blueprint = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
+  const saved = await jget("/x/blueprint?session_id="+encodeURIComponent(S.sessionId));
+  if(!usableBlueprintDoc(saved)){
+    S.blueprint = null;
+    setStatus("stBlueprint","ошибка: модель не сохранила полноценный план — ничего не опубликовано; обновите Wizard и повторите");
+    await reloadSession(); render(); return;
+  }
+  S.blueprint = saved;
+  setStatus("stBlueprint",`✓ готово · пригодность ${Number(saved.blueprint.suitability.score)}/100`);
   await reloadSession(); render();
 }
+function _currentDataCheck(){
+  const dc=S.session&&S.session.data_check;
+  // v1 проверяла только фиксированные pain/process_today/success и поэтому ложно считала
+  // адаптивное интервью пустым. Старый результат не показываем — он автоматически пересчитается.
+  return dc && Number(dc.context_version||0)>=2 ? dc : null;
+}
+function _dcText(x){
+  if(x===null||x===undefined) return "";
+  if(typeof x!=="object") return String(x);
+  var title=x.metric||x.name||x.field||x.need||x.title||"";
+  var why=x.why||x.reason||x.evidence||"";
+  return title ? (String(title)+(why?" — "+String(why):"")) : JSON.stringify(x);
+}
 function dataCheckHTML(){
-  const dc = S.session && S.session.data_check;
+  const dc = _currentDataCheck();
   const files = (S.session && S.session.files) || [];
   if(!files.length) return "";
   if(!dc){
@@ -2812,21 +2909,23 @@ function dataCheckHTML(){
   const badge = v==="yes"?`<span class="badge ok">файл поддерживает процесс</span>`
     : v==="no"?`<span class="badge bad">файл не поддерживает процесс</span>`
     : v==="no_files"?`<span class="badge warn">нет файла</span>`
+    : v==="needs_context"?`<span class="badge warn">сначала опишите задачу</span>`
     : `<span class="badge warn">поддерживает частично</span>`;
   const miss = (dc.missing||[]).filter(m=>m && (m.in_file===false||m.need));
   return `<div class="card ${v==="yes"?"":"gap-card"}">
     <div class="kicker">Проверка данных ${badge}</div>
     <div style="font-size:13.5px;margin:6px 0">${esc(dc.client_message||dc.summary||"")}</div>
-    ${(dc.computable_metrics||[]).length?`<div style="font-size:13px"><b>Можно посчитать из файла:</b><ul class="plain">${dc.computable_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-    ${(dc.blocked_metrics||[]).length?`<div style="font-size:13px;color:var(--warn)"><b>Нельзя (нет данных):</b><ul class="plain">${dc.blocked_metrics.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-    ${miss.length?`<div style="font-size:13px;color:var(--warn)"><b>Не хватает полей:</b><ul class="plain">${miss.map(m=>`<li>${esc(m.need||m)}${m.why?" — "+esc(m.why):""}</li>`).join("")}</ul></div>`:""}
+    ${(dc.computable_metrics||[]).length?`<div style="font-size:13px"><b>Можно посчитать из файла:</b><ul class="plain">${dc.computable_metrics.map(x=>`<li>${esc(_dcText(x))}</li>`).join("")}</ul></div>`:""}
+    ${(dc.blocked_metrics||[]).length?`<div style="font-size:13px;color:var(--warn)"><b>Нельзя (нет данных):</b><ul class="plain">${dc.blocked_metrics.map(x=>`<li>${esc(_dcText(x))}</li>`).join("")}</ul></div>`:""}
+    ${miss.length?`<div style="font-size:13px;color:var(--warn)"><b>Не хватает в исходных данных:</b><ul class="plain">${miss.map(m=>`<li>${esc(m.need||m)}${m.why?" — "+esc(m.why):""}</li>`).join("")}</ul></div>`:""}
     <div style="margin-top:8px"><button class="btn ghost sm" onclick="runDataCheck()">↻ Перепроверить</button> <span class="statusline" id="stDC"></span></div>
     ${threadHTML("bp:datacheck")}</div>`;
 }
 async function runDataCheck(){
+  S._dcAuto=true;
   setStatus("stDC","<span class='spin'></span>сверяю файл с процессом…");
   const r = await jpost("/x/expert",{expert_name:"wz_data_reality_check",params:{session_id:S.sessionId}});
-  if(r.status!=="success"){ setStatus("stDC","ошибка: "+esc(r.message||"")); return; }
+  if(r.status!=="success"){ S._dcAuto=false; setStatus("stDC","ошибка: "+esc(r.message||"")); return; }
   setStatus("stDC","");
   await reloadSession(); render();
 }
@@ -2834,7 +2933,7 @@ function renderBlueprint(){
   el("toSpecBtn").disabled = !S.blueprint;
   const dcCard = dataCheckHTML();
   // авто-проверка при первом входе, если файл есть, а проверки ещё нет
-  if(S.session && (S.session.files||[]).length && !S.session.data_check && !S._dcAuto){
+  if(S.session && (S.session.files||[]).length && !_currentDataCheck() && !S._dcAuto){
     S._dcAuto = true; setTimeout(runDataCheck, 300);
   }
   if(!S.blueprint){ el("bpArea").innerHTML = dcCard + `<div class="empty">План ещё не собран. Завершите интервью и нажмите «Собрать план».</div>`; return; }
@@ -3321,6 +3420,7 @@ function lastBuild(){ const b = S.session.builds||[]; return b.length? b[b.lengt
 function renderTest(){
   const bp = S.blueprint && S.blueprint.blueprint;
   const lb = lastBuild();
+  const waiting = S.waitingBuild || (S.session&&S.session.waiting_build) || null;
   // Переподключение к идущей стройке после ухода с экрана/перезагрузки визарда.
   // session.building — авторитетный указатель (ставит /x/build, снимает мост по завершении);
   // если стройка ещё идёт, а состояние в памяти потеряно — восстановим и продолжим поллинг,
@@ -3329,16 +3429,17 @@ function renderTest(){
      && !(lb && lb.build_id === S.session.building)){
     S.buildId = S.session.building; S.buildDone = false;
   }
-  const running = !!S.buildId && !S.buildDone;
+  const running = !!S.buildId && !S.buildDone && !waiting;
   const noFiles = !((S.session&&S.session.files)||[]).length;
   el("buildRunner").innerHTML = `
     <div class="kicker">Сборка процесса</div>
     <div style="font-size:14px;margin-bottom:10px">${bp? "Процесс: <b>"+esc(bp.process_name)+"</b>" : "Сначала соберите план процесса (шаг «План»)."}</div>
-    <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running)?"disabled":""}>${running?"Идёт сборка…":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
+    <button class="btn gold" id="buildBtn" onclick="startBuild()" ${(!bp||running||waiting)?"disabled":""}>${running?"Идёт сборка…":waiting?"Ждёт вашего ответа ↓":(lb?"↻ Собрать заново":"🔨 Построить процесс")}</button>
     ${noFiles&&bp?`<button class="btn ghost" style="margin-left:8px" onclick="genSample()">⚗️ Сгенерировать пример данных</button>`:""}
     <span class="statusline" id="stBuild" style="margin-left:10px"></span>
-    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, построит компоненты и проверит их. Это займёт несколько минут — можно не ждать у экрана, прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
-  if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
+    <div style="font-size:12px;color:var(--silver);margin-top:8px">Платформа сама составит план, создаст чернового эксперта, запустит его на образцах и опубликует только после приёмки. Одна попытка может занять до 15 минут, всего возможно четыре; экран можно закрыть — прогресс сохраняется.${noFiles?' Файла-образца пока нет: приложите свой или сгенерируйте синтетический — он помечается и не заменяет приёмку на реальных данных.':''}</div>`;
+  if(waiting){ renderOwnerWait(waiting); el("buildFoot").style.display="none"; }
+  else if(lb && !running){ renderBuildResult(lb); el("buildFoot").style.display="flex"; }
   else if(running){ pollBuild(); }
   else el("buildProgress").innerHTML = "";
 }
@@ -3357,7 +3458,7 @@ async function startBuild(){
     } else toast("Не удалось запустить сборку: "+(r.message||""),"err");
     el("buildBtn").disabled=false; return;
   }
-  S.buildId = r.build_id; S.buildDone = false; setStatus("stBuild","");
+  S.buildId = r.build_id; S.buildDone = false; S.waitingBuild=null; setStatus("stBuild","");
   el("buildFoot").style.display="none";
   renderTest(); pollBuild();
 }
@@ -3379,48 +3480,235 @@ async function pollBuild(){
   if(d && d.status==="success"){
     const p = d.progress;
     renderBuildProgress(p);
-    if(p.status==="built"){ S.buildDone=true; await reloadSession(); renderTest(); return; }
+    if(p.status==="built"){ clearProcessRepairPending(); S.buildDone=true; S.buildId=null; S.waitingBuild=null; await reloadSession(); renderTest(); return; }
+    if(p.status==="waiting_for_owner"){
+      clearProcessRepairPending();
+      S.buildId=null; S.buildDone=false; S.waitingBuild=p;
+      await reloadSession(); renderTest(); return;
+    }
     if(p.status==="error"){
       // AC-06: сбой отвечает на три вопроса — что не получилось, из-за чего и ЧТО ДЕЛАТЬ.
       // Раньше владелец видел одну строку и не понимал, его это проблема или наша.
-      S.buildDone=true;
+      clearProcessRepairPending(); S.buildDone=true; S.buildId=null; S.waitingBuild=null;
+      if(S.session) delete S.session.building;
       var es=p.error_struct||{};
       el("buildProgress").innerHTML += '<div class="card gap-card">'+
         '<b>Сборка прервалась: '+esc(es.message||p.error||"см. лог")+'</b>'+
         (es.detail?'<div style="font-size:13px;color:var(--ink-soft);margin-top:6px">'+esc(es.detail)+'</div>':'')+
         (es.remedy?'<div style="font-size:13.5px;margin-top:10px;padding:10px 12px;background:var(--cream);border-radius:8px">'+
                    '<b>Что делать:</b> '+esc(es.remedy)+'</div>':'')+
+        (es.owner_question?'<div style="font-size:13.5px;margin-top:10px;padding:10px 12px;background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px"><b>Один вопрос владельцу:</b> '+esc(es.owner_question)+'</div>':'')+
+        ((es.draft_created!==undefined||es.expert_ran!==undefined)?'<div style="font-size:12px;color:var(--silver);margin-top:8px">Draft создан: <b>'+(es.draft_created?'да':'нет')+'</b> · настоящий эксперт запускался: <b>'+(es.expert_ran?'да':'нет')+'</b>'+(es.last_unapplied_lesson?' · неприменённый урок: '+esc(es.last_unapplied_lesson):'')+'</div>':'')+
         (es.code?'<div style="font-size:11px;color:var(--silver);margin-top:8px">код: '+esc(es.code)+'</div>':'')+
         '</div>';
-      el("buildBtn")&&(el("buildBtn").disabled=false); return; }
+      if(el("buildBtn")){ el("buildBtn").disabled=false; el("buildBtn").textContent="↻ Повторить сборку"; }
+      return; }
   }
   S.buildTimer = setTimeout(pollBuild, 4000);
 }
+function renderOwnerWait(waiting){
+  const p=(waiting&&waiting.status==="waiting_for_owner")?waiting:null;
+  if(p) renderBuildProgress(p); else el("buildProgress").innerHTML="";
+  const question=(waiting&&waiting.owner_question)||(waiting&&waiting.question)||"Уточните бизнес-правило для продолжения";
+  const detail=(waiting&&waiting.waiting_detail)||(waiting&&waiting.detail)||"";
+  const buildId=(waiting&&waiting.build_id)||"";
+  el("buildProgress").innerHTML += `<div class="card gap-card" style="border-color:#dfbd75">
+    <div class="kicker">Нужен один ответ — это не техническая ошибка</div>
+    <div style="font-size:14px;margin-bottom:8px"><b>${esc(question)}</b></div>
+    ${detail?`<div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:9px">Почему спрашиваю: ${esc(detail)}</div>`:""}
+    <textarea id="buildOwnerAnswer" rows="4" style="width:100%;box-sizing:border-box" placeholder="Ответьте своими словами. Ответ войдёт в Task Contract и следующая стройка продолжится с ним."></textarea>
+    <div style="display:flex;gap:9px;align-items:center;margin-top:9px;flex-wrap:wrap">
+      <button class="btn gold" onclick="continueBuildFromAnswer('${esc(buildId)}')">Сохранить ответ и продолжить →</button>
+      <span class="statusline" id="stBuildAnswer"></span>
+    </div>
+    <div style="font-size:11.5px;color:var(--silver);margin-top:8px">Интервью заново проходить не нужно. Ответ сохраняется как решение владельца; технические имена файлов система исправляет сама.</div>
+  </div>`;
+}
+async function continueBuildFromAnswer(buildId){
+  const input=el("buildOwnerAnswer"), answer=(input&&input.value||"").trim();
+  if(!answer){ setStatus("stBuildAnswer","напишите ответ"); return; }
+  const submit=input&&input.nextElementSibling&&input.nextElementSibling.querySelector("button");
+  if(submit) submit.disabled=true;
+  setStatus("stBuildAnswer","<span class='spin'></span>добавляю в Task Contract и продолжаю…");
+  let r; try{ r=await jpost("/x/build_answer",{session_id:S.sessionId,build_id:buildId,answer:answer}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    if(submit) submit.disabled=false;
+    setStatus("stBuildAnswer","ошибка: "+esc((r&&r.message)||"не удалось продолжить")); return;
+  }
+  S.waitingBuild=null; S.buildId=r.build_id; S.buildDone=false;
+  await reloadSession(); renderTest();
+}
+const PROCESS_REPAIR_PENDING=new Set();
+function clearProcessRepairPending(){
+  PROCESS_REPAIR_PENDING.clear();
+  document.querySelectorAll("[data-process-repair]").forEach(btn=>{
+    btn.disabled=false;
+    btn.innerHTML='↻ Починить только этот шаг';
+  });
+}
+function markProcessRepairPending(stepId,pending){
+  const key=String(stepId||"");
+  if(pending) PROCESS_REPAIR_PENDING.add(key); else PROCESS_REPAIR_PENDING.delete(key);
+  document.querySelectorAll("[data-process-repair]").forEach(btn=>{
+    if(btn.dataset.processRepair!==key) return;
+    btn.disabled=!!pending;
+    btn.innerHTML=pending?'<span class="spin"></span> Ремонт запускается…':'↻ Починить только этот шаг';
+  });
+}
+async function repairProcessStep(stepId){
+  if(!S.sessionId||!stepId) return;
+  if(PROCESS_REPAIR_PENDING.has(String(stepId))){
+    toast("Ремонт этого шага уже запускается — повторно нажимать не нужно","ok"); return;
+  }
+  markProcessRepairPending(stepId,true);
+  const host=el("stBuild")||el("stTest");
+  if(host) host.innerHTML="<span class='spin'></span>запрос принят · запускаю точечный ремонт…";
+  let r; try{ r=await jpost("/x/process_action",{session_id:S.sessionId,action:"repair",step_id:stepId,
+                                                  reason:"owner requested repair in Wizard",surface:"wizard"}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    markProcessRepairPending(stepId,false);
+    if(host) host.textContent="ошибка: "+((r&&r.message)||"не удалось запустить ремонт"); return;
+  }
+  if(r.build_id) S.buildId=r.build_id;
+  S.buildDone=false; S.waitingBuild=null;
+  if(host) host.innerHTML="<span class='spin'></span>"+
+    (r.already_started?"ремонт уже выполняется; повторный запуск не создан":"ремонт запущен; готовые независимые шаги сохранены");
+  if(S.buildId) pollBuild();
+  else setTimeout(async()=>{
+    await reloadSession();
+    if(S.session&&S.session.building){ S.buildId=S.session.building; pollBuild(); }
+  },1200);
+}
+async function answerProcessStep(stepId,inputId){
+  if(!S.sessionId||!stepId) return;
+  const input=el(inputId), answer=(input&&input.value||"").trim();
+  if(!answer){ toast("Напишите ответ или подтверждение","err"); return; }
+  if(input) input.disabled=true;
+  let r; try{ r=await jpost("/x/process_action",{session_id:S.sessionId,action:"answer",step_id:stepId,
+                                                  answer:answer,surface:"wizard"}); }
+  catch(e){ r={status:"error",message:String(e&&e.message||e)}; }
+  if(!r||r.status!=="success"){
+    if(input) input.disabled=false;
+    toast("Не удалось продолжить шаг: "+((r&&r.message)||"ошибка"),"err"); return;
+  }
+  S.buildId=r.build_id; S.buildDone=false; S.waitingBuild=null;
+  toast("Ответ сохранён как правило процесса — продолжаю с checkpoint","ok");
+  await reloadSession(); renderTest(); pollBuild();
+}
 function buildStageRow(s){
-  // Четыре состояния, не три: warn = «собрано, но требует доводки» (структурно цело, смысл сомнителен).
+  // Пять состояний: blocked = шаг даже не запускался после корневого сбоя (это не ещё одна ошибка).
   const icon = s.status==="success" ? "✓" : s.status==="running" ? `<span class="spin"></span>`
-    : s.status==="error" ? "✕" : s.status==="warn" ? "⚠" : "·";
+    : s.status==="error" ? "✕" : s.status==="warn" ? "⚠" : s.status==="blocked" ? "—" : "·";
   const col = s.status==="error"?"var(--bad)":s.status==="success"?"var(--ok)"
-    : s.status==="warn"?"#b8862f":"var(--gold)";
+    : s.status==="warn"?"#b8862f":s.status==="blocked"?"var(--silver)":"var(--gold)";
   return `<div style="padding:7px 0;border-bottom:1px dashed var(--cream-dark)">
     <span style="display:inline-block;width:22px;color:${col}">${icon}</span>
     <b style="font-size:14px">${esc(s.title)}</b>
     ${s.reused?`<span class="badge ok" style="margin-left:6px">переиспользовано</span>`:""}
-    ${s.status==="warn"&&s.detail?`<div style="font-size:12.5px;color:#a9701a;padding:3px 0 0 22px">${esc(s.detail)} — поправьте словами в кабинете процесса.</div>`:""}
+    ${s.detail?`<div style="font-size:12.5px;color:${s.status==='error'?'var(--bad)':s.status==='warn'?'#a9701a':'var(--silver)'};padding:3px 0 0 22px">${esc(s.detail)}${s.status==='warn'&&s.needs_review?' — поправьте словами в кабинете процесса.':''}</div>`:""}
     ${s.verdict?`<span class="badge ${s.verdict==='allow'?'ok':'warn'}" style="margin-left:6px">${esc(s.verdict)}</span>`:""}
   </div>`;
 }
+function universalProcessHTML(p){
+  const pc=p&&p.process_contract, steps=(pc&&pc.steps)||[];
+  if(!steps.length) return "";
+  const names={pending:'ожидает',ready:'готов',running:'выполняется',succeeded:'принят',failed:'ошибка',
+    repairing:'ремонтируется',blocked_human:'нужен человек',skipped:'пропущен',stale:'устарел',cancelled:'отменён'};
+  const icons={pending:'·',ready:'→',running:'…',succeeded:'✓',failed:'✕',repairing:'↻',
+    blocked_human:'🙋',skipped:'—',stale:'⚠',cancelled:'×'};
+  const colors={succeeded:'var(--ok)',failed:'var(--bad)',repairing:'#a9701a',blocked_human:'#a9701a',
+    stale:'#a9701a',running:'var(--gold)',ready:'var(--nav)',pending:'var(--silver)',skipped:'var(--silver)',cancelled:'var(--silver)'};
+  const accepted=steps.filter(x=>x.status==='succeeded').length;
+  const blocked=steps.filter(x=>x.status==='blocked_human').length;
+  const active=steps.filter(x=>x.status==='running'||x.status==='repairing').length;
+  const rows=steps.map((s,i)=>{
+    const impl=s.implementation||{}, gate=s.human_gate||{}, err=s.error||{}, ctl=s.controller_decision||{};
+    const decision=s.execution_decision||{};
+    const attempts=(s.attempts||[]).length, deps=(s.dependencies||[]);
+    const detail=gate.question||err.message||s.status_reason||'';
+    const request=(gate.permission_request&&typeof gate.permission_request==='object')?gate.permission_request:{};
+    const budgetGate=request.kind==='runtime_budget'||/лимит процесса исчерпан|process budget exhausted|недостаточно бюджета хотя бы/i.test(detail);
+    const answerId='processAnswer_'+i;
+    return `<details style="border-top:1px dashed var(--cream-dark);padding:7px 0" ${s.status==='running'||s.status==='repairing'||s.status==='blocked_human'||s.status==='failed'?'open':''}>
+      <summary style="cursor:pointer;list-style:none;display:flex;gap:8px;align-items:flex-start">
+        <span style="width:22px;color:${colors[s.status]||'var(--silver)'}">${s.status==='running'?'<span class="spin"></span>':(icons[s.status]||'·')}</span>
+        <span style="min-width:0;flex:1"><b>${i+1}. ${esc(s.title||s.id||'Шаг')}</b>
+          <span class="badge" style="margin-left:6px">${esc(impl.mode||'generate')}</span>
+          <span style="font-size:11.5px;color:${colors[s.status]||'var(--silver)'};margin-left:6px">${esc(names[s.status]||s.status||'')}</span>
+        </span><span style="font-size:11px;color:var(--silver)">v${esc(s.version||1)} · попыток ${attempts}</span>
+      </summary>
+      <div style="font-size:12px;color:var(--ink-soft);padding:6px 4px 2px 30px">
+        ${s.purpose?`<div>${esc(s.purpose)}</div>`:''}
+        ${deps.length?`<div style="margin-top:3px;color:var(--silver)">После: ${deps.map(esc).join(', ')}</div>`:''}
+        ${impl.capability_ref?`<div style="margin-top:3px;color:var(--silver)">Capability: <code>${esc(impl.capability_ref)}</code></div>`:''}
+        ${impl.expert_ref?`<div style="margin-top:3px;color:var(--silver)">Эксперт: <code>${esc(impl.expert_ref)}</code></div>`:''}
+        ${decision.route?`<div style="margin-top:5px;padding:6px 8px;border-radius:7px;background:#f3f7f3;color:var(--nav)"><b>Решение Qwen до создания эксперта:</b> ${esc(decision.route)}${decision.reason?' · '+esc(decision.reason):''}</div>`:''}
+        ${impl.rejected_reuse_ref?`<div style="margin-top:4px;color:#a9701a">Reuse <code>${esc(impl.rejected_reuse_ref)}</code> отклонён проверкой совместимости → создаётся подходящий эксперт.</div>`:''}
+        ${ctl.action?`<div style="margin-top:5px;padding:6px 8px;border-radius:7px;background:#fdf6e7;color:#7f5b16"><b>Контроллер сбоя:</b> ${esc(ctl.failure_class||'')} → ${esc(ctl.action)}${Number(ctl.duration_seconds)>0?` · ${esc(ctl.duration_seconds)} сек`:''}${(s.implementation||{}).subgraph_ref?' · шаг раздроблен, принятые соседи сохранены':''}</div>`:''}
+        ${s.checkpoint?`<div style="margin-top:4px;color:var(--ok)">Checkpoint принят · вход, контракт, код и артефакты зафиксированы</div>`:''}
+        ${s.input_contract?`<details style="margin-top:5px"><summary style="cursor:pointer">Вход и выход шага</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(JSON.stringify({input:s.input_contract,output:s.output_contract},null,2).slice(0,5000))}</pre></details>`:''}
+        ${detail?`<div style="margin-top:5px;color:${s.status==='failed'?'var(--bad)':'#8a671f'}"><b>${s.status==='blocked_human'?'Вопрос:':'Причина:'}</b> ${esc(detail)}</div>`:''}
+        ${s.status==='blocked_human'?`<div style="margin-top:8px;padding:9px;background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px">
+          <textarea id="${answerId}" rows="3" style="width:100%;box-sizing:border-box" placeholder="${budgetGate?'Например: подтверждаю ещё один ограниченный цикл':'Ответьте своими словами — это станет правилом для следующих шагов'}"></textarea>
+          <button class="btn small gold" style="margin-top:7px" onclick="answerProcessStep('${esc(s.id)}','${answerId}')">${budgetGate?'Дать ещё один ограниченный цикл →':'Сохранить ответ и продолжить →'}</button>
+        </div>`:''}
+        ${(s.evidence||[]).length?`<div style="margin-top:4px;color:var(--ok)">Доказательств: ${(s.evidence||[]).length}</div>`:''}
+        ${(s.artifact_refs||[]).length?`<div style="margin-top:4px;color:var(--ok)">Артефактов: ${(s.artifact_refs||[]).length}</div>`:''}
+        ${(s.status==='failed'||s.status==='repairing'||s.status==='stale')?`<button class="btn small" data-process-repair="${esc(s.id)}" style="margin-top:7px" ${PROCESS_REPAIR_PENDING.has(String(s.id))?'disabled':''} onclick="repairProcessStep('${esc(s.id)}')">${PROCESS_REPAIR_PENDING.has(String(s.id))?'<span class="spin"></span> Ремонт запускается…':'↻ Починить только этот шаг'}</button>`:''}
+      </div>
+    </details>`;
+  }).join('');
+  return `<div style="margin:10px 0 12px;padding:11px 13px;border:1px solid var(--cream-dark);border-radius:10px;background:rgba(255,255,255,.55)">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:4px">
+      <b style="font-size:13.5px">Шаги процесса · Universal Contract v1</b>
+      <span style="font-size:11.5px;color:var(--silver)">${accepted}/${steps.length} принято${active?' · '+active+' выполняется':''}${blocked?' · '+blocked+' ждёт человека':''}</span>
+    </div>${rows}</div>`;
+}
+function buildActivityHTML(p){
+  const stamp=Date.parse(p.updated_at||"");
+  if(!Number.isFinite(stamp)) return "";
+  const sec=Math.max(0,Math.floor((Date.now()-stamp)/1000));
+  const age=sec<60?`${sec} сек назад`:sec<3600?`${Math.floor(sec/60)} мин назад`:`${Math.floor(sec/3600)} ч ${Math.floor((sec%3600)/60)} мин назад`;
+  const delayed=p.status==="running"&&sec>=900;
+  return `<div style="font-size:12.5px;margin:0 0 10px;padding:9px 11px;border-radius:8px;background:${delayed?'rgba(181,76,57,.08)':'var(--cream)'};color:${delayed?'var(--bad)':'var(--ink-soft)'}">
+    <b>Последняя активность:</b> ${age}. ${delayed?'Ответ задержался дольше обычного — сборка могла зависнуть.':'Прямые вызовы Qwen не отображаются в Listener и могут не создавать видимый чат.'}
+  </div>`;
+}
+function buildEventHistoryHTML(p){
+  const events=(p.agentic_events||[]).slice(-12);
+  if(!events.length) return "";
+  const icon=s=>s==="success"?"✓":s==="warn"?"⚠":s==="error"?"✕":"…";
+  return `<details open style="margin-top:12px"><summary style="cursor:pointer;font-size:13px;font-weight:700">История действий (${(p.agentic_events||[]).length})</summary>
+    <div style="margin-top:6px">${events.map(e=>{const t=String(e.at||"").slice(11,19);return `<div style="font-size:12.5px;padding:5px 0;border-top:1px dashed var(--cream-dark)"><span style="display:inline-block;width:20px">${icon(e.status)}</span><span style="color:var(--silver);margin-right:7px">${esc(t)}</span>${esc(e.title||"")}${e.detail?`<div style="color:var(--silver);padding:2px 0 0 20px">${esc(e.detail)}</div>`:""}</div>`;}).join("")}</div>
+  </details>`;
+}
+function buildMemoryHTML(p){
+  const entries=((p.working_memory||{}).entries||[]);
+  if(!entries.length) return "";
+  const count=s=>entries.filter(x=>x&&x.status===s).length;
+  const recent=entries.slice(-8);
+  const icon={verified:'✓',candidate:'?',rejected:'✕'};
+  const col={verified:'var(--ok)',candidate:'#a9701a',rejected:'var(--bad)'};
+  return `<details open style="margin-top:12px"><summary style="cursor:pointer;font-size:13px;font-weight:700">Рабочая память: ${count('verified')} подтверждено · ${count('candidate')} проверяется · ${count('rejected')} отклонено</summary>
+    <div style="margin-top:6px">${recent.map(x=>`<div style="font-size:12px;padding:4px 0;border-top:1px dashed var(--cream-dark)"><span style="display:inline-block;width:18px;color:${col[x.status]||'var(--silver)'}">${icon[x.status]||'·'}</span><b>${x.kind==='rule'?'Правило':'Концепт'}</b> · ${esc(x.text||'')}<div style="padding-left:18px;color:var(--silver)">${esc(x.status||'')} · попытка ${esc(x.attempt||0)} · ${esc(x.source||'')}</div></div>`).join('')}</div>
+  </details>`;
+}
 function renderBuildProgress(p){
-  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${(p.stages||[]).map(buildStageRow).join("")}</div>`;
+  el("buildProgress").innerHTML = `<div class="card"><div class="kicker">Прогресс сборки</div>${buildActivityHTML(p)}${universalProcessHTML(p)}${(p.stages||[]).map(buildStageRow).join("")}${buildMemoryHTML(p)}${buildEventHistoryHTML(p)}</div>`;
 }
 function renderBuildResult(lb){
   const aud = lb.audit||{}; const experts = lb.experts||[];
+  const agentic = lb.build_mode==="agentic";
+  const confidence = lb.acceptance&&Number(lb.acceptance.confidence||0);
   const vbadge = aud.verdict==="allow" ? `<span class="badge ok">проверка пройдена</span>`
     : aud.verdict==="escalate" ? `<span class="badge bad">требуется эскалация</span>`
     : `<span class="badge warn">пройдена с замечаниями</span>`;
   el("buildProgress").innerHTML = `
     <div class="card">
-      <div class="kicker">Процесс собран ${(lb.needs_review&&lb.needs_review.length)?"— есть шаги на доводку":"✓"}</div>
+      <div class="kicker">${agentic?'Задача решена и упакована':'Процесс собран'} ${(lb.needs_review&&lb.needs_review.length)?"— есть шаги на доводку":"✓"}</div>
+      ${agentic?`<div style="font-size:13.5px;margin-bottom:10px;padding:10px 12px;background:var(--gold-bg);border-radius:8px"><b>🧠 Агентная стройка:</b> Qwen получила полное ТЗ и все файлы, решила задачу целиком, запустила решение на образцах и только после приёмки упаковала его в эксперта.${confidence?` Уверенность приёмки: <b>${Math.round(confidence*100)}%</b>.`:''}</div>`:''}
       <div style="margin-bottom:8px">Построено компонентов: <b>${experts.length}</b> ${vbadge}</div>
       <div style="font-size:13px;color:var(--nav)">${experts.map(e=>`<code style="background:var(--cream);padding:1px 6px;border-radius:4px;margin:2px;display:inline-block">${esc(e)}</code>`).join(" ")}</div>
       ${(lb.needs_review&&lb.needs_review.length)?`<div style="font-size:13px;margin-top:10px;padding:10px 12px;border:1px solid #e0b48a;border-radius:10px;background:rgba(224,168,94,.08)"><b>⚠ Требуют доводки (${lb.needs_review.length}):</b> собраны и запустились, но результат по смыслу сомнителен — проверьте и поправьте словами в кабинете.<ul class="plain" style="margin-top:6px">${lb.needs_review.map(r=>`<li><b>${esc(r.title||r.expert)}</b> — ${esc(r.why||'')}</li>`).join("")}</ul></div>`:""}
@@ -4263,6 +4551,17 @@ async function cabApply(){
 }
 function _wzCard(inner){ return '<div style="max-width:720px;background:var(--paper);border:1px solid var(--cream-dark);border-radius:12px;padding:18px 20px;margin-bottom:14px">'+inner+'</div>'; }
 function _wzH(t){ return '<div style="font:700 12px var(--sans);color:var(--nav);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">'+t+'</div>'; }
+function _wzRuntime(a){
+  var c=(a&&a.runtime_contract)||{};
+  return {
+    input:c.input||((a&&a.source&&a.source.kind)?{kind:'connector',label:_srcName(a.source.kind),manual_upload:false,connectable:true}:
+                    ((a&&a.panel_url)?{kind:'inbound',label:'Входящие каналы',manual_upload:false,connectable:true}:
+                    {kind:'manual_file',label:'Файл при запуске',manual_upload:true,connectable:true})),
+    delivery:c.delivery||{enabled:!!((a&&a.recipients)||[]).length,channels:(a&&a.recipients)||[]},
+    output:c.output||{supports_count:false,supports_sum:false}
+  };
+}
+function _wzDeliveryEnabled(a){ return !!_wzRuntime(a).delivery.enabled; }
 // Карточка доводки: сомнительные по смыслу шаги, найденные при сборке. Ведёт к чату кабинета
 // («Скажи, что поменять» внизу) — там доводка словами и есть. Идея Анвара: доделать процесс тут.
 function _wzCabReviewCard(a){
@@ -4295,8 +4594,9 @@ function _wzCabBody(a){
       '<a href="'+esc(a.panel_url)+'" target="_blank" style="color:#c60;margin-left:auto">открыть в отдельном окне ↗</a></div>'+
       '<iframe src="'+esc(a.panel_url)+'" style="flex:1;width:100%;border:1px solid var(--cream-dark);border-radius:12px;background:#fff"></iframe></div>';
   if(_wzCabTab==='compose' && a.flow_id) return _wzCabComposeTab(a);
-  // Слой 1 честный статус: если живого источника нет — предупреждающий баннер на ЛЮБОЙ содержательной вкладке
-  var _sb = ((a.source&&a.source.kind)||a.panel_url) ? "" : _wzSourceBanner(a, _wzCabI);
+  // Плашка нужна только для реального ручного файла. Локальная папка/приложение — уже живой
+  // runtime-вход; отсутствие OAuth-коннектора не превращает их в «приложенный файл».
+  var _sb = _wzSourceBanner(a, _wzCabI);
   // старые адреса вкладок ведут в новые места — внешние ссылки и наш же код не ломаются
   if(_wzCabTab==='process') _wzCabTab='overview';
   if(_wzCabTab==='rules'||_wzCabTab==='template') _wzCabTab='settings';
@@ -4467,12 +4767,8 @@ async function _wzDigestLoad(sid){
     '<button class="btn ghost sm" style="margin-top:8px" onclick="showBrief(window._wzLastDigest,{kicker:\'Extella · Отчёт прогона\',title:(AUTOS[_wzCabI]&&(AUTOS[_wzCabI].process_name||AUTOS[_wzCabI].client_name))||\'Отчёт прогона\'})">📄 Открыть бриф целиком</button></div>';
 }
 function _wzSourceBanner(a, i){
-  // Слой 1, честный статус: процесс НЕ выдаётся за автономный, если данные грузятся руками файлом.
-  var hasLive = (a.source && a.source.kind) || a.panel_url;
-  if(hasLive){
-    var nm = (a.source&&a.source.kind) ? _srcName(a.source.kind) : 'входящие каналы';
-    return '<div style="background:rgba(47,158,86,.10);border:1px solid rgba(47,158,86,.35);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#237a44">✓ Источник данных подключён: <b>'+esc(nm)+'</b> — процесс тянет свежие данные сам.</div>';
-  }
+  var inp=_wzRuntime(a).input||{};
+  if(inp.kind!=='manual_file') return '';
   // #7 (Гульжан 20.07): раньше банер вёл только в «Подключить источник» (OAuth/refresh-токены —
   // «круги мучений»), а для ТЕСТА подключать ничего не нужно. Разводим два пути явно: тест на
   // приложенном файле (сейчас, без подключения) и живой источник (для автономной работы 24/7).
@@ -4531,11 +4827,11 @@ function _wzArchTitle(a){
 function _wzCabLaunch(a){
   var i=_wzCabI, rc=(a.recipients||[]);
   var fmt=function(n){return typeof n==='number'?n.toLocaleString('ru-RU'):esc(n);};
-  var _srcLabel = a.source&&a.source.kind ? ('Источник: '+_srcName(a.source.kind))
-      : (a.panel_url ? 'Источник: входящие каналы (пак)' : 'Источник: файл вручную');
-  var ready =
-      _wzReadyChip(a.source&&a.source.kind?'ok':(a.panel_url?'ok':'idle'), _srcLabel)
-    + _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Получатели: не заданы')
+  var _rt=_wzRuntime(a), _inp=_rt.input||{}, _delivery=!!(_rt.delivery||{}).enabled;
+  var _srcLabel = _inp.kind==='connector' && a.source&&a.source.kind ? ('Источник: '+_srcName(a.source.kind))
+      : (_inp.kind==='manual_file' ? 'Источник: файл при запуске' : (_inp.label||'Отдельный источник не требуется'));
+  var ready = (_inp.kind==='none'?'':_wzReadyChip(_inp.kind==='manual_file'?'idle':'ok', _srcLabel))
+    + (_delivery ? _wzReadyChip(rc.length?'ok':'warn', rc.length?('Получатели: '+rc.map(chName).join(', ')):'Доставка: требует настройки') : '')
     + _wzReadyChip(a.schedule&&a.schedule.period?'ok':'idle', a.schedule&&a.schedule.period?('Расписание: '+a.schedule.period):'Запуск вручную');
   var lr=a.last_run, AR=_wzArch(a);
   // Главное число подписываем ЖАНРОМ и трактуем по жанру. Сумму показываем только там,
@@ -4597,7 +4893,7 @@ function _wzCabLaunch(a){
   // Подсказка «что дальше» — жанровая и УМЕСТНАЯ: советовать расписание тому, у кого оно
   // уже стоит, значит шуметь. Показываем только пока обвязка не достроена.
   var _needSched = !(a.schedule&&a.schedule.period) && !a.inbound;
-  var _needRcpt = !((a.recipients||[]).length);
+  var _needRcpt = _delivery && !((a.recipients||[]).length);
   var nudge = (AR.nudge && (_needSched || _needRcpt))
       ? '<div style="font-size:12.5px;color:var(--ink-soft);margin-top:12px;padding:9px 12px;background:var(--cream);border-radius:8px">'+esc(AR.nudge)+
         ' <a href="#" onclick="wzCabTab(\'settings\');return false" style="color:#c60">Настроить →</a></div>' : '';
@@ -4627,28 +4923,42 @@ async function _wzPlaceLoad(i, sid){
 function _wzPlaceRender(i){
   var st=_WZPLACE[i]; if(!st) return;
   var box=el('wz_place_'+i); if(!box) return;
-  var d=st.data, why={}; (d.proposal||[]).forEach(function(p){ why[p.stage]=p.why; });
+  var d=st.data, why={}, labels=d.stage_labels||{}; (d.proposal||[]).forEach(function(p){ why[p.stage]=p.why; });
   var opts=function(sel){ return (d.devices||[]).map(function(dev){
       return '<option value="'+esc(dev.ref)+'"'+(dev.ref===sel?' selected':'')+'>'+
              (dev.online?'🟢 ':'🔴 ')+esc(dev.label||'')+'</option>'; }).join(''); };
-  var rows=(d.stages||[]).map(function(s){
-    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;flex-wrap:wrap">'+
-      '<code style="font-size:11.5px;color:var(--nav);min-width:170px">'+esc(s)+'</code>'+
+  var rows=(d.stages||[]).map(function(s,si){
+    var label=labels[s]||('Шаг '+(si+1));
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;flex-wrap:wrap;border-top:1px solid var(--cream-dark)">'+
+      '<div style="font-size:12.5px;color:var(--nav);min-width:220px;max-width:360px;flex:1" title="'+esc(s)+'">'+
+        '<b>'+(si+1)+'. '+esc(label)+'</b></div>'+
       '<select onchange="_wzPlaceSet('+i+',this.getAttribute(\'data-s\'),this.value)" data-s="'+esc(s)+'" '+
-        'style="font-size:12px;padding:3px 6px;border:1px solid var(--cream-dark);border-radius:6px;background:#fff">'+
+        'style="font-size:12px;padding:5px 7px;border:1px solid var(--cream-dark);border-radius:6px;background:#fff">'+
         opts(st.map[s]||'')+'</select>'+
-      (why[s]?'<span style="font-size:11px;color:var(--silver)">'+esc(why[s])+'</span>':'')+'</div>';
+      (why[s]?'<div style="font-size:11px;color:var(--silver);width:100%;padding-left:0">'+esc(why[s])+'</div>':'')+'</div>';
   }).join('');
+  var refs=[]; (d.stages||[]).forEach(function(s){ var r=st.map[s]; if(r&&refs.indexOf(r)<0) refs.push(r); });
+  var onePlace=refs.length===1, oneDev=(d.devices||[]).find(function(x){return x.ref===refs[0];});
   var mark=d.supported===false
       ? '<span style="color:#C57E33">процесс собран до появления карты — назначения сохранятся, но применятся после пересборки</span>'
-      : (d.confirmed?'<span style="color:#2f9e56">✓ карта подтверждена — шаги идут по ней</span>'
-                    :'<span style="color:#C57E33">предложение — подтвердите, иначе весь процесс идёт на одном устройстве</span>');
-  box.innerHTML='<div style="font:600 12px var(--sans);color:var(--nav);margin-bottom:4px">Карта размещения по шагам</div>'+
-    '<div style="font-size:11.5px;margin-bottom:6px">'+mark+'</div>'+rows+
-    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
-    '<button class="btn gold" style="font-size:12px;padding:6px 14px" onclick="_wzPlaceSave('+i+',true)">Подтвердить карту</button>'+
-    '<button class="btn" style="font-size:12px;padding:6px 12px" onclick="_wzPlaceReset('+i+')">Вернуть предложение</button>'+
+      : (d.confirmed
+          ? (onePlace?'<span style="color:#2f9e56">✓ Готово: все '+(d.stages||[]).length+' шагов выполняются на «'+esc((oneDev&&oneDev.label)||'выбранном устройстве')+'». Ничего менять не нужно.</span>'
+                     :'<span style="color:#2f9e56">✓ Готово: Extella знает, где выполнять каждый шаг.</span>')
+          : (onePlace?'<span style="color:#C57E33">Все шаги будут выполняться на «'+esc((oneDev&&oneDev.label)||'этом устройстве')+'». Если это верно, оставьте предложение.</span>'
+                     :'<span style="color:#C57E33">Extella предложила устройства для шагов. Проверьте только шаги, которые зависят от локальной почты, файла или 1С.</span>'));
+  var actions='<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+    '<button class="btn gold" style="font-size:12px;padding:6px 14px" onclick="_wzPlaceSave('+i+',true)">'+(d.confirmed?'Сохранить выбор':'Оставить как предложено')+'</button>'+
+    '<button class="btn" style="font-size:12px;padding:6px 12px" onclick="_wzPlaceReset('+i+')">Сбросить изменения</button>'+
     '<span id="wz_place_msg_'+i+'" style="font-size:11.5px;color:var(--silver)"></span></div>';
+  var compactAction=(!d.confirmed&&onePlace)
+    ? '<div style="margin-top:8px"><button class="btn gold" style="font-size:12px;padding:6px 14px" onclick="_wzPlaceSave('+i+',true)">Оставить как предложено</button><span id="wz_place_msg_'+i+'" style="font-size:11.5px;color:var(--silver);margin-left:8px"></span></div>'
+    : '';
+  var editor=onePlace
+    ? '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--silver)">'+((d.devices||[]).length>1?'Изменить распределение по шагам':'Посмотреть шаги')+'</summary><div style="margin-top:6px">'+rows+(d.confirmed?actions:'')+'</div></details>'
+    : rows+actions;
+  box.innerHTML='<div style="font:600 13px var(--sans);color:var(--nav);margin-bottom:4px">Где работает процесс</div>'+
+    '<div style="font-size:11.5px;color:var(--silver);margin-bottom:6px">Обычно Extella выбирает это сама. Меняйте только если файл, почта или 1С находятся на другом компьютере либо процесс должен работать на сервере 24/7.</div>'+
+    '<div style="font-size:12px;margin-bottom:6px">'+mark+'</div>'+editor+compactAction;
 }
 function _wzPlaceSet(i,s,ref){ if(_WZPLACE[i]) _WZPLACE[i].map[s]=ref; }
 function _wzPlaceReset(i){
@@ -4760,7 +5070,7 @@ function _wzSectionLabel(txt){
 function _wzCabSettings(a){
   // #2 ленивая подгрузка «куда шлём» (dest получателей) — один раз, потом перерисовать с адресами
   if(window.CONN_DEST===undefined){ window.CONN_DEST=null; jget('/x/secrets').then(function(sc){ var m={}; (sc.secrets||[]).forEach(function(x){ if(x.dest) m[x.connector]=x.dest; }); window.CONN_DEST=m; if(_wzCabI>=0 && Object.keys(m).length) _wzCabRender(); }).catch(function(){ window.CONN_DEST={}; }); }
-  var sid=a.session_id, rc=(a.recipients||[]);
+  var sid=a.session_id, rc=(a.recipients||[]), _rt=_wzRuntime(a), _inp=_rt.input||{};
   var recRows = rc.length ? rc.map(function(ch){
      return '<div style="display:flex;align-items:center;gap:8px;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:8px 12px;margin-bottom:6px">'+
        '<span style="font-size:16px">'+chEmoji(ch)+'</span>'+
@@ -4776,7 +5086,8 @@ function _wzCabSettings(a){
   // Теперь называем таблицу, доступ, число строк и колонки, и даём ссылку открыть.
   var _si=(a.source||{}), _id=_si.identity||{};
   var srcBody;
-  if(_si.kind){
+  var srcActions='';
+  if(_inp.kind==='connector' && _si.kind){
     var bits=[];
     if(_id.url) bits.push('<a href="'+esc(_id.url)+'" target="_blank" rel="noopener noreferrer" style="color:#c60">открыть таблицу ↗</a>');
     if(_id.access) bits.push('доступ: '+esc(_id.access));
@@ -4788,12 +5099,22 @@ function _wzCabSettings(a){
       (cols.length
         ? '<div style="font-size:12px;color:var(--silver);margin-bottom:10px">колонки: '+esc(cols.slice(0,10).join(', '))+(cols.length>10?' …':'')+'</div>'
         : '<div style="font-size:12.5px;color:#C57E33;margin-bottom:10px">⚠ структура источника неизвестна — процесс не заметит, если колонки изменятся. Привяжите источник заново.</div>');
+    srcActions='<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">Сменить источник</button> '+
+      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>';
+  } else if(_inp.kind==='local_folder') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)"><span style="color:#2f9e56">✓</span> '+esc(_inp.label||'Локальная папка на этом устройстве')+'</div>'+
+      '<div style="font-size:12.5px;color:var(--silver);margin-top:6px">Процесс читает папку напрямую во время запуска. Прикладывать файл или подключать API не нужно.</div>';
+  } else if(_inp.kind==='inbound') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)"><span style="color:#2f9e56">✓</span> '+esc(_inp.label||'Входящие сообщения')+'</div>';
+    srcActions='<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Настроить входящие</button>';
+  } else if(_inp.kind==='none') {
+    srcBody='<div style="font-size:14px;color:var(--ink-soft)">Отдельный источник для этого процесса не требуется.</div>';
   } else {
-    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px"><span style="color:var(--silver)">файл загружается вручную при запуске</span></div>';
+    srcBody='<div style="font-size:14px;color:var(--ink-soft);margin-bottom:10px"><span style="color:var(--silver)">файл прикладывается при запуске</span></div>';
+    srcActions='<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">Привязать живой источник</button> '+
+      '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>';
   }
-  var srcCard = _wzCard(_wzH('Источник данных')+srcBody+
-     '<button class="btn ghost sm" onclick="sourceProcess('+_wzCabI+')">'+((a.source&&a.source.kind)?'Сменить источник':'Привязать источник')+'</button> '+
-     '<button class="btn ghost sm" onclick="inboundProcess('+_wzCabI+')">Входящие сообщения</button>');
+  var srcCard = _wzCard(_wzH('Источник данных')+srcBody+(srcActions?'<div style="margin-top:10px">'+srcActions+'</div>':''));
   // Мультитаргет T2: требования к устройству — preflight не пустит прогон, если они не выполнены
   var tr=a.target_requirements||{};
   var trCard = _wzCard(_wzH('Требования к устройству')+
@@ -4811,7 +5132,7 @@ function _wzCabSettings(a){
      ('<button class="btn ghost sm" onclick="shareProcess('+_wzCabI+')">В витрину</button>'+
       (a.flow_id?'<div style="font-size:11.5px;color:var(--silver);margin-top:6px">Композиция издаётся паком: блоки + план (flow) + восстановление при установке.</div>':'')));
   var advCard = _wzCard(_wzH('Переделать процесс')+
-     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные, получатели, расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
+     '<div style="font-size:12.5px;color:var(--silver);margin-bottom:8px">Данные'+(_wzDeliveryEnabled(a)?', получатели':'')+', расписание — правятся здесь. Изменить сами шаги процесса — через Мастера.</div>'+
      '<button class="btn ghost sm" onclick="configureProcess('+_wzCabI+')">Изменить параметры (словами)</button> '+
      '<button class="btn ghost sm" onclick="openInWizard(\''+esc(sid)+'\')">Открыть в Мастере</button>');
   // C6: журнал правок (решения Строителя человеческим языком) + откат последней
@@ -4832,10 +5153,12 @@ function _wzCabSettings(a){
   // по КАКИМ правилам считает, КОМУ и КАК отдаёт, КОГДА и ГДЕ исполняется.
   // Раньше эта логика была разорвана на четыре вкладки (Настройка/Правила/Шаблон/Процесс),
   // хотя настраивают обычно подряд, а не точечно.
+  var deliverySection = _wzDeliveryEnabled(a)
+       ? _wzSectionLabel('Кому и как отправлять') + recipientsCard + _wzCabTemplate(a)
+       : '';
   return _wzSectionLabel('Данные и правила')
        + srcCard + _wzCabPanelFields(a) + _wzCabRules(a)
-       + _wzSectionLabel('Кому и как отправлять')
-       + recipientsCard + _wzCabTemplate(a)
+       + deliverySection
        + _wzSectionLabel('Когда и где исполнять')
        + scCard + trCard
        + _wzSectionLabel('Процесс целиком')
@@ -5007,19 +5330,30 @@ async function removeRule(i,ri){ var a=AUTOS[i]; if(!a) return; a.rules=(a.rules
 async function addField(i){ var a=AUTOS[i]; if(!a) return; var k=(el('wz_newfk-'+i)||{}).value||'', v=(el('wz_newfv-'+i)||{}).value||''; k=k.trim(); v=v.trim(); if(!k||!v) return; a.fields=a.fields||{}; a.fields[k]=v; await _saveRules(a); }
 async function removeField(i,fi){ var a=AUTOS[i]; if(!a||!a.fields) return; var k=Object.keys(a.fields)[fi]; if(k===undefined) return; delete a.fields[k]; await _saveRules(a); }
 // ── вкладка «Шаблон сообщения»: текст доставки per-automation с плейсхолдерами ──
-var _TPL_DEFAULT='✅ Extella: {name} — процесс отработал.\nПозиций: {count}\nСумма: {sum} ₸';
+var _TPL_DEFAULT='✅ Extella: {name} — процесс отработал.\nДата: {date}';
+function _wzTplDefault(a){
+  var out=(_wzRuntime(a).output||{}), tpl=_TPL_DEFAULT;
+  if(out.supports_count) tpl+='\nРезультат: {count}';
+  if(out.supports_sum) tpl+='\nСумма: {sum} ₸';
+  return tpl;
+}
 function _renderTplLocal(tpl, a){
-  return (String(tpl||'').trim()||_TPL_DEFAULT)
+  var lr=(a&&a.last_run)||{};
+  var count=lr.total_count==null?'—':String(lr.total_count);
+  var sum=lr.total_sum==null?'—':(typeof lr.total_sum==='number'?lr.total_sum.toLocaleString('ru-RU'):String(lr.total_sum));
+  return (String(tpl||'').trim()||_wzTplDefault(a))
     .replace(/\{name\}/g, a.process_name||a.client_name||'процесс')
-    .replace(/\{count\}/g,'128')
-    .replace(/\{sum\}/g,'26 000 000')
-    .replace(/\{date\}/g,'2026-07-12 09:00 UTC');
+    .replace(/\{count\}/g,count)
+    .replace(/\{sum\}/g,sum)
+    .replace(/\{date\}/g,(lr.at||'дата прогона').slice(0,16).replace('T',' '));
 }
 function _wzCabTemplate(a){
-  var tpl=a.message_template||'';
+  var tpl=a.message_template||'', out=(_wzRuntime(a).output||{}), ph=['<code>{name}</code> — имя','<code>{date}</code> — дата'];
+  if(out.supports_count) ph.push('<code>{count}</code> — результат в числах');
+  if(out.supports_sum) ph.push('<code>{sum}</code> — сумма');
   return _wzCard(_wzH('Шаблон сообщения получателям')+
-    '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Плейсхолдеры: <code>{name}</code> — имя, <code>{count}</code> — позиций, <code>{sum}</code> — сумма, <code>{date}</code> — дата. Пусто — стандартный текст.</div>'+
-    '<textarea id="wz_tpl-'+_wzCabI+'" class="sess-select" style="width:100%;max-width:none;min-height:120px;font:13px/1.5 var(--mono,monospace);padding:10px" oninput="previewTemplate('+_wzCabI+')" placeholder="'+esc(_TPL_DEFAULT)+'">'+esc(tpl)+'</textarea>'+
+    '<div style="font-size:12.5px;color:var(--silver);margin-bottom:10px">Текст, который уходит получателям после каждого прогона (ручного и по расписанию). Доступно: '+ph.join(', ')+'. Пусто — стандартный текст.</div>'+
+    '<textarea id="wz_tpl-'+_wzCabI+'" class="sess-select" style="width:100%;max-width:none;min-height:120px;font:13px/1.5 var(--mono,monospace);padding:10px" oninput="previewTemplate('+_wzCabI+')" placeholder="'+esc(_wzTplDefault(a))+'">'+esc(tpl)+'</textarea>'+
     '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn gold sm" onclick="saveTemplate('+_wzCabI+')">Сохранить шаблон</button></div>'+
     '<div style="font-size:12px;color:var(--silver);margin:12px 0 4px">Так увидит получатель:</div>'+
     '<div id="wz_tplprev-'+_wzCabI+'" style="white-space:pre-wrap;background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:10px 12px;font-size:13px">'+esc(_renderTplLocal(tpl,a))+'</div>');
@@ -5677,10 +6011,10 @@ function goalLoop(){
   };
 }
 function renderGoalJournal(res){
-  var KM={reason:['💭','Продумал'],build:['🧩','Собрал и запустил эксперта'],build_fail:['🛠','Сборка не удалась'],reject_step:['🔴','Трас-гейт отклонил шаг'],acquire:['📦','Ищу готовую способность'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
+  var KM={reason:['💭','Продумал'],build:['🧪','Выполнил локальный экспериментальный шаг'],build_fail:['🛠','Локальный шаг не выполнен'],reject_step:['🔴','Трас-гейт отклонил шаг'],acquire:['📦','Ищу кандидата способности'],compute:['⚙','Шаг выполнен'],done:['✅','Цель достигнута'],need_human:['🙋','Нужен человек'],reject_done:['🔴','Трас-гейт: ещё не готово'],error:['⚠','Сбой']};
   var rows=(res.journal||[]).map(function(j){
     var k=KM[j.kind]||['·',String(j.kind)];
-    var code=j.code?'<details style="margin-top:3px"><summary style="cursor:pointer;font-size:11px;color:var(--silver)">код эксперта</summary><pre style="white-space:pre-wrap;font-size:10.5px;background:var(--cream);padding:6px;border-radius:5px;max-height:130px;overflow:auto;margin-top:4px">'+esc(String(j.code))+'</pre></details>':'';
+    var code=j.code?'<details style="margin-top:3px"><summary style="cursor:pointer;font-size:11px;color:var(--silver)">код локального sandbox-шага (не эксперт Extella)</summary><pre style="white-space:pre-wrap;font-size:10.5px;background:var(--cream);padding:6px;border-radius:5px;max-height:130px;overflow:auto;margin-top:4px">'+esc(String(j.code))+'</pre></details>':'';
     var lc=(j.learned&&((j.learned.concepts||[]).length||(j.learned.rules||[]).length))?
       '<div style="font-size:11px;color:var(--petrol,#2a6b6b);margin-top:3px">🧠 выучено: '+
       esc([].concat((j.learned.concepts||[]).map(function(c){return c.k+'='+c.v}),(j.learned.rules||[])).join(' · ').slice(0,180))+'</div>':'';
@@ -5698,18 +6032,18 @@ function renderGoalJournal(res){
   }).join('');
   var mem=res.memory||{}, mc=mem.concepts||[], mr=mem.rules||[];
   var sv=res.saved_to_agent;
-  var savedLine=(sv&&(sv.concepts||sv.rules))?'<div style="margin-top:5px;padding-top:5px;border-top:1px dashed var(--cream-dark,#e5e0d5);color:var(--petrol,#2a6b6b);font-weight:600">💾 Сохранено в мозг агента «'+esc(sv.name||sv.id)+'»: '+(sv.concepts||0)+' концепт., '+(sv.rules||0)+' правил → пригодится в след. процессах</div>':'';
+  var savedLine=(sv&&(sv.concepts||sv.rules))?'<div style="margin-top:5px;padding-top:5px;border-top:1px dashed var(--cream-dark,#e5e0d5);color:var(--petrol,#2a6b6b);font-weight:600">💾 Цель доказанно достигнута — сохранено в мозг агента «'+esc(sv.name||sv.id)+'»: '+(sv.concepts||0)+' концепт., '+(sv.rules||0)+' правил</div>':'';
   var memPanel=(mc.length||mr.length)?'<div style="background:var(--cream);border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:12px">'+
     '<div style="font-weight:600;margin-bottom:4px">🧠 Память контура (накоплена по ходу)</div>'+
     (mc.length?'<div style="color:var(--ink-soft)"><b>Концепты:</b> '+esc(mc.map(function(c){return c.k+'='+c.v}).join(' · ').slice(0,300))+'</div>':'')+
     (mr.length?'<div style="color:var(--ink-soft);margin-top:2px"><b>Правила:</b> '+esc(mr.join(' · ').slice(0,300))+'</div>':'')+
     savedLine+'</div>':'';
-  var SM={done:['✅','Цель достигнута (после проверки доверием)'],need_human:['🙋','Контур честно остановился — нужен человек'],max_iters:['⏹','Дошёл до предела итераций']};
+  var SM={done:['✅','Цель достигнута (после проверки доверием)'],need_human:['🙋','Контур завершён: нужен человек'],max_iters:['⏹','Контур завершён: достигнут предел итераций']};
   var sm=SM[res.status]||['·',String(res.status)];
   var q=res.question?'<div style="background:#fdf6e7;border:1px solid #f0d9a0;border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:13px;color:#7a5b1a">🙋 '+esc(res.question)+'</div>':'';
   resetModInput();
   el("modTitle").textContent=sm[0]+' '+sm[1];
-  el("modHint").innerHTML="Журнал контура · итераций: "+esc(res.iters)+". Каждый шаг: план → выполнение → трас-гейт завершения.";
+  el("modHint").innerHTML="Журнал контура · итераций: "+esc(res.iters)+". Каждый шаг: план → выполнение → fail-closed трас-гейт. Локальные sandbox-шаги не являются production-экспертами Extella. need_human и предел итераций — завершённые состояния; автоматического продолжения нет.";
   el("modInput").outerHTML='<input id="modInput" type="hidden">'+q+memPanel+rows;
   el("modBack").classList.add("open");
   var ob=el("modOkBtn"); if(ob) ob.textContent="Готово";

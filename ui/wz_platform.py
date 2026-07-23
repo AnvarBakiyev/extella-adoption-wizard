@@ -41,6 +41,14 @@ def qwen_agent():
     return ch[0] if ch else CONFIG.get("agent_id", "")
 
 
+def local_target():
+    """Target id Listener'а на ЭТОМ устройстве; нужен для операций с локальными файлами."""
+    try:
+        return (Path.home() / ".extella" / "device.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def _scrub(s):
     """Секреты не наружу (чат/лог/UI): вырезаем auth_token из любых сообщений (canon: scrub)."""
     try:
@@ -74,6 +82,16 @@ def parse_expert_result(res):
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
+        # Listener может технически завершить транспортную задачу и загрузить строку ошибки.
+        # Статус wrapper при этом "completed/success" — это НЕ успех эксперта.
+        low = raw.strip().lower()
+        if (low.startswith("[execution error]") or low.startswith("execution error")
+                or "traceback (most recent call last)" in low):
+            msg = raw.strip()
+            if msg.lower().startswith("[execution error]"):
+                msg = msg[len("[Execution Error]"):].strip()
+            return {"status": "error", "code": "expert_execution_error",
+                    "message": _scrub(msg[:500]) or "expert execution error"}
         for loader in (json.loads, ast.literal_eval):
             try:
                 v = loader(raw)
