@@ -119,8 +119,20 @@ def main():
             raise RuntimeError("cabinet run failed: " + json.dumps(run, ensure_ascii=False, default=str)[:1200])
         summary = (run.get("run") or {}).get("summary") or {}
         assert summary.get("processed_files") == 2, summary
-        matches = summary.get("matches", summary.get("match"))
-        assert matches == 1 and summary.get("only_excel") == 1 and summary.get("only_pdf") == 1, summary
+        # Блюпринт QA-задачи НЕ пиннит ключи сводки, поэтому проверяем СЕМАНТИКУ, а не раскладку:
+        # кодоген легально отдаёт вердикты плоскими ключами ИЛИ вложенным verdict_distribution
+        # (наблюдалось между прогонами 23.07). Пиннинг схемы сводки в Task Contract — бэклог Codex.
+        verdicts = summary.get("verdict_distribution") if isinstance(summary.get("verdict_distribution"), dict) else {}
+        def _sem(*keys):
+            for k in keys:
+                for src in (summary, verdicts):
+                    v = src.get(k)
+                    if isinstance(v, (int, float)):
+                        return v
+            return None
+        assert _sem("matches", "match", "matched", "matched_count") == 1 and \
+               _sem("only_excel", "only_excel_count") == 1 and \
+               _sem("only_pdf", "only_pdf_count") == 1, summary
         assert (run.get("run") or {}).get("report_md") and (run.get("run") or {}).get("report_xlsx")
         print("cabinet run ✓", json.dumps(summary, ensure_ascii=False), flush=True)
 
