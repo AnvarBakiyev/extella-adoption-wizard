@@ -1908,23 +1908,36 @@ def _sample_literals(task_package):
         return len(snake) >= 4 and re.search(
             r"(?<![a-z0-9])" + re.escape(snake) + r"(?![a-z0-9])", declared) is not None
 
+    # ПРОИЗВОДНЫЕ входы (dependency bundle merge-шага: step_result'ы и артефакты соседних шагов) —
+    # словарь самого конвейера: метки вердиктов («Только Excel», «Расхождение количества») из выхода
+    # t3 обязаны появляться в коде отчёта t4. Ложный хардкод-стоп на них съел budget (E2E 23.07).
+    # Для таких входов запрещёнными остаются только литералы С ЦИФРАМИ (настоящие данные: A-101,
+    # суммы, даты); бесцифровые многословные фразы — легальная лексика. Корневые клиентские файлы —
+    # прежний строгий режим.
+    _names = [str((p or {}).get("name") or "") for p in (task_package or {}).get("inputs") or []]
+    derived_bundle = any(n == "dependency_manifest.json" or re.match(r"^\d{3}_t\d+__", n)
+                         for n in _names)
+
+    def _flagged(s):
+        if not (4 <= len(s) <= 100) or is_declared_schema_literal(s):
+            return False
+        if re.search(r"\d", s):
+            return True
+        return len(s.split()) >= 2 and not derived_bundle
+
     for profile in (task_package or {}).get("inputs") or []:
         for sheet in profile.get("workbook") or []:
             rows = sheet.get("sample_rows") or []
             for row in rows[1:]:  # первая строка — схема; имена колонок коду знать разрешено
                 for cell in row:
                     s = str(cell or "").strip()
-                    if (4 <= len(s) <= 100 and
-                            (re.search(r"\d", s) or len(s.split()) >= 2) and
-                            not is_declared_schema_literal(s)):
+                    if _flagged(s):
                         values.add(s)
         rows = profile.get("sample_rows") or []
         for row in rows[1:]:
             for cell in row:
                 s = str(cell or "").strip()
-                if (4 <= len(s) <= 100 and
-                        (re.search(r"\d", s) or len(s.split()) >= 2) and
-                        not is_declared_schema_literal(s)):
+                if _flagged(s):
                     values.add(s)
         text = str(profile.get("text_sample") or "")
         for match in re.finditer(
