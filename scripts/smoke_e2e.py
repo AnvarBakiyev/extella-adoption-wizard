@@ -89,8 +89,14 @@ def main():
 
     @check("мост запущен на ожидаемой UPC-версии")
     def _():
+        # Ожидание = BRIDGE_VERSION из репо (один источник истины). Литерал («5.14») протух при
+        # первом же бампе версии и завалил релиз 5.26 при живом и правильном мосте.
+        import re as _re
+        src = (Path(__file__).resolve().parent.parent / "ui" / "server.py").read_text(encoding="utf-8")
+        m = _re.search(r'BRIDGE_VERSION\s*=\s*"([^"]+)"', src)
+        want = m.group(1) if m else "?"
         d = call("/x/health")
-        return d.get("version") == "5.14", "версия: %s" % d.get("version")
+        return d.get("version") == want, "версия: %s (ожидалась %s)" % (d.get("version"), want)
 
     print("\nUniversal Process API")
     UPC_SID = "wz_smoke_upc_" + uuid.uuid4().hex[:12]
