@@ -1827,7 +1827,13 @@ def _build_prompt(expert_name, task_package, feedback, agent_id):
 - ЗАПРЕЩЕНО помещать в код значения строк из образцов/контрольных кейсов (идентификаторы, суммы, даты,
   ожидаемые A/B/C). Образцы нужны только для проверки; алгоритм обязан работать на следующих файлах;
 - для PDF сначала извлеки текст; OCR применяй только если профиль указывает на скан или текста нет;
-- если нужен смысловой шаг, разрешена платформенная Qwen через api_token; agent_id={agent_id};
+- детерминированные файловые задачи (парсинг, сверка, расчёт, отчёт) решай ЧИСТЫМ КОДОМ без вызова
+  моделей изнутри: весь интеллект закладывается сейчас, при генерации;
+- если смысловой шаг ДЕЙСТВИТЕЛЬНО нужен — разрешена ТОЛЬКО платформенная Qwen ровно так:
+  POST <api_base>/api/agent/run, заголовки X-Auth-Token: api_token, X-Profile-Id: "default",
+  X-Agent-Id: "{agent_id}", тело {{"agent_id":"{agent_id}","input":<текст>,"store":false}}.
+  Endpoint'ов вида /v1/chat/completions или openai-style на платформе НЕТ — такой вызов упадёт 404
+  и код будет отклонён проверкой ещё до запуска;
 - на этапе создания ТОЛЬКО сохрани/обнови эксперта. Не запускай его сам и не делай пробных вызовов:
   Визард отдельно прогонит сохранённый код с явными source_file и output_dir;
 - для целостной legacy-сборки создай report.md и report.xlsx; для шага UPC создай перечисленные в
@@ -1947,6 +1953,21 @@ def _validate_code(expert_name, code, task_package=None):
             'PDF-вход требует $extens("include.py") первой строкой и библиотечный парсер в module-level '
             "include(... pypdf/PyPDF2/pdfminer/pdfplumber/PyMuPDF ...) до def; include внутри функции и "
             "regex/decode сырых PDF-байтов запрещены")
+    # Класс отказа D (23.07): у «семантически пахнущих» шагов Qwen жульничает — генерит код, который
+    # ИЗНУТРИ зовёт LLM по выдуманному по аналогии endpoint'у (api.extella.ai/v1/chat/completions →
+    # 404 на прогоне, попытка сгорает). Детерминированный build-шаг обязан решать задачу кодом: весь
+    # интеллект — сейчас, при генерации. Ловим СТАТИЧЕСКИ, до запуска — run-попытка не тратится, урок
+    # ремонта адресный. llm_worker-маршрут не трогаем (там вызов модели легален).
+    _route = str(((task_package or {}).get("execution_decision") or {}).get("route")
+                 if isinstance((task_package or {}).get("execution_decision"), dict) else "build")
+    if (_route or "build").casefold() == "build":
+        low = (code or "").casefold()
+        for marker in ("chat/completions", "v1/completions", "import openai", "openai.chatcompletion",
+                       "api.openai.com", "api.anthropic.com", "dashscope"):
+            if marker in low:
+                issues.append("детерминированный шаг не должен вызывать LLM изнутри кода (найден маркер: "
+                              + marker + ") — реши задачу самим кодом; вся семантика закладывается при генерации")
+                break
     return issues
 
 
