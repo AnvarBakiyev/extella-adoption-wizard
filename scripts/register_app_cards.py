@@ -37,18 +37,6 @@ APPS = [
 
 # Хостинговые карточки: сервер на VPS команды, открывается в панели по ui.url.
 HOSTED = [
-    ("extella_predictive_hosted", "Predictive Sales (команда)",
-     "Воронка Bitrix24 с AI-прогнозами — общий кокпит команды",
-     "Командный кокпит Predictive Sales на хостинге Extella: воронка сделок, "
-     "рабочие шансы, риски и следующие действия. Подключение Bitrix24 "
-     "настраивает владелец; записи в CRM — только после подтверждения.",
-     "https://predictive.82-115-42-21.sslip.io"),
-    ("extella_targetolog_hosted", "Таргетолог AI (команда)",
-     "Рекламные брифы, медиапланы и кампании — общий контур команды",
-     "Командный Таргетолог на хостинге Extella: брифы, медиапланы, черновики "
-     "кампаний и отчёты в одной базе. Подключения рекламных кабинетов "
-     "настраиваются владельцем; внешние отправки — только после approval.",
-     "https://targetolog.82-115-42-21.sslip.io"),
     ("extella_kz_grocery", "Бага — цены на продукты Казахстана",
      "Цены продуктов — общий сервер команды (хостинг Extella)",
      "Матрица 100 × 6 сетей, честное сравнение и история цен. Общая база на "
@@ -106,6 +94,26 @@ def register_info(reg):
         print("зарегистрирована инфо-карточка:", pid)
 
 
+# Снятые с раздачи карточки (решение Анвара 24.07: hosted PS/Таргетолог
+# выключены — остаются локальные). Файл удаляем И пишем девайсный тумбстоун
+# _removed/<id>.json — синк тулбара доносит удаление до кэша витрины.
+RETIRED = ["extella_predictive_hosted", "extella_targetolog_hosted"]
+
+
+def retire_cards(reg):
+    import json
+    removed_dir = reg / "_removed"
+    for pid in RETIRED:
+        path = reg / (pid + ".json")
+        if path.exists():
+            path.unlink()
+            print("снята с раздачи карточка:", pid)
+        removed_dir.mkdir(parents=True, exist_ok=True)
+        (removed_dir / (pid + ".json")).write_text(
+            json.dumps({"id": pid, "reason": "hosted retired 2026-07-24"}),
+            encoding="utf-8")
+
+
 def register_hosted(reg):
     import json
     for pid, name, tagline, desc, url in HOSTED:
@@ -124,6 +132,7 @@ def register_hosted(reg):
 
 def main():
     REG.mkdir(parents=True, exist_ok=True)
+    retire_cards(REG)
     register_hosted(REG)
     register_info(REG)
     for pid, name, tagline, desc, mainfile in APPS:
