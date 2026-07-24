@@ -37,6 +37,12 @@ APPS = [
 
 # Хостинговые карточки: сервер на VPS команды, открывается в панели по ui.url.
 HOSTED = [
+    ("extella_predictive_hosted", "Predictive Sales (команда)",
+     "Воронка Bitrix24 с AI-прогнозами — общий кокпит команды",
+     "Командный кокпит Predictive Sales на хостинге Extella: воронка сделок, "
+     "рабочие шансы, риски и следующие действия. Подключение Bitrix24 "
+     "настраивает владелец; записи в CRM — только после подтверждения.",
+     "https://predictive.82-115-42-21.sslip.io"),
     ("extella_targetolog_hosted", "Таргетолог AI (команда)",
      "Рекламные брифы, медиапланы и кампании — общий контур команды",
      "Командный Таргетолог на хостинге Extella: брифы, медиапланы, черновики "
@@ -56,22 +62,45 @@ HOSTED = [
 INFO = [
     ("extella_1c_agent", "Агент 1С", "Безопасная работа с 1С — только чтение",
      "Читает живую 1С 8.3 через выделенного Qwen-агента (остатки, регистры, "
-     "документы). Ставится на Windows-машину с 1С: скачайте релиз из "
-     "репозитория и запустите INSTALL_AGENT_1C.cmd — инструкция в DISTRIBUTION.md.",
-     "https://github.com/AnvarBakiyev/extella-1c-agent"),
+     "документы). Ставится на Windows-машину с 1С — инструкция и архив "
+     "открываются прямо из карточки, GitHub-доступ не нужен.",
+     "https://github.com/AnvarBakiyev/extella-1c-agent",
+     """# Агент 1С — установка (Windows)
+
+## Что нужно
+- Windows с лицензионной 1С 8.3 (право внешнего соединения, `V83.COMConnector`)
+- Python 3.11+ и pywin32
+- Extella Desktop 1.2.0+ с Listener
+
+## Установка
+- Скачайте архив: https://files.82-115-42-21.sslip.io/extella-1c-agent-0.2.0-beta.1.zip и распакуйте
+- Запустите `INSTALL_AGENT_1C.cmd` — мастер выберет **Qwen**-агента, запишет подключение 1С (base, пользователь, пароль) в зашифрованный Extella KV — пароль не попадает в код, чат и логи — и зарегистрирует карточку плагина
+- Проверка: спросите агента об остатках или регистрах. Первый запрос — `op=registers`: в «Бухгалтерии для Казахстана» регистр называется «Типовой», не «Хозрасчетный»
+
+## Важно
+- Только чтение: запись, проведение и удаление выключены
+- Работает только выделенный **Qwen**-агент (Claude запрещён и заблокирован)
+- Вопросы и доступы — к Анвару"""),
 ]
 
 
 def register_info(reg):
     import json
-    for pid, name, tagline, desc, source in INFO:
+    for pid, name, tagline, desc, source, guide in INFO:
         path = reg / (pid + ".json")
         if path.exists():
-            continue
+            # Обновляем только собственные info-указатели; полноценную
+            # локальную карточку владельца под тем же id не трогаем.
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+            if existing.get("mode") != "info":
+                continue
         manifest = {
             "id": pid, "name": name, "tagline": tagline, "description": desc,
-            "category": "analytics", "type": "custom", "version": "1.0.0",
-            "source": source, "mode": "info",
+            "category": "analytics", "type": "custom", "version": "1.1.0",
+            "source": source, "mode": "info", "guide": guide,
         }
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         print("зарегистрирована инфо-карточка:", pid)
