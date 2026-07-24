@@ -4495,14 +4495,44 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep stdout log terse
         print("%s %s" % (self.command, self.path))
 
+    # Origin'ы САМОГО приложения Extella (главное окно живёт на prod.extella.ai). Только им мост
+    # отдаёт CORS-заголовки и принимает мутации: браузер не даёт чужому сайту подделать Origin,
+    # поэтому список = и разрешение на чтение, и честная CSRF-защита. НИКОГДА не «*»: GET-чтения
+    # (/x/secrets, /x/download, история чата) открылись бы любому сайту в интернете.
+    WEB_APP_ORIGINS = ("https://prod.extella.ai", "https://api.extella.ai")
+
+    def _cors_origin(self):
+        o = (self.headers.get("Origin", "") or "").strip()
+        return o if o in self.WEB_APP_ORIGINS else ""
+
     def _send(self, obj, code=200, ctype="application/json; charset=utf-8"):
         body = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Без Allow-Origin главное окно приложения (prod.extella.ai) НЕ МОЖЕТ прочитать НИ ОДИН
+        # ответ моста — «Failed to fetch» у тулбара при живом мосте (доказано через CDP 24.07:
+        # no-cors проходит, чтение падает). text/plain-обход preflight'а это не лечит.
+        _o = self._cors_origin()
+        if _o:
+            self.send_header("Access-Control-Allow-Origin", _o)
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        # CORS-preflight: отвечаем разрешением ТОЛЬКО белому списку приложения; чужим — 204 без
+        # заголовков (браузер сам заблокирует). Позволяет тулбару вернуться к application/json.
+        _o = self._cors_origin()
+        self.send_response(204)
+        if _o:
+            self.send_header("Access-Control-Allow-Origin", _o)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-CSRF")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Vary", "Origin")
+        self.end_headers()
 
     def _blocked_origin(self):
         """CSRF-защита мутирующих эндпоинтов: блокируем ЯВНО внешние веб-origin (evil.com) И песочный
@@ -4514,6 +4544,8 @@ class Handler(BaseHTTPRequestHandler):
         o = (self.headers.get("Origin", "") or "").strip()
         if not o:
             return False
+        if o in self.WEB_APP_ORIGINS:
+            return False   # окно самого приложения: Origin браузер подделать не даёт — это и есть анти-CSRF
         if o == "null":
             return True
         m = re.match(r"^https?://([^/:]+)", o)
